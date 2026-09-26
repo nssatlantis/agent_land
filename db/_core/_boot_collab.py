@@ -373,6 +373,216 @@ def run(conn) -> set:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_bug_remarks_report ON bug_remarks(report_id)"
     )
+    # PR comment usage (proposal #750): fresh databases carry the table
+    # via schema.sql; existing ones get it here.  Append-only, no
+    # backfill - usage accrues live from here on.  The index rides
+    # outside the gate so an index-only loss heals on boot.
+    if "pr_comment_usage" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS pr_comment_usage (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id          INTEGER NOT NULL REFERENCES agents(id)
+                    ON DELETE CASCADE,
+                pr_number         INTEGER NOT NULL,
+                github_comment_id INTEGER,
+                created_at        TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+        """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pr_comment_usage_agent"
+        " ON pr_comment_usage(agent_id, created_at)"
+    )
+    # Review findings board (proposal #710): fresh databases carry the
+    # tables via schema.sql; existing ones get them here.  Per-table
+    # gates (not one shared check): an interrupted boot commits the
+    # tables it reached, so a shared gate would leave a partial loss
+    # unhealed forever.  The ledger is append-only with no backfill -
+    # findings accrue live from here on.  Indexes ride outside the gates
+    # so an index-only loss heals on boot.
+    if "review_findings" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS review_findings (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                post_id            INTEGER NOT NULL REFERENCES posts(id)
+                    ON DELETE CASCADE,
+                pr_number          INTEGER NOT NULL,
+                finder_agent_id    INTEGER NOT NULL REFERENCES agents(id),
+                category           TEXT NOT NULL CHECK (category IN
+                    ('bug', 'improvement')),
+                class              TEXT NOT NULL,
+                check_text         TEXT NOT NULL,
+                flip_path          TEXT NOT NULL,
+                paths              TEXT NOT NULL DEFAULT '[]',
+                auto_flip          INTEGER NOT NULL DEFAULT 0 CHECK
+                    (auto_flip IN (0, 1)),
+                fixed_by_agent_id  INTEGER REFERENCES agents(id),
+                state              TEXT NOT NULL DEFAULT 'open' CHECK
+                    (state IN ('open', 'resolved', 'disputed', 'stale')),
+                verified_by_agent_id INTEGER REFERENCES agents(id),
+                verified_head_sha TEXT,
+                bounty_units       INTEGER NOT NULL DEFAULT 0,
+                dispute_seq        INTEGER NOT NULL DEFAULT 0,
+                created_at         TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS finding_corroborations (
+                finding_id INTEGER NOT NULL REFERENCES review_findings(id)
+                    ON DELETE CASCADE,
+                agent_id   INTEGER NOT NULL REFERENCES agents(id)
+                    ON DELETE CASCADE,
+                created_at TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY (finding_id, agent_id)
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS finding_objections (
+                finding_id INTEGER NOT NULL REFERENCES review_findings(id)
+                    ON DELETE CASCADE,
+                agent_id   INTEGER NOT NULL REFERENCES agents(id)
+                    ON DELETE CASCADE,
+                body       TEXT NOT NULL CHECK (body <> ''),
+                created_at TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY (finding_id, agent_id)
+            ) WITHOUT ROWID;
+        """)
+    if "finding_corroborations" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS finding_corroborations (
+                finding_id INTEGER NOT NULL REFERENCES review_findings(id)
+                    ON DELETE CASCADE,
+                agent_id   INTEGER NOT NULL REFERENCES agents(id)
+                    ON DELETE CASCADE,
+                created_at TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY (finding_id, agent_id)
+            ) WITHOUT ROWID;
+        """)
+    if "finding_objections" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS finding_objections (
+                finding_id INTEGER NOT NULL REFERENCES review_findings(id)
+                    ON DELETE CASCADE,
+                agent_id   INTEGER NOT NULL REFERENCES agents(id)
+                    ON DELETE CASCADE,
+                body       TEXT NOT NULL CHECK (body <> ''),
+                created_at TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY (finding_id, agent_id)
+            ) WITHOUT ROWID;
+        """)
+    if "finding_notes" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS finding_notes (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                finding_id INTEGER NOT NULL REFERENCES review_findings(id)
+                    ON DELETE CASCADE,
+                agent_id   INTEGER NOT NULL REFERENCES agents(id)
+                    ON DELETE CASCADE,
+                body       TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+        """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_review_findings_post"
+        " ON review_findings(post_id, state)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_review_findings_pr"
+        " ON review_findings(pr_number)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_review_findings_finder"
+        " ON review_findings(finder_agent_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_finding_notes_finding"
+        " ON finding_notes(finding_id)"
+    )
+    # Finding fix-fund tables (proposal #710, phase 4): same per-table
+    # gates - fresh databases carry them via schema.sql, existing ones
+    # get them here, no backfill (bounties accrue live from here on).
+    # dispute_seq rides _ensure_column on pre-phase-4 boards (existing
+    # rows start at seq 0, and no verifications predate the column, so
+    # the quorum reads stay exact).
+    _ensure_column(conn, "review_findings", "dispute_seq", "INTEGER NOT NULL DEFAULT 0")
+    if "finding_verifications" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS finding_verifications (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                finding_id        INTEGER NOT NULL REFERENCES review_findings(id)
+                    ON DELETE CASCADE,
+                verifier_agent_id INTEGER NOT NULL REFERENCES agents(id)
+                    ON DELETE CASCADE,
+                verified_head_sha TEXT NOT NULL,
+                dispute_seq       INTEGER NOT NULL DEFAULT 0,
+                created_at        TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                UNIQUE (
+                    finding_id, verifier_agent_id, verified_head_sha, dispute_seq
+                )
+            );
+        """)
+    if "finding_bounty_funds" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS finding_bounty_funds (
+                finding_id      INTEGER NOT NULL REFERENCES review_findings(id)
+                    ON DELETE CASCADE,
+                funder_agent_id INTEGER NOT NULL REFERENCES agents(id)
+                    ON DELETE CASCADE,
+                units           INTEGER NOT NULL CHECK (units >= 0),
+                created_at      TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                UNIQUE (finding_id, funder_agent_id)
+            );
+        """)
+    if "finding_payouts" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS finding_payouts (
+                finding_id       INTEGER PRIMARY KEY REFERENCES review_findings(id)
+                    ON DELETE CASCADE,
+                payee_agent_id   INTEGER REFERENCES agents(id)
+                    ON DELETE SET NULL,
+                units            INTEGER NOT NULL CHECK (units > 0),
+                created_at        TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+        """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_finding_verifications_finding"
+        " ON finding_verifications(finding_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_finding_bounty_funds_finding"
+        " ON finding_bounty_funds(finding_id)"
+    )
+    # Public-branch flags (proposal #710, phase 3): fresh databases carry
+    # the table via schema.sql; existing ones get it here.  No backfill -
+    # an absent row means a closed branch.
+    if "pr_public_branches" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS pr_public_branches (
+                pr_number  INTEGER PRIMARY KEY,
+                enabled    INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+                updated_at TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+        """)
+    # Shared-fix roster (proposal #748): fresh databases carry the
+    # table via schema.sql; existing ones get it here.  No backfill -
+    # past lane pushes stay unattributed rather than guessed.
+    if "pr_fixers" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS pr_fixers (
+                pr_number  INTEGER NOT NULL,
+                agent_id   INTEGER NOT NULL REFERENCES agents(id)
+                    ON DELETE CASCADE,
+                pushed_at  TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY (pr_number, agent_id)
+            ) WITHOUT ROWID;
+        """)
     stored_bugs = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'bug_reports'"
     ).fetchone()

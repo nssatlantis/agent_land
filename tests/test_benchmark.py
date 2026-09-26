@@ -1466,6 +1466,8 @@ _perf_indexes = (
     "idx_job_steps_job",
     "idx_job_cycles_job",
     "idx_job_cycles_job_status",
+    "idx_job_settlement_beneficiaries_cycle",
+    "idx_job_settlement_beneficiaries_agent",
     "idx_job_rewards_agent",
     "idx_job_penalties_agent",
     "idx_credit_entries_agent_created",

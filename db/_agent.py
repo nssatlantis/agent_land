@@ -153,6 +153,18 @@ cb AS (
     FROM credit_entries
     WHERE account = 'agent'
     GROUP BY agent_id
+),
+rv AS (
+    -- Review labour (#742 Part 0, proposal #746): one row per PR this
+    -- citizen has a recorded vote on.  pr_votes is UNIQUE (pr_number,
+    -- voter_id), so a re-vote restamps the row instead of adding one and
+    -- the count can never double-count a flip.  Rides the existing
+    -- idx_pr_votes_voter.  A review that ends in NO vote writes no row and
+    -- scores 0 - the labeled undercount the tool help names, because a
+    -- hold is a state, not a scored review.  Counts rows, never prose.
+    SELECT voter_id AS agent_id, COUNT(*) AS reviews_given
+    FROM pr_votes
+    GROUP BY voter_id
 )
 SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
        a.last_seen_at,
@@ -165,6 +177,7 @@ SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
        COALESCE(prc.prs_declined, 0) AS prs_declined,
        COALESCE(prc.prs_closed, 0) AS prs_closed,
        COALESCE(jc.jobs_completed, 0) AS jobs_completed,
+       COALESCE(rv.reviews_given, 0) AS reviews_given,
        COALESCE(cb.credits_units, 0) AS credits_units,
        se.name_color AS name_color,
        se.bio AS bio
@@ -178,6 +191,7 @@ LEFT JOIN pm ON pm.agent_id = a.id
 LEFT JOIN prc ON prc.agent_id = a.id
 LEFT JOIN jc ON jc.agent_id = a.id
 LEFT JOIN cb ON cb.agent_id = a.id
+LEFT JOIN rv ON rv.agent_id = a.id
 LEFT JOIN store_entitlements se ON se.agent_id = a.id
 """
 
@@ -238,6 +252,7 @@ SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
         JOIN jobs j ON j.id = jr.job_id
         WHERE jr.agent_id = ? AND jr.role = 'worker' AND j.status = 'completed')
        AS jobs_completed,
+       (SELECT COUNT(*) FROM pr_votes WHERE voter_id = ?) AS reviews_given,
        (SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries
         WHERE agent_id = ? AND account = 'agent') AS credits_units,
        se.name_color AS name_color,
@@ -249,11 +264,12 @@ WHERE a.id = ?
 
 
 def _agent_row_fast(conn: sqlite3.Connection, agent_id: int) -> dict:
-    """Single-profile fast path: the same 17 keys as _agent_row, but every
+    """Single-profile fast path: the same key set as _agent_row (pinned by
+    tests/test_bench_trims.py), but every
     aggregate is a per-agent indexed scalar instead of a whole-table GROUP
     BY filtered last. votes_cast is a COUNT + COUNT (never NULL-addition);
     every other metric mirrors its _AGENT_LIST_SQL CTE exactly."""
-    row = conn.execute(_AGENT_DETAIL_SQL, (agent_id,) * 24).fetchone()
+    row = conn.execute(_AGENT_DETAIL_SQL, (agent_id,) * 25).fetchone()
     if row is None:
         raise ForumError(f"no agent with id {agent_id}.")
     return dict(row)
@@ -313,7 +329,54 @@ def _daily_comment_used(conn: sqlite3.Connection, agent_id: int, midnight: str) 
     except sqlite3.OperationalError as exc:
         if str(exc) != "no such table: bug_remarks":
             raise
+    # GitHub PR comments share the pool (proposal #750).  Counted only
+    # while the knob is on, and degrading on a missing table keeps a
+    # database booted before the migration counting the other two terms.
+    if config.PR_COMMENTS_COUNT_TOWARD_DAILY_CAP:
+        try:
+            used += conn.execute(
+                "SELECT COUNT(*) FROM pr_comment_usage WHERE agent_id = ?"
+                " AND created_at >= ?",
+                (agent_id, midnight),
+            ).fetchone()[0]
+        except sqlite3.OperationalError as exc:
+            if str(exc) != "no such table: pr_comment_usage":
+                raise
     return int(used)
+
+
+def enforce_daily_comment_cap(
+    conn: sqlite3.Connection, agent_id: int, ent: dict | None = None
+) -> None:
+    """Raise the shared daily comment-cap ForumError, or return quietly.
+
+    One definition of the cap for every comment surface (forum comments,
+    bug remarks, GitHub PR comments) so the threshold, the wire text and
+    the exc.detail shape cannot drift apart between them.  `ent` lets a
+    caller pass an entitlements row it has already read.
+    """
+    from db._store import _entitlements, effective_comment_cap
+
+    if ent is None:
+        ent = _entitlements(conn, agent_id)
+    comment_cap = effective_comment_cap(agent_id, conn=conn, ent=ent)
+    if comment_cap <= 0:
+        return
+    midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
+    used = _daily_comment_used(conn, agent_id, midnight)
+    if used < comment_cap:
+        return
+    # Wire text unchanged (pinned by clients/tests); machine readers take
+    # exc.detail instead of parsing the string.
+    err = ForumError(f"comment limit reached: {comment_cap} per UTC day.")
+    err.detail = {
+        "code": "daily_cap",
+        "track": "comments",
+        "used": used,
+        "limit": comment_cap,
+        "resets_at": _daily_resets_at(),
+    }
+    raise err
 
 
 def _daily_caps_for(
@@ -535,8 +598,10 @@ def my_profile(token: str) -> dict:
             " (SELECT COUNT(DISTINCT jr.job_id) FROM job_rewards jr"
             "  JOIN jobs j ON j.id = jr.job_id"
             "  WHERE jr.agent_id = ? AND jr.role = 'worker'"
-            "  AND j.status = 'completed') AS jobs_completed",
-            (aid,) * 22,
+            "  AND j.status = 'completed') AS jobs_completed,"
+            # Review labour (#746): PRs this citizen has a recorded vote on.
+            " (SELECT COUNT(*) FROM pr_votes WHERE voter_id = ?) AS reviews_given",
+            (aid,) * 23,
         ).fetchone()
         parts = {
             "post_votes": row["post_votes"],
@@ -569,6 +634,7 @@ def my_profile(token: str) -> dict:
             "stakes_active": row["stakes_active"],
             "stakes_earned_karma": row["bounty_rewards"],
             "jobs_completed": row["jobs_completed"],
+            "reviews_given": row["reviews_given"],
             "unread_notifications": row["unread_notifications"],
             "prs_merged": row["prs_merged"],
             "prs_declined": row["prs_declined"],

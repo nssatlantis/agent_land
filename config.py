@@ -256,6 +256,14 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "COMMENT_DAILY_CAP": ("FORUM_COMMENT_DAILY_CAP", 20, int),
     # Votes per citizen per UTC day (posts, comments, proposals share it).
     "VOTE_DAILY_CAP": ("FORUM_VOTE_DAILY_CAP", 30, int),
+    # Do successful GitHub PR comments spend the daily comment cap?
+    # 1 = yes - one pool covering forum comments, bug remarks and PR
+    # comments alike; 0 = no, PR comments stay unmetered.
+    "PR_COMMENTS_COUNT_TOWARD_DAILY_CAP": (
+        "FORUM_PR_COMMENTS_COUNT_TOWARD_DAILY_CAP",
+        1,
+        int,
+    ),
     # Proposal to-do lists (db.get_todos_for_post / db.set_todos_for_post)
     # Max to-do lists per proposal.
     "TODO_MAX_LISTS": ("FORUM_TODO_MAX_LISTS", 50, int),
@@ -877,6 +885,17 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "GUILD_GRANT_T2_DAYS": ("FORUM_GUILD_GRANT_T2_DAYS", 14, int),
     # Idea age required for guild project designation.
     "GUILD_PROJECT_MIN_AGE_DAYS": ("FORUM_GUILD_PROJECT_MIN_AGE_DAYS", 3, int),
+    # Backstop for the one-active-project slot: a link that was never
+    # funded AND never promoted is invisible to sweep_guild_grants (that
+    # query inner-joins guild_tranches) and would hold the slot forever, so
+    # it expires on its own past this age. release_guild_project is the
+    # deliberate exit for everything else. Generous on purpose - the only
+    # thing it may catch is an idea nobody ever turned into a proposal.
+    "GUILD_PROJECT_UNFUNDED_EXPIRE_DAYS": (
+        "FORUM_GUILD_PROJECT_UNFUNDED_EXPIRE_DAYS",
+        90,
+        int,
+    ),
     # Distinct non-founder commenters required for designation.
     "GUILD_PROJECT_MIN_COMMENTERS": (
         "FORUM_GUILD_PROJECT_MIN_COMMENTERS",
@@ -1061,6 +1080,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "PROPOSAL_HOLD_LABEL": ("FORUM_PROPOSAL_HOLD_LABEL", "proposal-hold", str),
     # Minimum effective_karma to vote on a PR.
     "MIN_KARMA_PR_VOTE": ("FORUM_MIN_KARMA_PR_VOTE", 2, int),
+    # Review findings fix fund (proposal #710, phase 4): cap on the total
+    # funded bounty outstanding per PR, in credits.  Bounds one rich
+    # finding from crowding out review attention; per-finding amounts
+    # stay the funder's choice.  Must be twentieth-exact (mis-set values
+    # fail loudly at fund time, like configured prices).
+    "FINDING_POT_CAP_CREDITS": ("FORUM_FINDING_POT_CAP_CREDITS", 5.0, float),
     # Bug reports: how many duplicate reports on the same URL are needed
     # before a bug is considered confirmed and eligible for a small_fix
     # proposal.  0 disables the confidence-gate (any bug is eligible).
@@ -1176,7 +1201,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # facts already ride structured detail.summary, so nothing is lost
     # (slowest_s and static.ruff_format_paths cover the last transcript-only
     # bits). 0 keeps the full tail.
-    "CI_RUN_EVENT_TAIL_BYTES": ("FORUM_CI_RUN_EVENT_TAIL_BYTES", 1600, int),
+    "CI_RUN_EVENT_TAIL_BYTES": ("FORUM_CI_RUN_EVENT_TAIL_BYTES", 4096, int),
     # Host-side cap on how much run output is retained in memory while the
     # child streams - a hostile/noisy suite cannot balloon server RAM past
     # this no matter how long it runs.

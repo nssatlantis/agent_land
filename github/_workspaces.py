@@ -712,6 +712,25 @@ def _strip_wip_prefix(text: str) -> str:
     return s[4:].lstrip() if s.upper().startswith("WIP:") else s
 
 
+_MIRROR_START = "<!-- findings-board:start -->"
+_MIRROR_END = "<!-- findings-board:end -->"
+
+
+def _strip_mirror_span(text: str) -> str:
+    """Remove one ordered findings-board mirror block for comparison:
+    the push-text sync compares live vs caller prose, and the mirror
+    block lives only on the live side - it must never count as revised
+    prose (proposal #710 part 5). Comparison only; never written."""
+    s = text or ""
+    start = s.find(_MIRROR_START)
+    if start == -1:
+        return s
+    end = s.find(_MIRROR_END, start + len(_MIRROR_START))
+    if end == -1:
+        return s
+    return s[:start] + s[end + len(_MIRROR_END) :]
+
+
 def _open_or_reuse_claim_pr(
     branch: str, base: str, title: str, body: str, prior: dict | None
 ) -> tuple[dict, bool, bool]:
@@ -720,7 +739,9 @@ def _open_or_reuse_claim_pr(
     Returns (pr, first_push, text_updated). On reuse, a revised title
     and/or body is PATCHed onto the live PR when it differs from what
     the PR currently carries - a follow-up push must never silently drop
-    the caller's prose. Identical text makes no request. A PATCH failure
+    the caller's prose. Identical text makes no request. The body
+    compare ignores one ordered findings-board mirror block, which lives
+    only on the live side (proposal #710 part 5). A PATCH failure
     raises: the commit already landed, and the retry replays this exact
     comparison idempotently (the already-pushed path re-enters here).
     """
@@ -729,7 +750,8 @@ def _open_or_reuse_claim_pr(
         patch: dict = {}
         if _strip_wip_prefix(prior.get("title") or "") != _strip_wip_prefix(title):
             patch["title"] = title
-        if (prior.get("body") or "") != body:
+        prior_known = _strip_mirror_span(prior.get("body") or "").rstrip()
+        if prior_known != (body or "").rstrip():
             patch["body"] = body
         if patch:
             _core._request("PATCH", f"pulls/{prior['number']}", patch)
@@ -1186,6 +1208,40 @@ def push_claim_tree(
         # checkout -b fails loudly when the branch somehow exists
         # locally - refusing beats guessing.
         _git(dest, "checkout", "-b", branch)
+    if cur == branch:
+        # Freshness gate (proposal #748): a fixer may have pushed since
+        # this tree last synced.  Refuse behind-trees here with the
+        # release pointer instead of committing first and dying
+        # non-fast-forward after (workspace_sync refuses pushed trees
+        # lest it orphan the PR branch, so no auto-sync: release and
+        # claim again when clean, read work out first when dirty).
+        # Fail-open: any check failure falls through to today's path
+        # and the push itself decides.
+        try:
+            _fetch = _git(dest, "fetch", "origin", branch, check=False)
+            if _fetch.returncode != 0:
+                _tip = None
+            else:
+                _tip = _git(dest, "rev-parse", "FETCH_HEAD", check=False).stdout.strip()
+            _head = _head_sha(dest) or ""
+            if _tip and _tip != _head:
+                _is_anc = _git(
+                    dest, "merge-base", "--is-ancestor", _head, _tip, check=False
+                )
+                if _is_anc.returncode == 0:
+                    _cnt = _git(
+                        dest, "rev-list", "--count", f"{_head}..{_tip}", check=False
+                    )
+                    _n = _cnt.stdout.strip() or "many"
+                    raise RepoError(
+                        f"branch '{branch}' is {_n} commit(s) ahead of this tree"
+                        " - release it and claim again to rebase pushed work"
+                        " (read your work out first when dirty), then push again."
+                    )
+        except RepoError:
+            raise
+        except Exception:
+            pass  # domain: degrade-silently - gate fail-open, push decides
     # Stage everything but our own bookkeeping. .github stages only if
     # modified outside the tools, which refuse those writes.
     _git(dest, "add", "-A", "--", ".", ":!.workspace.json", ":!.workspace.json.tmp")

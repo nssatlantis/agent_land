@@ -2,6 +2,7 @@
 
 _ticker holds the debounce pool and snapshot readers; _reads the
 read-only tools; _propose PR opening; _pr_ops acting on open PRs;
+_findings the review findings board (proposal #710);
 _govern CI runs, delegation and workflow runs. This facade re-exports
 every name so all existing importers (server/__init__, server/poller,
 server/admin, tests) keep working unchanged.
@@ -9,6 +10,18 @@ server/admin, tests) keep working unchanged.
 
 from __future__ import annotations
 
+from ._findings import (  # noqa: F401
+    finding_add,
+    finding_corroborate,
+    finding_dispute,
+    finding_fund,
+    finding_mark_resolved,
+    finding_object,
+    finding_unfund,
+    finding_verify,
+    findings_list,
+    stale_findings_on_push,
+)
 from ._govern import (  # noqa: F401
     _MANAGED_WORKFLOW_KEYS,
     _ci_watch_url_for,
@@ -34,6 +47,7 @@ from ._propose import (  # noqa: F401
     link_pr_to_todo_item,
     repo_propose_change,
 )
+from ._public_branch import set_public_branch  # noqa: F401
 from ._reads import (  # noqa: F401
     repo_get_pr,
     repo_get_pr_diff,

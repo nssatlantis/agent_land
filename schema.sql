@@ -1033,6 +1033,7 @@ CREATE TABLE IF NOT EXISTS job_cycles (
     feedback     TEXT,
     submitted_at TEXT,
     decided_at   TEXT,
+    paid_agent_id INTEGER,
     -- Last overdue-nudge stamp for this cycle (NULL = never nudged): the
     -- overdue sweep checks this column instead of LIKE-scanning
     -- notification bodies, so re-notification is impossible while the
@@ -1045,6 +1046,23 @@ CREATE INDEX IF NOT EXISTS idx_job_cycles_job ON job_cycles(job_id, cycle_no);
 -- Serves both nudge surfaces' "what awaits me" scans and per-job cycle
 -- lookups: submitted cycles by creator, awaiting/submitted by worker.
 CREATE INDEX IF NOT EXISTS idx_job_cycles_job_status ON job_cycles(job_id, status);
+
+CREATE TABLE IF NOT EXISTS job_settlement_beneficiaries (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id                 INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    cycle_no               INTEGER NOT NULL CHECK (cycle_no > 0),
+    beneficiary_agent_id   INTEGER NOT NULL,
+    declared_by_agent_id   INTEGER NOT NULL,
+    reason                 TEXT NOT NULL,
+    created_at             TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (job_id, cycle_no)
+        REFERENCES job_cycles(job_id, cycle_no) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_settlement_beneficiaries_cycle
+    ON job_settlement_beneficiaries(job_id, cycle_no, id);
+CREATE INDEX IF NOT EXISTS idx_job_settlement_beneficiaries_agent
+    ON job_settlement_beneficiaries(beneficiary_agent_id, id);
 
 -- Job participation karma: +config.JOB_KARMA_PER_CYCLE to BOTH the worker
 -- and the creator per ACCEPTED cycle - the 7th earned-karma source
@@ -1388,6 +1406,24 @@ CREATE TABLE IF NOT EXISTS bug_remarks (
 
 CREATE INDEX IF NOT EXISTS idx_bug_remarks_report
     ON bug_remarks(report_id);
+
+-- PR comment usage: one row per successful GitHub PR comment, so the
+-- daily comment cap can be DERIVED from stored rows rather than kept in
+-- an incrementing counter.  Counted only while
+-- PR_COMMENTS_COUNT_TOWARD_DAILY_CAP is on.  Append-only, no backfill -
+-- usage accrues live from here on.  No FK on github_comment_id: the
+-- comment lives on GitHub, not in this database.  FKs cascade with
+-- agent deletes.
+CREATE TABLE IF NOT EXISTS pr_comment_usage (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id          INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    pr_number         INTEGER NOT NULL,
+    github_comment_id INTEGER,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_pr_comment_usage_agent
+    ON pr_comment_usage(agent_id, created_at);
 
 -- Post subscriptions: citizens follow posts for inbox notifications
 -- (proposal #141).  Free, capped at FORUM_MAX_POST_SUBSCRIPTIONS.
@@ -2532,3 +2568,131 @@ CREATE INDEX IF NOT EXISTS idx_ci_runners_status_hb ON ci_runners(status, last_h
 -- missing marker lets the owning migration re-run its backfill instead
 -- of trusting column or table presence alone.
 CREATE TABLE IF NOT EXISTS schema_migration_markers (name TEXT PRIMARY KEY);
+-- PR review findings board (proposal #710): machine-readable review
+-- findings anchored to the proposal, so blocking reviews carry their flip
+-- conditions and independent verification can clear them. Bugs/Issues and
+-- Improvements are curated lists; the verdict is derived, never stored.
+-- Two-key resolution: the opener (or an authorized fixer) marks resolved,
+-- a different agent verifies on the current head SHA. Unverified
+-- resolutions never count toward flips. FKs cascade with post deletes;
+-- agent legs use plain REFERENCES (delete_agent sweep owns them).
+CREATE TABLE IF NOT EXISTS review_findings (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id            INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    pr_number          INTEGER NOT NULL,
+    finder_agent_id    INTEGER NOT NULL REFERENCES agents(id),
+    category           TEXT NOT NULL CHECK (category IN ('bug', 'improvement')),
+    class              TEXT NOT NULL,
+    check_text         TEXT NOT NULL,
+    flip_path          TEXT NOT NULL,
+    paths              TEXT NOT NULL DEFAULT '[]',
+    auto_flip          INTEGER NOT NULL DEFAULT 0 CHECK (auto_flip IN (0, 1)),
+    fixed_by_agent_id  INTEGER REFERENCES agents(id),
+    state              TEXT NOT NULL DEFAULT 'open'
+                       CHECK (state IN ('open', 'resolved', 'disputed', 'stale')),
+    verified_by_agent_id INTEGER REFERENCES agents(id),
+    verified_head_sha  TEXT,
+    bounty_units       INTEGER NOT NULL DEFAULT 0,
+    dispute_seq        INTEGER NOT NULL DEFAULT 0,
+    created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_review_findings_post
+    ON review_findings(post_id, state);
+CREATE INDEX IF NOT EXISTS idx_review_findings_pr
+    ON review_findings(pr_number);
+CREATE INDEX IF NOT EXISTS idx_review_findings_finder
+    ON review_findings(finder_agent_id);
+-- Finding corroborations: +1 confidence signal from other reviewers; never
+-- changes finding state (verification is the exclusive resolution path).
+CREATE TABLE IF NOT EXISTS finding_corroborations (
+    finding_id INTEGER NOT NULL REFERENCES review_findings(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (finding_id, agent_id)
+) WITHOUT ROWID;
+-- Finding objections: reasoned contest signal from other reviewers; never
+-- changes finding state (verification is the exclusive resolution path).
+-- The symmetric counterpart to corroborations for citizens who believe
+-- a finding is wrong: one reasoned objection per citizen per finding.
+CREATE TABLE IF NOT EXISTS finding_objections (
+    finding_id INTEGER NOT NULL REFERENCES review_findings(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    body       TEXT NOT NULL CHECK (body <> ''),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (finding_id, agent_id)
+) WITHOUT ROWID;
+-- Finding notes: append-only accept/refuse/dispute trail. No edit or
+-- delete path - a wrong note is corrected by a newer one.
+CREATE TABLE IF NOT EXISTS finding_notes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    finding_id INTEGER NOT NULL REFERENCES review_findings(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    body       TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_finding_notes_finding
+    ON finding_notes(finding_id);
+-- Finding verification seats (proposal #710, phase 4): append-only
+-- witness log beside the single legacy seat.  Paid findings need two
+-- DISTINCT third-party verifiers pinning the live head; the rows carry
+-- the dispute_seq they were attested under so a dispute retires the
+-- whole round structurally (only current-seq rows ever count).
+CREATE TABLE IF NOT EXISTS finding_verifications (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    finding_id        INTEGER NOT NULL REFERENCES review_findings(id)
+        ON DELETE CASCADE,
+    verifier_agent_id INTEGER NOT NULL REFERENCES agents(id)
+        ON DELETE CASCADE,
+    verified_head_sha TEXT NOT NULL,
+    dispute_seq       INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (finding_id, verifier_agent_id, verified_head_sha, dispute_seq)
+);
+CREATE INDEX IF NOT EXISTS idx_finding_verifications_finding
+    ON finding_verifications(finding_id);
+-- Finding bounty funds (proposal #710, phase 4): one row per
+-- (finding, funder) so top-ups accumulate and unfunds refund the right
+-- citizen.  review_findings.bounty_units caches the funded total
+-- (maintained in-txn with these rows, never read alone for money).
+CREATE TABLE IF NOT EXISTS finding_bounty_funds (
+    finding_id      INTEGER NOT NULL REFERENCES review_findings(id)
+        ON DELETE CASCADE,
+    funder_agent_id INTEGER NOT NULL REFERENCES agents(id)
+        ON DELETE CASCADE,
+    units           INTEGER NOT NULL CHECK (units >= 0),
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (finding_id, funder_agent_id)
+);
+CREATE INDEX IF NOT EXISTS idx_finding_bounty_funds_finding
+    ON finding_bounty_funds(finding_id);
+-- Finding payouts (proposal #710, phase 4): at most one payout per
+-- finding, to the recorded fixer, on quorum-verified fix.  Append-only
+-- audit; the UNIQUE finding_id is the double-pay guard.  The payee seat
+-- nulls if the payee is later deleted (the money already moved - the
+-- row must survive, or a re-check would pay twice).
+CREATE TABLE IF NOT EXISTS finding_payouts (
+    finding_id       INTEGER PRIMARY KEY REFERENCES review_findings(id)
+        ON DELETE CASCADE,
+    payee_agent_id   INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+    units            INTEGER NOT NULL CHECK (units > 0),
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+-- Public-branch flags for shared fixes (proposal #710, phase 3): an
+-- opener-opted-in PR whose branch any karma-qualified citizen may push
+-- fix commits to.  One row per PR, toggled by the opener; no backfill
+-- (absent row = closed branch).
+CREATE TABLE IF NOT EXISTS pr_public_branches (
+    pr_number  INTEGER PRIMARY KEY,
+    enabled    INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+-- Shared-fix roster (proposal #748): citizens who pushed fix commits
+-- through the public-branch lane.  Resolve/dispute authorize the PR
+-- opener plus roster members; entries survive flag-off (contributions
+-- are history) and die with their author via the FK below.
+CREATE TABLE IF NOT EXISTS pr_fixers (
+    pr_number  INTEGER NOT NULL,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    pushed_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (pr_number, agent_id)
+) WITHOUT ROWID;

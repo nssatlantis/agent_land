@@ -93,6 +93,8 @@ EXPECTED = [
     "bounty_map_for_bugs",
     "admin_set_job_long_running",
     "list_jobs",
+    "clear_job_settlement_beneficiary",
+    "set_job_settlement_beneficiary",
     # treasury
     "economy_overview",
     # citizen store
@@ -136,6 +138,7 @@ EXPECTED = [
     "guild_deposit",
     "guild_withdraw",
     "designate_guild_project",
+    "release_guild_project",
     "request_guild_grant",
     "decide_guild_grant",
     "cancel_guild_grant_request",

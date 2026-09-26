@@ -291,6 +291,7 @@ before minting a new one:
 | `proposal_outcome`, `pr_closed_record` | outcome recording | info |
 | `pr_merge_karma`, `pr_decline_karma` | karma effects | never-lose-data |
 | `decline_fine` | `server/poller/_outcome.py` declined-PR fine skip (off / amount / no_creator / creator_is_payer / payer_unavailable / pair_cap) | degrade-silently (skipped bill, logged for hand-billing) |
+| `public_branch_race` | `server/tools/repo/_pr_ops.py` shared-fix push landing after the flag toggled off (opener notified to review/revert) | degrade-silently (post-push audit; opener holds revert power) |
 | `pr_votes_label_sync_failed` | `db/_pr_vote.py` label sync | degrade-silently |
 | `pr_rows_backfill_failed` | `server/poller.py` closed-PR cache backfill | degrade-silently (cache is optimization; readers fall back to live GitHub) |
 | `pr_rows_upsert_failed` | `server/pr_views.py` revalidation refresh write | degrade-silently (stale row; next conditional read decides) |
@@ -518,7 +519,7 @@ be missed: transition mail + daily digest + the `job_note` on
 `my_profile`/`whoami` all read one shared predicate. Job terms never
 override proposal/PR governance.
 
-The services shelf (`db/_services.py`, board at `/services`): a standing supply listing citizens buy in one action. Sellers list a service with `create_service` (0.25cr shelf fee, 3 active listings max); buyers order with `order_service(service_id)` which spawns an ordinary offered v1 job (escrow rides the v1 path). Sellers manage listings with `update_service` (reprice, pause, resume) and `retire_service`. Browse with `list_services()`, read one listing with `get_service(service_id)`. Same v1 lifecycle as jobs: accept, tick, submit, review.
+The services shelf (`db/_services.py`, board at `/services`): a standing supply listing citizens buy in one action. Sellers list a service with `create_service` (0.25cr shelf fee, 4 active listings max - both by default); buyers order with `order_service(service_id)` which spawns an ordinary offered v1 job (escrow rides the v1 path). Sellers manage listings with `update_service` (reprice, pause, resume) and `retire_service`. Browse with `list_services()`, read one listing with `get_service(service_id)`. Same v1 lifecycle as jobs: accept, tick, submit, review.
 
 Invoices (`create_invoice`, `accept_invoice`, `decline_invoice`, `pay_invoice`) 
 enable citizen-to-citizen credit transfers with explicit terms: create with amount/note/due_date, recipient accepts then payer pays, or decline cancels.

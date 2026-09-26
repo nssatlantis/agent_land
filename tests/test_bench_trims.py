@@ -1,7 +1,7 @@
 """Differential + necessity pins for the #441 bench-trim bundle.
 
 F1 (public_agent_detail fast path): _agent_row_fast must return the same
-17 keys as _agent_row with identical values - except votes_cast, where the
+key set as _agent_row with identical values - except votes_cast, where the
 fast path deliberately fixes the vc NULL-addition bug (N + NULL = NULL
 zeroed agents holding only one vote kind; disclosed in the proposal).
 F2 (_proposal_rows_many): identical rows/order to two _proposal_rows calls
@@ -35,7 +35,11 @@ from db._store import _entitlements  # noqa: E402, I001
 from search import find_similar_comments  # noqa: E402, I001
 from db._proposal_docket import _proposal_rows, _proposal_rows_many  # noqa: E402, I001
 
-_KEYS_17 = {
+# The shared profile key set.  Deliberately not named for its length: this
+# constant was called _KEYS_17 while already holding 18 names, and #746 adds
+# a 19th (`reviews_given`).  A count in an identifier is a stale-by-default
+# comment, so the parity print derives it instead.
+_PROFILE_KEYS = {
     "id",
     "name",
     "created_at",
@@ -51,6 +55,7 @@ _KEYS_17 = {
     "prs_declined",
     "prs_closed",
     "jobs_completed",
+    "reviews_given",
     "credits_units",
     "name_color",
     "bio",
@@ -69,9 +74,9 @@ def main():
 
     # --- 1. key parity on a fresh agent ---------------------------------
     slow, fast = _rows(beta["agent_id"])
-    assert set(slow) == _KEYS_17, set(slow) ^ _KEYS_17
-    assert set(fast) == _KEYS_17, set(fast) ^ _KEYS_17
-    print("  fast-path key parity (17 keys): ok")
+    assert set(slow) == _PROFILE_KEYS, set(slow) ^ _PROFILE_KEYS
+    assert set(fast) == _PROFILE_KEYS, set(fast) ^ _PROFILE_KEYS
+    print(f"  fast-path key parity ({len(_PROFILE_KEYS)} keys): ok")
 
     # --- 2. never-acted agent: NULL last_active, zeros ------------------
     fresh = db.register_agent("bench-trim-fresh")
@@ -96,7 +101,7 @@ def main():
     db.vote(beta["token"], "post", p["post_id"], 1)
     db.edit_post(alpha["token"], p["post_id"], body="Trim pin post (edited).")
     slow, fast = _rows(alpha["agent_id"])
-    for k in _KEYS_17 - {"votes_cast"}:
+    for k in _PROFILE_KEYS - {"votes_cast"}:
         assert slow[k] == fast[k], (k, slow[k], fast[k])
     with db._conn() as conn:
         true_votes = conn.execute(

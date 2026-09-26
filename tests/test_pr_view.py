@@ -131,6 +131,43 @@ def test_ci_note_failure():
     print("  ci_note failure: ok")
 
 
+def test_ci_note_failure_with_message():
+    payload = _payload(2, checks_state="failure")
+    payload["checks"]["failures"] = [
+        {
+            "name": "test",
+            "message": "AssertionError: expected 1 == 2",
+            "path": "tests/test_x.py",
+            "line": 42,
+        },
+    ]
+    real = _install_mock({2: payload})
+    try:
+        got = asyncio.run(root_server.repo_get_pr(number=2))
+        assert got["ci_note"] == "CI: failing (AssertionError: expected 1 == 2)", got[
+            "ci_note"
+        ]
+    finally:
+        root_server.github.aget_pr = real
+    print("  ci_note failure with message: ok")
+
+
+def test_ci_note_failure_long_message_truncated():
+    long_msg = "F" * 250
+    payload = _payload(2, checks_state="failure")
+    payload["checks"]["failures"] = [
+        {"name": "test", "message": long_msg, "path": "tests/test_x.py", "line": 1},
+    ]
+    real = _install_mock({2: payload})
+    try:
+        got = asyncio.run(root_server.repo_get_pr(number=2))
+        expected = f"CI: failing ({long_msg[:197]}...)"
+        assert got["ci_note"] == expected, got["ci_note"]
+    finally:
+        root_server.github.aget_pr = real
+    print("  ci_note failure long message truncated: ok")
+
+
 def test_ci_note_pending():
     real = _install_mock({3: _payload(3, checks_state="pending")})
     try:
@@ -185,6 +222,27 @@ def test_ci_note_batch_mode():
     finally:
         root_server.github.aget_pr = real
     print("  ci_note batch mode: ok")
+
+
+def test_ci_note_failure_newline_message_collapses():
+    """A raw-newline failure message must collapse to single spaces in ci_note."""
+    payload = _payload(9, checks_state="failure")
+    payload["checks"]["failures"] = [
+        {
+            "name": "test",
+            "message": "AssertionError:\n  expected 1 == 2",
+            "path": "tests/test_x.py",
+            "line": 42,
+        },
+    ]
+    real = _install_mock({9: payload})
+    try:
+        got = asyncio.run(root_server.repo_get_pr(number=9))
+        expected = "CI: failing (AssertionError: expected 1 == 2)"
+        assert got["ci_note"] == expected, got["ci_note"]
+    finally:
+        root_server.github.aget_pr = real
+    print("  ci_note failure newline collapse: ok")
 
 
 # -- include_diff tests --------------------------------------------------
@@ -499,14 +557,82 @@ def test_comment_on_pr_hold_error_wording():
     print("  comment_on_pr hold error wording: ok")
 
 
+def test_comment_on_pr_spends_daily_comment_cap():
+    """A GitHub PR comment must spend the same daily budget as a forum
+    comment: refused BEFORE the call when at the cap, and a refusal must
+    leave no usage row.  Driven through the tool, not against the helper,
+    so deleting either the gate or the charge goes red (proposal #750)."""
+    import config
+
+    number = 9971
+    posted = []
+
+    async def fake_comment(num, body):
+        posted.append(num)
+        return {"comment_id": 4242}
+
+    def _usage_rows(agent_id):
+        with db._conn() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM pr_comment_usage WHERE agent_id = ?",
+                (agent_id,),
+            ).fetchone()[0]
+
+    real_aper = _install_mock({number: _payload(number, checks_state="success")})
+    real_acomment = root_server.github.acomment_on_pr
+    real_for_pr = root_server.db.proposal_for_pr
+    root_server.github.acomment_on_pr = fake_comment
+    root_server.db.proposal_for_pr = lambda n, conn=None: None
+    old_cap = config.COMMENT_DAILY_CAP
+    old_knob = config.PR_COMMENTS_COUNT_TOWARD_DAILY_CAP
+    config.COMMENT_DAILY_CAP = 1
+    config.PR_COMMENTS_COUNT_TOWARD_DAILY_CAP = 1
+    commenter = db.register_agent("prcomment-cap-tester")
+    try:
+        asyncio.run(root_server.repo_comment_on_pr(commenter["token"], number, "one"))
+        assert posted == [number], f"the first comment must reach GitHub: {posted}"
+        assert _usage_rows(commenter["agent_id"]) == 1, "a landed comment charges once"
+        err = expect_error(
+            asyncio.run,
+            root_server.repo_comment_on_pr(commenter["token"], number, "two"),
+        )
+        assert "per UTC day" in err, f"the capped call must be refused: {err}"
+        assert posted == [number], f"the refusal must not reach GitHub: {posted}"
+        assert _usage_rows(commenter["agent_id"]) == 1, (
+            "a refused comment charges nothing"
+        )
+        config.PR_COMMENTS_COUNT_TOWARD_DAILY_CAP = 0
+        asyncio.run(root_server.repo_comment_on_pr(commenter["token"], number, "three"))
+        assert posted == [number, number], f"knob 0 must let it through: {posted}"
+        # Knob 0 switches the COUNT off, not just the refusal: the earlier
+        # usage row becomes invisible to _daily_comment_used, so the budget
+        # reads as though no PR comment was ever made - which is exactly
+        # the pre-#744 number.  The knob-0 call also writes no row.
+        usage = db.my_profile(commenter["token"])["daily_usage"]["comments"]
+        assert usage["used"] == 0, f"knob 0 must un-count the pool: {usage}"
+        assert _usage_rows(commenter["agent_id"]) == 1, (
+            "the knob-0 comment must not write a usage row"
+        )
+    finally:
+        config.COMMENT_DAILY_CAP = old_cap
+        config.PR_COMMENTS_COUNT_TOWARD_DAILY_CAP = old_knob
+        root_server.github.acomment_on_pr = real_acomment
+        root_server.db.proposal_for_pr = real_for_pr
+        root_server.github.aget_pr = real_aper
+    print("  PR comment spends the comment cap: ok")
+
+
 if __name__ == "__main__":
     test_ci_note_success()
     test_ci_note_failure()
+    test_ci_note_failure_with_message()
+    test_ci_note_failure_long_message_truncated()
     test_ci_note_pending()
     test_ci_note_unknown_source()
     test_ci_note_run_count_suffix()
     test_ci_note_single_run_no_suffix()
     test_ci_note_batch_mode()
+    test_ci_note_failure_newline_message_collapses()
     test_include_diff_false_by_default()
     test_include_diff_true_adds_diff_field()
     test_include_diff_filename_normalization()
@@ -514,4 +640,5 @@ if __name__ == "__main__":
     test_proposal_hold_message_wording()
     test_label_synced_flag()
     test_comment_on_pr_hold_error_wording()
+    test_comment_on_pr_spends_daily_comment_cap()
     print("\n== test_pr_view: all passed ==")

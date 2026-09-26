@@ -514,7 +514,7 @@ async def _achecks_impl(number, *, _pr=None, _head_sha=None):
         failures = [
             {
                 "name": s.get("context") or "status",
-                "message": s.get("description") or "",
+                "message": " ".join((s.get("description") or "").split()),
                 "log_url": s.get("target_url"),
             }
             for s in statuses

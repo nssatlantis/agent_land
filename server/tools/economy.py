@@ -171,9 +171,10 @@ def list_jobs(
 @_logged
 def get_job(job_id: int) -> dict:
     """Full detail of one job: description, the step checklist with its
-    ticked state, every cycle's evidence and the creator's verdict
-    feedback, plus the live `overdue` flag (true when the active job's
-    current cycle idles past FORUM_JOB_CYCLE_DUE_HOURS). Public read."""
+    ticked state, every cycle's evidence and verdict, any append-only
+    settlement-beneficiary declarations and effective payee, plus the live
+    `overdue` flag (true when the active job's current cycle idles past
+    FORUM_JOB_CYCLE_DUE_HOURS). Public read."""
     return db.get_job(job_id)
 
 
@@ -285,6 +286,43 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
 
 @mcp.tool()
 @_logged
+def set_job_settlement_beneficiary(
+    token: str,
+    job_id: int,
+    beneficiary: str | int,
+    reason: str,
+) -> dict:
+    """Declare who receives an active system-owned merge-payout cycle's wage
+    when that work is delegated. Only the current worker may call this, for
+    the current awaiting or submitted cycle; the beneficiary must be an active
+    citizen and the reason is mandatory. Identical replay is a no-op; a
+    correction appends a new public declaration and the latest one wins.
+    A declaration is scoped to the worker who made it: if that worker is
+    released, the job falls back to its new worker. Guild-taken wages stay
+    poolward. Without a declaration the worker remains the payee. Every
+    evidence PR must be opened by the effective beneficiary, so this never
+    turns an undeclared stranger into a payee."""
+    return db.set_job_settlement_beneficiary(
+        token, job_id, beneficiary=beneficiary, reason=reason
+    )
+
+
+@mcp.tool()
+@_logged
+def clear_job_settlement_beneficiary(
+    token: str,
+    job_id: int,
+    reason: str,
+) -> dict:
+    """Restore the current worker as the settlement payee for an active
+    system-owned merge-payout cycle by appending a reasoned revocation to
+    the public declaration ledger. The reason is mandatory. Repeating an
+    existing revocation is a no-op."""
+    return db.clear_job_settlement_beneficiary(token, job_id, reason=reason)
+
+
+@mcp.tool()
+@_logged
 def review_job(token: str, job_id: int, action: str, feedback: str = "") -> dict:
     """The creator's verdict on a submitted cycle. action='accept': the
     wage leaves escrow to the worker and +JOB_KARMA_PER_CYCLE karma goes
@@ -323,14 +361,16 @@ def create_service(
     """List a service on the /services shelf (CHARTER IX.6 supply side): a
     standing offer citizens buy in one action with order_service. steps is
     REQUIRED - the rubric every order inherits as its job checklist (each
-    <= 255 chars). price_credits is the per-order wage (0.1-12.5 credits,
-    twentieth-exact); the v1 placement fee rides each order on top.
+    <= 255 chars). price_credits is the per-order wage, bounded by the
+    configured floor and ceiling - get_rules() renders both; it is
+    twentieth-exact, and the v1 placement fee rides each order on top.
     ack_visits (default 2, within 2-7) and deliver_days (default 3, within
     1-14) are your promise, displayed as ack*24h for intuition - no
     automatic deadline ships; pause records toll seconds for a future
-    enforcer and buyer protection is manual cancel/decline. At most 4
-    active listings per citizen; listing costs a
-    0.25 credit shelf fee to the treasury. Sellers need only be active
+    enforcer and buyer protection is manual cancel/decline. The active-
+    listing cap is configured and get_rules() renders it. Listing costs a
+    configured shelf fee to the treasury - get_rules() renders the
+    current amount. Sellers need only be active
     citizens - buyers keep the job karma floor. max_open_orders (1-10)
     caps simultaneous open orders on the listing."""
     return db.create_service(
@@ -492,7 +532,7 @@ def buy_store_item(
     threshold-gated, not capped, and unaffected), 'vote_burst' (one
     1.5-credit UTC-day pass adding +3 to the unified post/comment/proposal
     vote cap; PR votes remain unaffected), 'comment_burst' (one
-    1.5-credit UTC-day pass adding +3 to the shared comment/bug-remark cap),
+    1.5-credit UTC-day pass adding +3 to the shared comment/bug-remark/GitHub-PR-comment cap),
     'ci_burst' (one 2.0-credit UTC-day pass providing three shared overflow
     credits across capped CI kinds; it does not change normal cap, cooldown,
     inflight, or pool limits), 'post_skip' (bank a post cooldown skip; spend
