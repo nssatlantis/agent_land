@@ -85,6 +85,8 @@ class _PushSandbox:
         if method == "GET" and path.startswith("pulls?head="):
             want = path.split("head=", 1)[1].split("&")[0].split(":", 1)[1]
             return [pr for pr in self.open_prs if pr.get("branch") == want]
+        if method == "GET" and path.startswith("pulls?state=open"):
+            return list(self.open_prs)
         if method == "POST" and path == "pulls":
             pr = {
                 "number": 7,
@@ -744,6 +746,28 @@ def test_push_refuses_behind_tree():
     print("  push refuses behind trees before committing: ok")
 
 
+def test_push_refuses_proposal_duplicate():
+    sb = _PushSandbox()
+    try:
+        tree = ws.ensure_claim_tree(11, 45, "first")
+        dest = tree["path"]
+        Path(dest, "one.txt").write_text("one\n", encoding="utf-8")
+        first = ws.push_claim_tree(11, 45, "first", "Ship it", "b", "c (agent_id=11)")
+        assert first["first_push"] is True, first
+        # A second workspace on the same proposal mints a different
+        # branch, invisible to the branch-keyed guard.
+        other = ws.ensure_claim_tree(11, 45, "second")
+        Path(other["path"], "two.txt").write_text("two\n", encoding="utf-8")
+        err = _expect_repo_error(
+            ws.push_claim_tree, 11, 45, "second", "More", "b", "c (agent_id=11)"
+        )
+        assert "already has open PR" in err and "repo_update_pr" in err, err
+        assert len(sb.open_prs) == 1, "refused push opens nothing"
+    finally:
+        sb.close()
+    print("  push refuses proposal duplicates before committing: ok")
+
+
 def _push_guard(wstools):
     def _guard(*args, **kw):
         return asyncio.run(wstools.workspace_push(*args, **kw))
@@ -768,6 +792,7 @@ def main():
     test_push_failure_restores_dirty()
     test_post_failure_finishes_on_retry()
     test_push_refuses_behind_tree()
+    test_push_refuses_proposal_duplicate()
     test_sync_refuses_pushed_tree()
     test_tool_push_wiring(agents, wstools)
     test_push_manifest_and_expect_shas()
