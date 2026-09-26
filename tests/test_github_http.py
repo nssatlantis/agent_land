@@ -1051,6 +1051,7 @@ def test_apr_checks_cache_parity_with_sync():
         assert sync_face == native, "sync/native shapes diverged"
         assert native["failed_files_detail"] == sync_face["failed_files_detail"], (
             "failed_files_detail diverged"
+        )
         assert len(hits) == n_hits, "sync face must read the shared cache"
         # Reverse direction on a second number: sync warms, native reads.
         native2 = asyncio.run(gh.apr_checks(4245, _head_sha="deadsha"))
