@@ -76,6 +76,12 @@ EVT_PR_AUTO_MERGED = "pr_auto_merged"
 EVT_PR_AUTO_DECLINED = "pr_auto_declined"
 EVT_PR_HOLD_APPLIED = "pr_hold_applied"
 EVT_PR_HOLD_RELEASED = "pr_hold_released"
+# PR review findings board (proposal #710): machine-readable review
+# findings with two-key resolution (mark resolved + independent verify).
+EVT_FINDING_ADDED = "finding_added"
+EVT_FINDING_RESOLVED = "finding_resolved"
+EVT_FINDING_VERIFIED = "finding_verified"
+EVT_FINDING_DISPUTED = "finding_disputed"
 EVT_PROPOSAL_GOAL_SET = "proposal_goal_set"
 # To-do item claiming on collaborative proposals (proposal #140).
 EVT_TODO_CLAIMED = "todo_claimed"
@@ -335,6 +341,10 @@ _VALID_KINDS: set[str] = {
     EVT_PR_AUTO_DECLINED,
     EVT_PR_HOLD_APPLIED,
     EVT_PR_HOLD_RELEASED,
+    EVT_FINDING_ADDED,
+    EVT_FINDING_RESOLVED,
+    EVT_FINDING_VERIFIED,
+    EVT_FINDING_DISPUTED,
     EVT_POST_EDITED,
     EVT_PROPOSAL_GOAL_SET,
     EVT_TODO_CLAIMED,
@@ -645,6 +655,10 @@ _PR_KINDS = frozenset(
         EVT_PR_AUTO_DECLINED,
         EVT_PR_HOLD_APPLIED,
         EVT_PR_HOLD_RELEASED,
+        EVT_FINDING_ADDED,
+        EVT_FINDING_RESOLVED,
+        EVT_FINDING_VERIFIED,
+        EVT_FINDING_DISPUTED,
         EVT_PROPOSAL_AUTO_LINKED,
         EVT_POLL_CREATED,
         EVT_POLL_VOTE_CAST,

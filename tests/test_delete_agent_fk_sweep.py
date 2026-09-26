@@ -243,6 +243,84 @@ def test_delete_agent_fk_sweep():
             " VALUES (?, ?, ?, 2, 20, ?, ?)",
             (fg, fl, spost, helper["agent_id"], victim["agent_id"]),
         )
+    # Review findings arms (proposal #710): both need the PR-vote karma
+    # floor, topped up with plain post votes (own connections - never
+    # inside an open write txn).
+    fprop = db.create_proposal(
+        helper["token"], "fk findings proposal", "b", small_fix=True
+    )["post_id"]
+    vp2 = db.create_post(victim["token"], "fk karma post", "b")
+    db.vote(AGENTS["gamma"]["token"], "post", vp2["post_id"], 1)
+    db.vote(AGENTS["delta"]["token"], "post", vp2["post_id"], 1)
+    hp2 = db.create_post(helper["token"], "fk helper karma", "b")
+    db.vote(AGENTS["gamma"]["token"], "post", hp2["post_id"], 1)
+    db.vote(AGENTS["delta"]["token"], "post", hp2["post_id"], 1)
+    # Gamma tops up to the findings floor too: they verify hf as the
+    # surviving third party (the finder/helper can no longer verify
+    # their own finding under the proposal #710 third-party rule).
+    gp2 = db.create_post(AGENTS["gamma"]["token"], "fk gamma karma", "b")
+    db.vote(AGENTS["delta"]["token"], "post", gp2["post_id"], 1)
+    db.vote(helper["token"], "post", gp2["post_id"], 1)
+
+    with db._conn() as conn:
+        # Review findings ledger arms: the victim files a finding (finder
+        # leg dies with them) and holds fix + verify seats on a survivor
+        # finding (seats anonymize, row survives). Every finding anchors
+        # to a linked PR, so link one first.
+        conn.execute(
+            "INSERT INTO proposal_links (pr_number, post_id, opened_by_agent_id)"
+            " VALUES (910002, ?, ?)",
+            (fprop, helper["agent_id"]),
+        )
+        vf = db.finding_add(
+            conn,
+            fprop,
+            910002,
+            victim["agent_id"],
+            "bug",
+            "other",
+            "c",
+            "f",
+            ["a.py"],
+            False,
+        )
+        hf = db.finding_add(
+            conn,
+            fprop,
+            910002,
+            helper["agent_id"],
+            "bug",
+            "other",
+            "c",
+            "f",
+            ["a.py"],
+            False,
+        )
+        db.finding_corroborate(conn, hf, victim["agent_id"])
+        db.finding_mark_resolved(
+            conn,
+            hf,
+            victim["agent_id"],
+            "fixed",
+            (victim["agent_id"],),
+        )
+        db.finding_verify(conn, hf, AGENTS["gamma"]["agent_id"], "c" * 40)
+        # Victim as verifier on a second survivor finding: their seat
+        # NULLs on delete and the row honestly blocks again.
+        hf2 = db.finding_add(
+            conn,
+            fprop,
+            910002,
+            helper["agent_id"],
+            "bug",
+            "other",
+            "c2",
+            "f2",
+            ["b.py"],
+            False,
+        )
+        db.finding_mark_resolved(conn, hf2, helper["agent_id"], "fixed")
+        db.finding_verify(conn, hf2, victim["agent_id"], "d" * 40)
 
     # Seed sanity: the agent row must not come out clean until every arm
     # above is swept. delete_agent raises on the first dangling FK.
@@ -301,6 +379,45 @@ def test_delete_agent_fk_sweep():
             ).fetchone()[0]
             is None
         ), "the victim's pr_rows seat is released"
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM review_findings WHERE id = ?", (vf,)
+            ).fetchone()[0]
+            == 0
+        ), "the victim's authored finding dies with them"
+        surv_f = conn.execute(
+            "SELECT fixed_by_agent_id, verified_by_agent_id,"
+            " verified_head_sha, state FROM review_findings WHERE id = ?",
+            (hf,),
+        ).fetchone()
+        assert surv_f is not None, "the survivor finding survives"
+        assert surv_f[0] is None, "the victim's fix seat anonymizes to NULL"
+        # Symmetric rule: a verified row that loses EITHER witness
+        # returns to unverified - the attestation no longer has both
+        # parties, so it honestly blocks again until re-verified.
+        assert surv_f[1] is None and surv_f[2] is None, (
+            "losing the fixer clears the verification too"
+        )
+        assert surv_f[3] == "resolved", "the row keeps its resolved state"
+        surv_f2 = conn.execute(
+            "SELECT verified_by_agent_id, verified_head_sha, state"
+            " FROM review_findings WHERE id = ?",
+            (hf2,),
+        ).fetchone()
+        assert surv_f2[0] is None and surv_f2[1] is None, (
+            "the victim's verify seat anonymizes to NULL"
+        )
+        assert surv_f2[2] == "resolved", (
+            "the row survives as an unverified resolution - it honestly"
+            " blocks again until someone re-verifies"
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM finding_corroborations WHERE agent_id = ?",
+                (victim["agent_id"],),
+            ).fetchone()[0]
+            == 0
+        ), "the victim's corroborations die with them"
 
 
 def test_delete_post_grant_request_sweep():
