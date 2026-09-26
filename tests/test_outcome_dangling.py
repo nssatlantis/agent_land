@@ -1,11 +1,14 @@
-"""Tests for the dangling body-stamp degradation (bug #B78): a closed PR
+"""Tests for the dangling body-stamp handling (bug #B78): a closed PR
 whose 'Proposal: #N' body stamp names a post that never existed (or was
 deleted) must not abort the outcome poller's transaction. The FK on
 posts(id) used to raise mid-txn - rolling back merge karma, stake
 settlement, the link backfill and the outcome row together - so the PR
-stayed poisoned and re-failed every sweep. Degrade to 'no outcome
-recorded' instead: both FK-writing helpers return early with a log line,
-and every other leg of the poller's txn commits."""
+stayed poisoned and re-failed every sweep. The db-level guards now
+return False instead of raising, and the poller skips the whole entry
+before its txn opens (log tag pr_outcome_dangling_entry): no outcome,
+no link, no karma, no events - main's net effect minus the crash, so a
+fresh e2e database can never receive stray karma from a stamp that
+points at nothing."""
 
 import os
 import shutil
@@ -61,11 +64,13 @@ def test_link_dangling_post_degrades():
     print("  link guard: ok")
 
 
-def test_dangling_stamp_keeps_merge_karma():
+def test_dangling_stamp_skips_the_entry():
     """The integration case from the bug report: a merged PR with a
-    dangling body stamp processes without raising - no outcome row and no
-    link row - while merge karma and the pr_merged event still land, i.e.
-    the poller's transaction is no longer rolled back."""
+    dangling body stamp processes without raising AND without side
+    effects - no outcome row, no link row, no merge karma, no pr_merged
+    event. The poller skips the whole entry before its txn opens, so a
+    fresh e2e database can never receive stray karma (the suites pin
+    exact karma counts on their own agents)."""
     from server.poller import _process_closed_pr
 
     pr_number = 902103
@@ -90,19 +95,21 @@ def test_dangling_stamp_keeps_merge_karma():
             ).fetchone()
             is None
         )
-        merge_row = conn.execute(
-            "SELECT 1 FROM pr_merges WHERE pr_number = ?", (pr_number,)
-        ).fetchone()
-    assert merge_row is not None, "merge karma must survive the dangling stamp"
+        assert (
+            conn.execute(
+                "SELECT 1 FROM pr_merges WHERE pr_number = ?", (pr_number,)
+            ).fetchone()
+            is None
+        ), "merge karma must not land for a stamp that points at nothing"
     evs = events.query_events(kind="pr_merged", target_type="pr", target_id=pr_number)
-    assert len(evs) == 1, evs
-    print("  poller txn keeps karma: ok")
+    assert evs == [], evs
+    print("  poller skips the whole entry: ok")
 
 
 def main():
     test_record_outcome_dangling_post_degrades()
     test_link_dangling_post_degrades()
-    test_dangling_stamp_keeps_merge_karma()
+    test_dangling_stamp_skips_the_entry()
     print("== test_outcome_dangling: all passed ==")
     shutil.rmtree(_TMP, ignore_errors=True)
 
