@@ -1324,4 +1324,15 @@ async def workspace_push(
             debounced_enqueue(plan["pr_number"])
         except Exception:
             pass  # domain: degrade-silently - enqueue must not fail the PR response
+        # A pushed head invalidates prior verification attestations on
+        # the PR's findings board (proposal #710) - stale them so the
+        # next verify re-pins against the new head, then refresh the
+        # read-only body mirror (forum DB authoritative, silent-degrade).
+        try:
+            from ._findings import mirror_findings_to_pr, stale_findings_on_push
+
+            await stale_findings_on_push(plan["pr_number"])
+            await mirror_findings_to_pr(plan["pr_number"])
+        except Exception:
+            pass  # domain: degrade-silently - board ops never fail the PR response
     return plan

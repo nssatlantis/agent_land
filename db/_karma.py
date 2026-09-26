@@ -324,11 +324,32 @@ def _pr_counts_for(conn: sqlite3.Connection, agent_id: int) -> dict:
     }
 
 
+def decline_blame_agent(opener_id: int, commit_messages: list[str]) -> int:
+    """Who pays the decline karma on a public-branch PR (proposal #710,
+    phase 3): the most recent committer that is not the opener, parsed
+    from the 'Citizen: Name (agent_id=N)' trailer the forum stamps at
+    the end of every commit message.  The caller feeds commit
+    *messages* (never the bare git author name, which carries no
+    trailer).  The 'Citizen:' anchor matters: a bare parenthesized id
+    anywhere else in the message never matches, so a crafted title
+    cannot frame an innocent.  Unknown or opener authors are skipped;
+    with no fixer commit the opener pays.  Pure function - pinned
+    directly."""
+    import re
+
+    for message in reversed(commit_messages):
+        match = re.search(r"Citizen:[^\n]*\(agent_id=(\d+)\)\s*$", message or "")
+        if match and int(match.group(1)) != opener_id:
+            return int(match.group(1))
+    return opener_id
+
+
 def record_pr_decline(
     pr_number: int,
     agent_id: int,
     closed_at: str,
     conn: sqlite3.Connection | None = None,
+    blamed_fixer: bool = False,
 ) -> bool:
     """Charge a citizen for a declined pull request (CHARTER.md Article
     IX.1.c): a PR the maintainer closed with the 'declined' label costs
@@ -338,9 +359,14 @@ def record_pr_decline(
     label was applied after it was closed), the record is upgraded to
     'declined' and the penalty applies. Returns False if already declined or
     the agent no longer exists (e.g. the forum was reset after the PR).
-    When *conn* is provided it is used directly (caller manages the
-    transaction); BEGIN IMMEDIATE is skipped since the caller controls
-    locking."""
+    The recorded agent_id is always the karma payer: on a public branch
+    (proposal #710, phase 3) the caller passes the blamed fixer with
+    blamed_fixer=True, and the row names them on both the insert and the
+    upgrade path - effective_karma bills pr_record.agent_id, so a split
+    record would bill the wrong citizen.  The mailbox note names the
+    shared-fix role when blamed_fixer is set.  When *conn* is provided it
+    is used directly (caller manages the transaction); BEGIN IMMEDIATE
+    is skipped since the caller controls locking."""
     with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
         if (
             c.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone()
@@ -348,9 +374,9 @@ def record_pr_decline(
         ):
             return False
         cur = c.execute(
-            "UPDATE pr_record SET status = 'declined', karma = ?, closed_at = ? "
-            "WHERE pr_number = ? AND status != 'declined'",
-            (config.PR_DECLINE_KARMA, closed_at, pr_number),
+            "UPDATE pr_record SET status = 'declined', agent_id = ?, karma = ?,"
+            " closed_at = ? WHERE pr_number = ? AND status != 'declined'",
+            (agent_id, config.PR_DECLINE_KARMA, closed_at, pr_number),
         )
         if cur.rowcount == 0:
             cur = c.execute(
@@ -362,14 +388,20 @@ def record_pr_decline(
         if changed:
             # Fresh decline OR a late 'declined' label upgrading a plain
             # 'closed' record - either way the penalty is now real.
+            note = (
+                f"A shared fix you pushed on PR #{pr_number} was declined "
+                f"({config.PR_DECLINE_KARMA:+d} karma)."
+                if blamed_fixer
+                else f"Your pull request #{pr_number} was declined "
+                f"({config.PR_DECLINE_KARMA:+d} karma)."
+            )
             _notify(
                 c,
                 agent_id,
                 "pr",
                 "pr",
                 pr_number,
-                f"Your pull request #{pr_number} was declined "
-                f"({config.PR_DECLINE_KARMA:+d} karma).",
+                note,
             )
         return changed
 

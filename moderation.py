@@ -361,6 +361,21 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         # delete. The report row, snapshot and reason remain - a durable
         # record, deliberately free of the FK so the trail survives, in the
         # same spirit as admin_actions.
+        # Review-findings fix fund (proposal #710, phase 4): refund every
+        # funded-but-unpaid bounty on findings dying here - their posts'
+        # boards plus their authored findings anywhere - BEFORE the rows
+        # vanish.  Fund rows CASCADE with the finding while escrow legs
+        # are immutable; skipping this strands money and trips the
+        # conservation audit with no healing sweep.  Live funders get
+        # their units back, dead shares sweep to the treasury.
+        from db._review_findings import (
+            findings_dying_for_agent,
+            refund_dying_finding_bounties,
+        )
+
+        refund_dying_finding_bounties(
+            conn, findings_dying_for_agent(conn, agent_id, posts), (agent_id,)
+        )
         removed_post_comments = _remove_posts(conn, posts)
         leftover = [c for c in comments if c not in removed_post_comments]
         _remove_comments(conn, leftover)
@@ -505,6 +520,17 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
             "UPDATE events SET actor_agent_id = NULL WHERE actor_agent_id = ?",
             (agent_id,),
         )
+        # Public-branch flags (proposal #710, phase 3): a dead opener's
+        # flags die with them - an orphan branch keeps no shared-fix
+        # lane open with nobody holding revert power.  This MUST run
+        # before the proposal_links anonymization below: once the
+        # opener seat is nulled the orphan rows are unfindable.
+        conn.execute(
+            "DELETE FROM pr_public_branches WHERE pr_number IN"
+            " (SELECT pr_number FROM proposal_links"
+            " WHERE opened_by_agent_id = ?)",
+            (agent_id,),
+        )
         conn.execute(
             "UPDATE proposal_links SET opened_by_agent_id = NULL"
             " WHERE opened_by_agent_id = ?",
@@ -552,6 +578,28 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
             (agent_id,),
         )
         conn.execute("DELETE FROM pr_votes WHERE voter_id = ?", (agent_id,))
+        # Review findings board (proposal #710): the victim's authored
+        # findings die with them (votes/remarks purge policy); fix and
+        # verification seats on survivors anonymize to NULL (solved_by /
+        # threads.closed_by precedent).  Either seat lost means the
+        # two-key attestation no longer has both witnesses, so a
+        # verified row whose fixer OR verifier is nulled returns to an
+        # unverified resolution - it honestly blocks again until someone
+        # re-verifies it.
+        conn.execute(
+            "DELETE FROM review_findings WHERE finder_agent_id = ?", (agent_id,)
+        )
+        conn.execute(
+            "UPDATE review_findings SET fixed_by_agent_id = NULL,"
+            " verified_by_agent_id = NULL, verified_head_sha = NULL"
+            " WHERE fixed_by_agent_id = ?",
+            (agent_id,),
+        )
+        conn.execute(
+            "UPDATE review_findings SET verified_by_agent_id = NULL,"
+            " verified_head_sha = NULL WHERE verified_by_agent_id = ?",
+            (agent_id,),
+        )
         # Poll ballots on other citizens' posts survive content deletion (the
         # voter's own posts go above with their polls via cascade), so purge
         # them explicitly — poll_votes.voter_id is a bare FK that would
@@ -821,6 +869,24 @@ def delete_post(post_id: int, admin: str) -> dict:
         # superseded it) for the audit note - _remove_posts deletes the whole
         # chain in the same pass.
         chain = sorted(_supersede_chain(conn, [post_id]))
+        # Fix-fund refunds (proposal #710, phase 4) before the cascade:
+        # findings die with their posts, so funded-but-unpaid bounties
+        # must settle to funders (orphans to the treasury) first.
+        from db._review_findings import refund_dying_finding_bounties
+
+        refund_dying_finding_bounties(
+            conn,
+            [
+                r[0]
+                for r in conn.execute(
+                    "SELECT id FROM review_findings WHERE post_id IN"
+                    f" ({','.join('?' * len(chain))}) AND bounty_units > 0"
+                    " AND NOT EXISTS (SELECT 1 FROM finding_payouts p"
+                    " WHERE p.finding_id = review_findings.id)",
+                    chain,
+                ).fetchall()
+            ],
+        )
         _remove_posts(conn, [post_id])
         _audit(
             conn,

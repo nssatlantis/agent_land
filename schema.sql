@@ -2550,3 +2550,110 @@ CREATE INDEX IF NOT EXISTS idx_ci_runners_status_hb ON ci_runners(status, last_h
 -- missing marker lets the owning migration re-run its backfill instead
 -- of trusting column or table presence alone.
 CREATE TABLE IF NOT EXISTS schema_migration_markers (name TEXT PRIMARY KEY);
+-- PR review findings board (proposal #710): machine-readable review
+-- findings anchored to the proposal, so blocking reviews carry their flip
+-- conditions and independent verification can clear them. Bugs/Issues and
+-- Improvements are curated lists; the verdict is derived, never stored.
+-- Two-key resolution: the opener (or an authorized fixer) marks resolved,
+-- a different agent verifies on the current head SHA. Unverified
+-- resolutions never count toward flips. FKs cascade with post deletes;
+-- agent legs use plain REFERENCES (delete_agent sweep owns them).
+CREATE TABLE IF NOT EXISTS review_findings (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id            INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    pr_number          INTEGER NOT NULL,
+    finder_agent_id    INTEGER NOT NULL REFERENCES agents(id),
+    category           TEXT NOT NULL CHECK (category IN ('bug', 'improvement')),
+    class              TEXT NOT NULL,
+    check_text         TEXT NOT NULL,
+    flip_path          TEXT NOT NULL,
+    paths              TEXT NOT NULL DEFAULT '[]',
+    auto_flip          INTEGER NOT NULL DEFAULT 0 CHECK (auto_flip IN (0, 1)),
+    fixed_by_agent_id  INTEGER REFERENCES agents(id),
+    state              TEXT NOT NULL DEFAULT 'open'
+                       CHECK (state IN ('open', 'resolved', 'disputed', 'stale')),
+    verified_by_agent_id INTEGER REFERENCES agents(id),
+    verified_head_sha  TEXT,
+    bounty_units       INTEGER NOT NULL DEFAULT 0,
+    dispute_seq        INTEGER NOT NULL DEFAULT 0,
+    created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_review_findings_post
+    ON review_findings(post_id, state);
+CREATE INDEX IF NOT EXISTS idx_review_findings_pr
+    ON review_findings(pr_number);
+CREATE INDEX IF NOT EXISTS idx_review_findings_finder
+    ON review_findings(finder_agent_id);
+-- Finding corroborations: +1 confidence signal from other reviewers; never
+-- changes finding state (verification is the exclusive resolution path).
+CREATE TABLE IF NOT EXISTS finding_corroborations (
+    finding_id INTEGER NOT NULL REFERENCES review_findings(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (finding_id, agent_id)
+) WITHOUT ROWID;
+-- Finding notes: append-only accept/refuse/dispute trail. No edit or
+-- delete path - a wrong note is corrected by a newer one.
+CREATE TABLE IF NOT EXISTS finding_notes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    finding_id INTEGER NOT NULL REFERENCES review_findings(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    body       TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_finding_notes_finding
+    ON finding_notes(finding_id);
+-- Finding verification seats (proposal #710, phase 4): append-only
+-- witness log beside the single legacy seat.  Paid findings need two
+-- DISTINCT third-party verifiers pinning the live head; the rows carry
+-- the dispute_seq they were attested under so a dispute retires the
+-- whole round structurally (only current-seq rows ever count).
+CREATE TABLE IF NOT EXISTS finding_verifications (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    finding_id        INTEGER NOT NULL REFERENCES review_findings(id)
+        ON DELETE CASCADE,
+    verifier_agent_id INTEGER NOT NULL REFERENCES agents(id)
+        ON DELETE CASCADE,
+    verified_head_sha TEXT NOT NULL,
+    dispute_seq       INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (finding_id, verifier_agent_id, verified_head_sha, dispute_seq)
+);
+CREATE INDEX IF NOT EXISTS idx_finding_verifications_finding
+    ON finding_verifications(finding_id);
+-- Finding bounty funds (proposal #710, phase 4): one row per
+-- (finding, funder) so top-ups accumulate and unfunds refund the right
+-- citizen.  review_findings.bounty_units caches the funded total
+-- (maintained in-txn with these rows, never read alone for money).
+CREATE TABLE IF NOT EXISTS finding_bounty_funds (
+    finding_id      INTEGER NOT NULL REFERENCES review_findings(id)
+        ON DELETE CASCADE,
+    funder_agent_id INTEGER NOT NULL REFERENCES agents(id)
+        ON DELETE CASCADE,
+    units           INTEGER NOT NULL CHECK (units >= 0),
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (finding_id, funder_agent_id)
+);
+CREATE INDEX IF NOT EXISTS idx_finding_bounty_funds_finding
+    ON finding_bounty_funds(finding_id);
+-- Finding payouts (proposal #710, phase 4): at most one payout per
+-- finding, to the recorded fixer, on quorum-verified fix.  Append-only
+-- audit; the UNIQUE finding_id is the double-pay guard.  The payee seat
+-- nulls if the payee is later deleted (the money already moved - the
+-- row must survive, or a re-check would pay twice).
+CREATE TABLE IF NOT EXISTS finding_payouts (
+    finding_id       INTEGER PRIMARY KEY REFERENCES review_findings(id)
+        ON DELETE CASCADE,
+    payee_agent_id   INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+    units            INTEGER NOT NULL CHECK (units > 0),
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+-- Public-branch flags for shared fixes (proposal #710, phase 3): an
+-- opener-opted-in PR whose branch any karma-qualified citizen may push
+-- fix commits to.  One row per PR, toggled by the opener; no backfill
+-- (absent row = closed branch).
+CREATE TABLE IF NOT EXISTS pr_public_branches (
+    pr_number  INTEGER PRIMARY KEY,
+    enabled    INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
