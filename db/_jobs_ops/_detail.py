@@ -49,6 +49,65 @@ def _service_terms_of(job: sqlite3.Row) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _settlement_declarations(
+    conn: sqlite3.Connection, job_ids: list[int]
+) -> dict[int, list[dict]]:
+    if not job_ids:
+        return {}
+    marks = ",".join("?" * len(job_ids))
+    rows = conn.execute(
+        "SELECT b.id, b.job_id, b.cycle_no, b.beneficiary_agent_id,"
+        " b.declared_by_agent_id, b.reason, b.created_at,"
+        " ba.name AS beneficiary_name, da.name AS declared_by_name"
+        " FROM job_settlement_beneficiaries b"
+        " LEFT JOIN agents ba ON ba.id = b.beneficiary_agent_id"
+        " LEFT JOIN agents da ON da.id = b.declared_by_agent_id"
+        f" WHERE b.job_id IN ({marks}) ORDER BY b.job_id, b.cycle_no, b.id",
+        job_ids,
+    ).fetchall()
+    grouped: dict[int, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(int(row["job_id"]), []).append(
+            {
+                "id": int(row["id"]),
+                "cycle_no": int(row["cycle_no"]),
+                "beneficiary_agent_id": int(row["beneficiary_agent_id"]),
+                "beneficiary_name": row["beneficiary_name"],
+                "declared_by_agent_id": int(row["declared_by_agent_id"]),
+                "declared_by_name": row["declared_by_name"],
+                "reason": row["reason"],
+                "created_at": row["created_at"],
+            }
+        )
+    return grouped
+
+
+def _attach_settlement_beneficiaries(
+    worker_id: int | None,
+    cycles: list[dict],
+    declarations: list[dict],
+) -> None:
+    by_cycle: dict[int, list[dict]] = {}
+    for declaration in declarations:
+        by_cycle.setdefault(int(declaration["cycle_no"]), []).append(declaration)
+    for cycle in cycles:
+        history = by_cycle.get(int(cycle["cycle_no"]), [])
+        authorized = (
+            [
+                declaration
+                for declaration in history
+                if worker_id is not None
+                and declaration["declared_by_agent_id"] == worker_id
+            ]
+            if worker_id is not None
+            else []
+        )
+        cycle["settlement_beneficiary_agent_id"] = (
+            authorized[-1]["beneficiary_agent_id"] if authorized else worker_id
+        )
+        cycle["settlement_beneficiary_declarations"] = history
+
+
 def _attach_party_skills(conn: sqlite3.Connection, details: dict[int, dict]) -> None:
     """Stamp `skills` into each detail's creator/worker/offered_to party
     dicts (one batched IN query per call) so hirers read skill signal
@@ -194,7 +253,7 @@ def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
     cycles = []
     for r in conn.execute(
         "SELECT cycle_no, opens_at, status, evidence, evidence_pr_numbers,"
-        " evidence_pr_shas, feedback, submitted_at, decided_at"
+        " evidence_pr_shas, feedback, submitted_at, decided_at, paid_agent_id"
         " FROM job_cycles WHERE job_id = ? ORDER BY cycle_no",
         (job_id,),
     ).fetchall():
@@ -210,8 +269,11 @@ def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
                 "feedback": r["feedback"],
                 "submitted_at": r["submitted_at"],
                 "decided_at": r["decided_at"],
+                "paid_agent_id": r["paid_agent_id"],
             }
         )
+    declarations = _settlement_declarations(conn, [job_id]).get(job_id, [])
+    _attach_settlement_beneficiaries(job["worker_agent_id"], cycles, declarations)
     detail = _job_detail_from_parts(
         job, steps, cycles, job_overdue_cutoff(hours=_cadence_hours(job))
     )
@@ -264,7 +326,7 @@ def _job_details_batch(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int
         for r in conn.execute(
             "SELECT job_id, cycle_no, opens_at, status, evidence,"
             " evidence_pr_numbers, evidence_pr_shas, feedback,"
-            " submitted_at, decided_at"
+            " submitted_at, decided_at, paid_agent_id"
             f" FROM job_cycles WHERE job_id IN ({marks})"
             " ORDER BY job_id, cycle_no",
             chunk,
@@ -281,14 +343,22 @@ def _job_details_batch(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int
                     "feedback": r["feedback"],
                     "submitted_at": r["submitted_at"],
                     "decided_at": r["decided_at"],
+                    "paid_agent_id": r["paid_agent_id"],
                 }
             )
+        declarations_by_job = _settlement_declarations(conn, chunk)
         for r in job_rows:
             jid = r["id"]
+            job_cycles = cycles_by_job.get(jid, [])
+            _attach_settlement_beneficiaries(
+                r["worker_agent_id"],
+                job_cycles,
+                declarations_by_job.get(jid, []),
+            )
             details[jid] = _job_detail_from_parts(
                 r,
                 steps_by_job.get(jid, []),
-                cycles_by_job.get(jid, []),
+                job_cycles,
                 job_overdue_cutoff(hours=_cadence_hours(r)),
             )
         _attach_party_skills(conn, details)

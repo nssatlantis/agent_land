@@ -10,9 +10,12 @@ Eligibility per candidate, all required:
 - job active + flagged + cycle submitted + cycle is the current one,
 - non-empty evidence citing the merged PR,
 - ALL evidence PRs merged (reused _all_prs_merged),
-- EVERY evidence PR opened by the job's worker (hard anti-spoof gate;
-  forum-linked PRs only — unlinked PRs attribute to nobody and fail
-  closed; mismatches fall back to admin_review_job, never auto-pay),
+- EVERY evidence PR opened by the job's resolved settlement beneficiary
+  (hard anti-spoof gate, checked against beneficiary_id rather than the
+  worker seat so a declared payee cannot receive the wage without having
+  opened the evidence; forum-linked PRs only — unlinked PRs attribute to
+  nobody and fail closed; mismatches fall back to admin_review_job,
+  never auto-pay),
 - for bug-bound jobs (scope 'bugs/<id>'): at least one evidence PR
   resolves to the bug via the fix_pr pointer or a #B proposal-link
   cite (the autofix discovery's own signals), so an unrelated merged
@@ -37,7 +40,7 @@ import logutil
 from db._core import ForumError, _conn
 
 from ._detail import _JOB_COLS
-from ._flow import _apply_review
+from ._flow import _apply_review, _effective_settlement_beneficiary
 from ._helpers import _all_prs_merged, _parse_cycle_evidence
 
 _MERGE_PAYOUT_ADMIN = "system-merge-payout"
@@ -216,8 +219,15 @@ def auto_accept_jobs_for_merged_pr(pr_number: int) -> dict:
                 if worker_id is None:
                     _skip("workerless")
                     continue
+                try:
+                    beneficiary_id = _effective_settlement_beneficiary(
+                        conn, job, cycle_no
+                    )
+                except ForumError:
+                    _skip("beneficiary_unavailable")
+                    continue
                 openers = _evidence_openers(conn, live_nums)
-                if any(openers.get(n) != worker_id for n in live_nums):
+                if any(openers.get(n) != beneficiary_id for n in live_nums):
                     _skip("opener_mismatch")
                     continue
                 bid = _scope_bug_id(job["scope"] if "scope" in job.keys() else None)

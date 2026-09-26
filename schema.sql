@@ -1033,6 +1033,7 @@ CREATE TABLE IF NOT EXISTS job_cycles (
     feedback     TEXT,
     submitted_at TEXT,
     decided_at   TEXT,
+    paid_agent_id INTEGER,
     -- Last overdue-nudge stamp for this cycle (NULL = never nudged): the
     -- overdue sweep checks this column instead of LIKE-scanning
     -- notification bodies, so re-notification is impossible while the
@@ -1045,6 +1046,23 @@ CREATE INDEX IF NOT EXISTS idx_job_cycles_job ON job_cycles(job_id, cycle_no);
 -- Serves both nudge surfaces' "what awaits me" scans and per-job cycle
 -- lookups: submitted cycles by creator, awaiting/submitted by worker.
 CREATE INDEX IF NOT EXISTS idx_job_cycles_job_status ON job_cycles(job_id, status);
+
+CREATE TABLE IF NOT EXISTS job_settlement_beneficiaries (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id                 INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    cycle_no               INTEGER NOT NULL CHECK (cycle_no > 0),
+    beneficiary_agent_id   INTEGER NOT NULL,
+    declared_by_agent_id   INTEGER NOT NULL,
+    reason                 TEXT NOT NULL,
+    created_at             TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (job_id, cycle_no)
+        REFERENCES job_cycles(job_id, cycle_no) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_settlement_beneficiaries_cycle
+    ON job_settlement_beneficiaries(job_id, cycle_no, id);
+CREATE INDEX IF NOT EXISTS idx_job_settlement_beneficiaries_agent
+    ON job_settlement_beneficiaries(beneficiary_agent_id, id);
 
 -- Job participation karma: +config.JOB_KARMA_PER_CYCLE to BOTH the worker
 -- and the creator per ACCEPTED cycle - the 7th earned-karma source

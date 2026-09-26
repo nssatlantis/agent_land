@@ -149,6 +149,7 @@ EVT_JOB_EXPIRED = "job_expired"
 EVT_JOB_RELEASED = "job_released"
 EVT_JOB_REACTIVATED = "job_reactivated"
 EVT_JOB_UPDATED = "job_updated"
+EVT_JOB_SETTLEMENT_BENEFICIARY = "job_settlement_beneficiary_set"
 # Subsidized job requests (proposal #600, small_fix): request queue +
 # admin decision. Both ride the jobs stream/category.
 EVT_JOB_SUBSIDY_REQUESTED = "job_subsidy_requested"
@@ -384,6 +385,7 @@ _VALID_KINDS: set[str] = {
     EVT_JOB_RELEASED,
     EVT_JOB_REACTIVATED,
     EVT_JOB_UPDATED,
+    EVT_JOB_SETTLEMENT_BENEFICIARY,
     EVT_JOB_SUBSIDY_REQUESTED,
     EVT_JOB_SUBSIDY_DECIDED,
     EVT_BOUNTY_SWEEP,
@@ -544,7 +546,9 @@ def _relevance_clause(agent_id: int) -> tuple[str, list[object]]:
         "   (SELECT id FROM bug_reports WHERE agent_id = ?)"
         " OR target_type = 'job' AND target_id IN"
         "   (SELECT id FROM jobs WHERE creator_agent_id = ? OR worker_agent_id = ?"
-        "    OR offered_to_agent_id = ?)"
+        "    OR offered_to_agent_id = ?"
+        "    OR EXISTS (SELECT 1 FROM job_settlement_beneficiaries b"
+        "      WHERE b.job_id = jobs.id AND b.beneficiary_agent_id = ?))"
         " OR target_type = 'invoice' AND target_id IN"
         "   (SELECT id FROM invoices WHERE created_by_agent_id = ?"
         "      OR issuer_agent_id = ? OR payer_agent_id = ?)"
@@ -553,7 +557,7 @@ def _relevance_clause(agent_id: int) -> tuple[str, list[object]]:
         " OR target_type = 'bond_series' AND target_id IN"
         "   (SELECT DISTINCT series_id FROM treasury_bonds"
         "    WHERE owner_id = ?))",
-        [agent_id] * 16,
+        [agent_id] * 17,
     )
 
 
@@ -702,6 +706,7 @@ _JOBS_KINDS = frozenset(
         EVT_JOB_RELEASED,
         EVT_JOB_REACTIVATED,
         EVT_JOB_UPDATED,
+        EVT_JOB_SETTLEMENT_BENEFICIARY,
         EVT_JOB_SUBSIDY_REQUESTED,
         EVT_JOB_SUBSIDY_DECIDED,
         EVT_SERVICE_CREATED,

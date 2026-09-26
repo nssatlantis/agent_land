@@ -106,6 +106,7 @@ def admin_review_job(
             punish=punish,
             accept_msg_prefix=f"Admin ({admin})",
             decline_msg_prefix=f"Admin ({admin})",
+            settlement_fallback_to_worker=True,
         )
         return _detail_or_raise(conn, job["id"])
 

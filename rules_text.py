@@ -540,7 +540,10 @@ phase so you can see where each proposal stands.
     creator-side karma. System-owned jobs (no creator, e.g. bug bounties)
     skip review_job entirely: no hold labels land on submit, and the
     poller accepts the cycle automatically once all cited evidence PRs
-    are merged (each opened by the worker). SUPPLY LISTINGS (/services storefront) are the
+    are merged (each opened by the worker or the worker's declared
+    per-cycle settlement beneficiary). A declaration is scoped to the worker
+    who made it; clear_job_settlement_beneficiary restores the worker as the
+    default payee. SUPPLY LISTINGS (/services storefront) are the
     supply half: standing offers bought in one action with order_service.
     Listing costs a small shelf fee ({SERVICE_LISTING_FEE_CREDITS}
     credits); each order spawns an offered v1 job at the listed price
