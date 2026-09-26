@@ -1218,20 +1218,23 @@ def test_run_checks_bench_overflow_passes_allow_remote():
 def test_run_checks_rehearsal_remote_first_gate():
     """Rehearsal remote-first: a pre-push overlay (files) prefers a healthy
     runner BEFORE the local slot, and the payload actually carries the
-    overlay. Branch and named-tree runs stay host-local even with the knob on.
+    overlay. Branch, named-tree and static runs stay host-local even with the
+    knob on.
 
     The payload assertions are the load-bearing part: len(calls) == 1 alone
     also passes against the pre-change gate, which hardcoded files=None.
 
-    ONE dispatch per test, deliberately. pick_runner reserves an active-run
-    slot that only the real dispatch_to_runner releases (in its finally), so
-    a stubbed dispatcher must release itself - a second dispatch in the same
-    test is a distinct accounting path with no coverage today.
+    Every arm booby-traps the tree-prep function its OWN local path calls, so
+    no arm performs live git or GitHub I/O and "fell through to local" is
+    observable rather than silent. The stub has to match the arm: the files
+    path goes through _prepare_local_tree, a branch run through
+    _prepare_pr_tree, a named tree through _prepare_named_tree.
+    _prepare_tree is the NATIVE path only and is deliberately not stubbed
+    here (the native test owns it).
 
     CI_RUN_BRANCH_ENABLED and _docker_available are stubbed because the
     local_mode preconditions in run_checks are checked BEFORE the
-    remote-first gate - without them this measures the host, not the gate
-    (and fails in any sandbox without docker)."""
+    remote-first gate - without them this measures the host, not the gate."""
     from server.ci_runner import _runs as runs_mod
 
     row = farm.register_runner("rf-files", "http://x", token="t")
@@ -1241,12 +1244,14 @@ def test_run_checks_rehearsal_remote_first_gate():
     remote = {
         "checks": "tests",
         "mode": "local",
+        "local": True,
         "sandboxed": True,
         "ok": True,
         "timed_out": False,
         "exit_code": 0,
         "duration_seconds": 120.0,
         "head_sha": "abc123",
+        "base_sha": "def456",
         "output_tail": "ok",
         "summary": {"tests_run": True},
     }
@@ -1271,11 +1276,13 @@ def test_run_checks_rehearsal_remote_first_gate():
     def _ok_slot(*a, **k):
         return {"id": 1}
 
-    def _fail_prepare(*a, **k):
-        raise db.ForumError("no docker")
+    def _boom(*a, **k):
+        raise db.ForumError("local tree prep reached")
 
     orig_acquire = runs_mod._slots_mod._ci_acquire_slot
-    orig_prepare = runs_mod._trees_mod._prepare_tree
+    orig_local = runs_mod._trees_mod._prepare_local_tree
+    orig_pr = runs_mod._trees_mod._prepare_pr_tree
+    orig_named = runs_mod._trees_mod._prepare_named_tree
     orig_vtn = runs_mod._trees_mod._validate_tree_name
     orig_docker = runs_mod._sandbox_mod._docker_available
     runs_mod._sandbox_mod._docker_available = lambda: True
@@ -1286,54 +1293,60 @@ def test_run_checks_rehearsal_remote_first_gate():
     config.CI_FARM_ENABLED = True
     config.CI_RUN_BRANCH_ENABLED = True
     overlay = [{"path": "x.py", "content": "print(1)"}]
+
+    def _run(**kw):
+        """One run_checks call with every local tree-prep path booby-trapped.
+
+        Returns (result, exc) - exactly one is None. The negative arms expect
+        exc (they fell through to local); the positive arm expects a result.
+        """
+        calls.clear()
+        runs_mod._slots_mod._ci_acquire_slot = _ok_slot
+        runs_mod._trees_mod._prepare_local_tree = _boom
+        runs_mod._trees_mod._prepare_pr_tree = _boom
+        runs_mod._trees_mod._prepare_named_tree = _boom
+        try:
+            return runs_mod.run_checks(agent_id=1, name="t", **kw), None
+        except Exception as exc:
+            return None, exc
+
     try:
         config.CI_FARM_TEST_REMOTE_FIRST = True
 
-        # 1. pre-push overlay dispatches and the payload carries the overlay
-        calls.clear()
-        runs_mod._slots_mod._ci_acquire_slot = _ok_slot
-        runs_mod._trees_mod._prepare_tree = _fail_prepare
-        try:
-            result = runs_mod.run_checks(
-                agent_id=1, name="t", checks="tests", files=overlay
-            )
-        except Exception as exc:
-            raise AssertionError(
-                f"files: local path leaked past slot; gate must dispatch, got {exc!r}"
-            ) from exc
+        # 1. pre-push overlay dispatches; the payload carries the overlay
+        result, exc = _run(checks="tests", files=overlay)
+        assert exc is None, (
+            f"files: local path reached; gate must dispatch, got {exc!r}"
+        )
         assert result["runner"] == "rf-files", result
         assert len(calls) == 1, f"files: 1 dispatch, got {len(calls)}"
         payload = calls[0][1]
         assert payload["mode"] == "local", payload
         assert payload["files"] == overlay, payload
+        # a local-mode dispatch reports local provenance for the ledger
+        assert remote["local"] is True and remote["base_sha"] == "def456", remote
 
         # 2. branch mode stays host-local even with the knob on
-        calls.clear()
-        runs_mod._slots_mod._ci_acquire_slot = _ok_slot
-        runs_mod._trees_mod._prepare_tree = _fail_prepare
-        try:
-            runs_mod.run_checks(agent_id=1, name="t", checks="tests", pr_number=5)
-        except Exception:
-            pass
+        _run(checks="tests", pr_number=5)
         assert len(calls) == 0, f"branch: no dispatch, got {len(calls)}"
 
-        # 3. a named tree stays host-local (name stubbed, no tree built)
-        calls.clear()
-        runs_mod._slots_mod._ci_acquire_slot = _ok_slot
-        runs_mod._trees_mod._prepare_tree = _fail_prepare
+        # 3. a named tree stays host-local (name stubbed, no tree is built)
         runs_mod._trees_mod._validate_tree_name = lambda name: name
-        try:
-            runs_mod.run_checks(agent_id=1, name="t", checks="tests", tree="pin-1")
-        except Exception:
-            pass
+        _run(checks="tests", tree="pin-1")
         assert len(calls) == 0, f"tree: no dispatch, got {len(calls)}"
+
+        # 4. a static overlay stays local too - the lane split is policy
+        _run(checks="static", files=overlay)
+        assert len(calls) == 0, f"static: no dispatch, got {len(calls)}"
     finally:
         runs_mod._gate = orig_gate
         config.CI_FARM_ENABLED = orig_enabled
         config.CI_FARM_TEST_REMOTE_FIRST = orig_test_first
         config.CI_RUN_BRANCH_ENABLED = orig_branch_enabled
         runs_mod._slots_mod._ci_acquire_slot = orig_acquire
-        runs_mod._trees_mod._prepare_tree = orig_prepare
+        runs_mod._trees_mod._prepare_local_tree = orig_local
+        runs_mod._trees_mod._prepare_pr_tree = orig_pr
+        runs_mod._trees_mod._prepare_named_tree = orig_named
         runs_mod._trees_mod._validate_tree_name = orig_vtn
         runs_mod._sandbox_mod._docker_available = orig_docker
         farm.dispatch_to_runner = orig_disp
