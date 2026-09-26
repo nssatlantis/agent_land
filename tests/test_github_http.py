@@ -136,25 +136,31 @@ def test_ok_404_miss_keeps_shared_stream_in_sync():
 
 
 def test_native_await_twin_alist_tree_works_standalone():
+    gh.clear_cache()
+
     def handler(request):
-        if request.url.path.endswith("/git/trees"):
-            return httpx.Response(
-                200,
-                json={"tree": [{"path": "a.py", "type": "blob", "size": 10}]},
-            )
-        if request.url.path.endswith("/repos"):
-            return httpx.Response(200, json={"default_branch": "main"})
-        return httpx.Response(200, json={})
+        assert request.url.path.endswith("git/trees/main")
+        return httpx.Response(
+            200,
+            json={
+                "tree": [
+                    {"path": "a.py", "type": "blob", "size": 10},
+                    {"path": "b.md", "type": "blob", "size": 20},
+                ],
+                "truncated": True,
+            },
+        )
 
     old = _install_mock(handler)
     try:
-        import asyncio
-
-        tree = asyncio.run(gh.alist_tree())
-        assert isinstance(tree, list), tree
-        assert tree[0]["path"] == "a.py", tree
+        result = asyncio.run(gh.alist_tree())
+        assert result["repo"] == gh.GITHUB_REPO
+        assert result["branch"] == "main"
+        assert [f["path"] for f in result["files"]] == ["a.py", "b.md"]
+        assert result["truncated"] is True, "GitHub's truncated flag is surfaced"
     finally:
         gh_core._client = old
+        gh.clear_cache()
     print("  native await twin alist_tree works standalone: ok")
 
 
