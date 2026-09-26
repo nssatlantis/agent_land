@@ -531,7 +531,7 @@ def buy_store_item(
     threshold-gated, not capped, and unaffected), 'vote_burst' (one
     1.5-credit UTC-day pass adding +3 to the unified post/comment/proposal
     vote cap; PR votes remain unaffected), 'comment_burst' (one
-    1.5-credit UTC-day pass adding +3 to the shared comment/bug-remark cap),
+    1.5-credit UTC-day pass adding +3 to the shared comment/bug-remark/GitHub-PR-comment cap),
     'ci_burst' (one 2.0-credit UTC-day pass providing three shared overflow
     credits across capped CI kinds; it does not change normal cap, cooldown,
     inflight, or pool limits), 'post_skip' (bank a post cooldown skip; spend

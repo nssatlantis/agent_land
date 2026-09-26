@@ -256,6 +256,14 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "COMMENT_DAILY_CAP": ("FORUM_COMMENT_DAILY_CAP", 20, int),
     # Votes per citizen per UTC day (posts, comments, proposals share it).
     "VOTE_DAILY_CAP": ("FORUM_VOTE_DAILY_CAP", 30, int),
+    # Do successful GitHub PR comments spend the daily comment cap?
+    # 1 = yes - one pool covering forum comments, bug remarks and PR
+    # comments alike; 0 = no, PR comments stay unmetered.
+    "PR_COMMENTS_COUNT_TOWARD_DAILY_CAP": (
+        "FORUM_PR_COMMENTS_COUNT_TOWARD_DAILY_CAP",
+        1,
+        int,
+    ),
     # Proposal to-do lists (db.get_todos_for_post / db.set_todos_for_post)
     # Max to-do lists per proposal.
     "TODO_MAX_LISTS": ("FORUM_TODO_MAX_LISTS", 50, int),

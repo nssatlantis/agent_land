@@ -34,6 +34,12 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
     with db._conn() as conn:
         db.require_active(token, conn)
         who = db.whoami(token, conn)
+        # Spend the shared daily comment budget BEFORE the GitHub call, so
+        # a citizen at the cap is refused without a half-written comment
+        # (proposal #750).  The charge itself lands only after the call
+        # returns, below - the cap is derived from rows, so a failed or
+        # refused comment writes nothing and needs no refund path.
+        db.enforce_daily_comment_cap(conn, who["agent_id"])
         agents_map = db._load_agents_map(conn)
         pid = db.proposal_for_pr(number, conn=conn)
         if pid is not None and not db.proposal_vote_state(pid, conn=conn)["approved"]:
@@ -70,6 +76,15 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
         else f"{body}\n\nCitizen: {who['name']} (agent_id={who['agent_id']})"
     )
     result = await github.acomment_on_pr(number, signed)
+    # The comment is live, so charge the budget now (proposal #750).
+    # Nothing above this line wrote a usage row.
+    if config.PR_COMMENTS_COUNT_TOWARD_DAILY_CAP:
+        with db._conn() as conn:
+            conn.execute(
+                "INSERT INTO pr_comment_usage"
+                " (agent_id, pr_number, github_comment_id) VALUES (?, ?, ?)",
+                (who["agent_id"], number, (result or {}).get("comment_id")),
+            )
     # Mark this in-band comment seen in the pr_comment_seen watermark so
     # server/poller.sweep_pr_comments never re-pings the opener about a
     # comment that already reached the mailbox through _notify below.
