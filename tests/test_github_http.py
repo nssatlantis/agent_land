@@ -510,6 +510,7 @@ def main():
     test_group_failures_by_file_actions_tier()
     test_group_failures_by_file_capped()
     test_group_failures_by_file_long_message_truncated()
+    test_pr_checks_failed_files_detail_end_to_end()
     print("test_github_http: all ok")
     return 0
 
@@ -1228,6 +1229,58 @@ def test_group_failures_by_file_long_message_truncated():
     detail = gh_checks._group_failures_by_file(failures)
     assert len(detail[0]["errors"][0]) == 200
     print("  group_failures_by_file truncates long messages: ok")
+
+
+def test_pr_checks_failed_files_detail_end_to_end():
+    """pr_checks wires failed_files_detail end-to-end: a pathed check-run
+    annotation is grouped under its collapsed path, and the message is
+    surfaced verbatim (no newlines in the input, so no collapse needed)."""
+    gh.clear_cache()
+
+    def handler(request):
+        path = request.url.path
+        if path.endswith("/check-runs"):
+            return httpx.Response(
+                200,
+                json={
+                    "check_runs": [
+                        {
+                            "id": 77,
+                            "name": "CI",
+                            "status": "completed",
+                            "conclusion": "failure",
+                            "html_url": "https://ci/run/77",
+                        }
+                    ]
+                },
+            )
+        if path.endswith("/check-runs/77/annotations"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "path": "  tests/test_x.py  ",
+                        "start_line": 42,
+                        "message": "AssertionError: expected 1 == 2",
+                    }
+                ],
+            )
+        return httpx.Response(200, json={})
+
+    old = _install_mock(handler)
+    try:
+        result = gh.pr_checks(4246, _head_sha="deadsha")
+        assert result["source"] == "check_runs", result["source"]
+        assert result["state"] == "failure", result["state"]
+        detail = result.get("failed_files_detail")
+        assert detail is not None, result
+        assert len(detail) == 1, detail
+        assert detail[0]["path"] == "tests/test_x.py", detail[0]
+        assert detail[0]["errors"] == ["AssertionError: expected 1 == 2"], detail[0]
+    finally:
+        gh_core._client = old
+        gh.clear_cache()
+    print("  pr_checks failed_files_detail end-to-end: ok")
 
 
 if __name__ == "__main__":
