@@ -332,6 +332,48 @@ async def repo_update_pr(
             },
         )
         if via_fixer_lane:
+            # Fixer roster (proposal #748): lane pushers resolve and
+            # dispute via fixer_ids.  Best-effort like the audit below -
+            # a missed row only narrows who may resolve, never fails
+            # the push.
+            try:
+                with db._conn() as _fc:
+                    db.record_pr_fixer(_fc, number, who["agent_id"])
+            except Exception:
+                pass  # domain: degrade-silently - roster never fails the update
+            # Fixer-push nudge (proposal #748): the branch just moved
+            # under everyone else holding it.  Best-effort like the
+            # audit below - a missed ping never fails the update.
+            try:
+                _nudge_pid = db.proposal_for_pr(number)
+                with db._conn() as _nc:
+                    _holders = (
+                        db.claim_holders_for_proposal(_nc, _nudge_pid)
+                        if _nudge_pid is not None
+                        else []
+                    )
+                    _nudge_opener = db.pr_opener(number, _nc)
+                _targets = set(_holders)
+                if _nudge_opener is not None:
+                    _targets.add(_nudge_opener["agent_id"])
+                _targets.discard(who["agent_id"])
+                if _targets:
+                    from notifications import _notify as _notify_nudge
+
+                    for _t in sorted(_targets):
+                        with db._conn() as _mc:
+                            _notify_nudge(
+                                _mc,
+                                _t,
+                                "pr",
+                                "pr",
+                                number,
+                                f"PR #{number} received a shared fix from"
+                                f" {who['name']} - release it and claim again"
+                                f" to rebase (read work out first if dirty)",
+                            )
+            except Exception:
+                pass  # domain: degrade-silently - nudge never fails the update
             # Race audit (proposal #710, phase 3): the flag/karma read
             # above ran before the network push, and no SQLite lock may
             # be held across that push - so an opener toggling the flag

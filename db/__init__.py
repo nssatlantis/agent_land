@@ -663,6 +663,8 @@ from db._proposal_todos import (  # noqa: F401
 from db._public_branch import (  # noqa: F401,E402
     check_fixer_eligible,
     is_public_branch,
+    pr_fixer_ids,
+    record_pr_fixer,
     set_public_branch,
 )
 
@@ -677,6 +679,7 @@ from db._review_findings import (  # noqa: F401,E402
     finding_dispute,
     finding_fund,
     finding_mark_resolved,
+    finding_object,
     finding_stale_all,
     finding_stale_on_push,
     finding_unfund,
@@ -869,6 +872,7 @@ from db._workspace_claims import (  # noqa: F401
     active_workspace_claims,
     active_workspace_counts,
     active_workspaces_for_proposal,
+    claim_holders_for_proposal,
     claim_workspace,
     get_workspace,
     get_workspace_for_release,

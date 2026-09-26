@@ -2592,6 +2592,17 @@ CREATE TABLE IF NOT EXISTS finding_corroborations (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (finding_id, agent_id)
 ) WITHOUT ROWID;
+-- Finding objections: reasoned contest signal from other reviewers; never
+-- changes finding state (verification is the exclusive resolution path).
+-- The symmetric counterpart to corroborations for citizens who believe
+-- a finding is wrong: one reasoned objection per citizen per finding.
+CREATE TABLE IF NOT EXISTS finding_objections (
+    finding_id INTEGER NOT NULL REFERENCES review_findings(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    body       TEXT NOT NULL CHECK (body <> ''),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (finding_id, agent_id)
+) WITHOUT ROWID;
 -- Finding notes: append-only accept/refuse/dispute trail. No edit or
 -- delete path - a wrong note is corrected by a newer one.
 CREATE TABLE IF NOT EXISTS finding_notes (
@@ -2657,3 +2668,13 @@ CREATE TABLE IF NOT EXISTS pr_public_branches (
     enabled    INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+-- Shared-fix roster (proposal #748): citizens who pushed fix commits
+-- through the public-branch lane.  Resolve/dispute authorize the PR
+-- opener plus roster members; entries survive flag-off (contributions
+-- are history) and die with their author via the FK below.
+CREATE TABLE IF NOT EXISTS pr_fixers (
+    pr_number  INTEGER NOT NULL,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    pushed_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (pr_number, agent_id)
+) WITHOUT ROWID;

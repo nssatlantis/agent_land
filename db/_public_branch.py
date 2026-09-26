@@ -61,3 +61,24 @@ def check_fixer_eligible(conn: sqlite3.Connection, agent_id: int) -> None:
     floor = int(config.MIN_KARMA_PR_VOTE)
     if effective_karma(conn, agent_id) < floor:
         raise ForumError(f"shared fixes require at least {floor} effective karma")
+
+
+def record_pr_fixer(conn: sqlite3.Connection, pr_number: int, agent_id: int) -> None:
+    """Record a lane push author on the PR roster (proposal #748).
+    Idempotent: re-pushes reaffirm.  Entries survive flag-off -
+    contributions are history - and die with their author via FK."""
+    conn.execute(
+        "INSERT OR IGNORE INTO pr_fixers (pr_number, agent_id) VALUES (?, ?)",
+        (pr_number, agent_id),
+    )
+
+
+def pr_fixer_ids(conn: sqlite3.Connection, pr_number: int) -> list[int]:
+    """Agent ids authorized as fixers on one PR (proposal #748): the
+    resolve/dispute tools pass these as fixer_ids."""
+    return [
+        r[0]
+        for r in conn.execute(
+            "SELECT agent_id FROM pr_fixers WHERE pr_number = ?", (pr_number,)
+        ).fetchall()
+    ]
