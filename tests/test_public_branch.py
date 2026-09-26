@@ -74,6 +74,17 @@ def main():
         assert db.is_public_branch(conn, 4301) is True
         assert db.set_public_branch(conn, 4301, alpha, False) is False
         assert db.is_public_branch(conn, 4301) is False
+        # Reflips re-stamp updated_at (audit trail for flag flaps).
+        conn.execute(
+            "UPDATE pr_public_branches SET updated_at = '2000-01-01T00:00:00.000Z'"
+            " WHERE pr_number = 4301"
+        )
+        assert db.set_public_branch(conn, 4301, alpha, True) is True
+        _ts = conn.execute(
+            "SELECT updated_at FROM pr_public_branches WHERE pr_number = 4301"
+        ).fetchone()[0]
+        assert _ts != "2000-01-01T00:00:00.000Z", "reflip re-stamps the row"
+        assert db.set_public_branch(conn, 4301, alpha, False) is False
         # --- fixer karma floor ------------------------------------------
         # (tests run with FORUM_MIN_KARMA_PR_VOTE=0; raise it like
         # test_pr_vote does to arm the floor, then restore.)
@@ -218,6 +229,29 @@ def main():
         assert pushed[0][2] == f"beta (agent_id={beta})", (
             "the fix commit carries the fixer's trailer, never the opener's"
         )
+        # Flag on, floor-broke fixer: refused at the tool path.
+        import os as _os2
+
+        _old_floor2 = _os2.environ.get("FORUM_MIN_KARMA_PR_VOTE")
+        _os2.environ["FORUM_MIN_KARMA_PR_VOTE"] = "2"
+        _n_pushed = len(pushed)
+        try:
+            err = asyncio.run(
+                _expect_tool_error(
+                    _ptools.repo_update_pr(
+                        broke["token"],
+                        4301,
+                        files=[{"path": "b.txt", "content": "hi"}],
+                    )
+                )
+            )
+        finally:
+            if _old_floor2 is None:
+                _os2.environ.pop("FORUM_MIN_KARMA_PR_VOTE", None)
+            else:
+                _os2.environ["FORUM_MIN_KARMA_PR_VOTE"] = _old_floor2
+        assert "at least" in err, err
+        assert len(pushed) == _n_pushed, "refused updates push nothing"
         # Flag on, title/body by a fixer: refused.
         err = asyncio.run(
             _expect_tool_error(
@@ -247,6 +281,34 @@ def main():
             )
         )
         assert "add or patch files only" in err, err
+        # Flag on, closed PR: the fixer lane refuses before any push.
+        async def _fake_aget_closed_full(number):
+            assert number == 4301
+            return {
+                "number": 4301,
+                "state": "closed",
+                "title": "t",
+                "body": f"Proposal: #{pid}\n\nCitizen: alpha (agent_id={alpha})",
+                "head": {"ref": "branch", "sha": "a" * 40},
+                "base": {"ref": "main", "sha": "b" * 40},
+            }
+
+        _n_pushed = len(pushed)
+        github.aget_pr = _fake_aget_closed_full
+        try:
+            err = asyncio.run(
+                _expect_tool_error(
+                    _ptools.repo_update_pr(
+                        agents["beta"]["token"],
+                        4301,
+                        files=[{"path": "a.txt", "content": "hi"}],
+                    )
+                )
+            )
+        finally:
+            github.aget_pr = _fake_aget
+        assert "not open" in err, err
+        assert len(pushed) == _n_pushed, "refused updates push nothing"
     finally:
         github.aget_pr = real_aget
         github.aupdate_pr = real_aupdate
@@ -329,6 +391,84 @@ def main():
         ).fetchone()
         assert rec is not None and rec["status"] == "declined", rec
         assert rec["agent_id"] == alpha, "deleted blamed falls back to the opener"
+
+    # --- closed-then-declined upgrade names the fixer --------------------
+    with db._conn() as conn:
+        _linked_pr(conn, 4305, pid, alpha)
+        db.set_public_branch(conn, 4305, alpha, True)
+        conn.execute(
+            "INSERT INTO pr_record (pr_number, agent_id, status, karma, closed_at)"
+            " VALUES (?, ?, 'closed', 0, ?)",
+            (4305, alpha, "2026-09-25T00:00:00.000Z"),
+        )
+        assert db.record_pr_decline(
+            4305, beta, "2026-09-25T00:00:00.000Z", conn=conn, blamed_fixer=True
+        ) is True
+        rec = conn.execute(
+            "SELECT agent_id, status FROM pr_record WHERE pr_number = 4305"
+        ).fetchone()
+        assert rec["agent_id"] == beta and rec["status"] == "declined", rec
+    # --- decline on a closed (non-public) branch bills the opener --------
+    with db._conn() as conn:
+        _linked_pr(conn, 4306, pid, alpha)
+    real_commits2 = github.pr_commits
+    github.pr_commits = lambda number: {
+        "commits": [
+            {
+                "sha": "e" * 40,
+                "message": f"opener work\n\nCitizen: alpha (agent_id={alpha})",
+                "author_name": "alpha",
+            },
+            {
+                "sha": "f" * 40,
+                "message": f"shared fix\n\nCitizen: beta (agent_id={beta})",
+                "author_name": "beta",
+            },
+        ]
+    }
+    try:
+        _process_closed_pr(
+            {
+                "number": 4306,
+                "declined": True,
+                "closed_at": "2026-09-25T00:00:00.000Z",
+                "citizen": {"name": "alpha", "agent_id": alpha},
+            }
+        )
+    finally:
+        github.pr_commits = real_commits2
+    with db._conn() as conn:
+        rec = conn.execute(
+            "SELECT agent_id, status FROM pr_record WHERE pr_number = 4306"
+        ).fetchone()
+        assert rec is not None and rec["status"] == "declined", rec
+        assert rec["agent_id"] == alpha, "flag off: opener pays"
+    # --- prefetch failure falls back to the opener -----------------------
+    with db._conn() as conn:
+        _linked_pr(conn, 4307, pid, alpha)
+        db.set_public_branch(conn, 4307, alpha, True)
+
+    def _boom_commits(number):
+        raise RuntimeError("github is down")
+
+    github.pr_commits = _boom_commits
+    try:
+        _process_closed_pr(
+            {
+                "number": 4307,
+                "declined": True,
+                "closed_at": "2026-09-25T00:00:00.000Z",
+                "citizen": {"name": "alpha", "agent_id": alpha},
+            }
+        )
+    finally:
+        github.pr_commits = real_commits
+    with db._conn() as conn:
+        rec = conn.execute(
+            "SELECT agent_id, status FROM pr_record WHERE pr_number = 4307"
+        ).fetchone()
+        assert rec is not None and rec["status"] == "declined", rec
+        assert rec["agent_id"] == alpha, "failed fetch: opener pays"
 
     # --- a dead opener's flags die with them ------------------------------
     doomed2 = db.register_agent("doomed-opener")
