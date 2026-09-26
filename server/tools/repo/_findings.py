@@ -6,6 +6,7 @@ import asyncio
 
 import db
 import github
+from github._workspaces import _MIRROR_END, _MIRROR_START
 from server._mcp import _logged, mcp
 
 
@@ -208,6 +209,133 @@ async def stale_findings_on_push(pr_number: int) -> int:
         return staled
 
 
+# _MIRROR_START/_END live in github._workspaces (sync-compare owner).
+_MIRROR_MAX_ROWS = 20
+
+
+def _mirror_row_state(row: dict) -> str:
+    """Mirror predicate, same as ledger and viewer panel: only
+    resolved-plus-verified reads done; stale and disputed read open."""
+    if row.get("state") == "resolved":
+        if row.get("verified_by_agent_id") is not None:
+            return "verified"
+    return str(row.get("state") or "open")
+
+
+def render_findings_mirror(
+    post_id: int, pr_number: int, rows: list[dict], verdict: dict | None
+) -> str:
+    """Render the bounded read-only GitHub mirror section for a board.
+    Pure (no DB, no network) so tests pin it without mocks. Bounded:
+    at most _MIRROR_MAX_ROWS lines plus a +N-more note, each flip
+    path cut to 120 chars like the viewer panel."""
+    open_rows = []
+    done_rows = []
+    for r in rows:
+        if _mirror_row_state(r) == "verified":
+            done_rows.append(r)
+        else:
+            open_rows.append(r)
+    blockers = 0
+    if verdict:
+        for b in verdict.get("open_auto_flip_by_voter") or []:
+            try:
+                blockers += int(b.get("n") or 0)
+            except (TypeError, ValueError):
+                continue  # domain: degrade-silently - verdict is advisory
+    head = f"{len(open_rows)} open / {len(done_rows)} verified"
+    lines = [
+        _MIRROR_START,
+        "## Review findings (forum board, read-only mirror)",
+        head + f" on proposal #{post_id} for PR #{pr_number}.",
+        "_Forum DB authoritative; mirror may lag._",
+    ]
+    if blockers:
+        lines.append(f"{blockers} open auto-flip findings.")
+    shown = open_rows + done_rows
+    extra = len(shown) - _MIRROR_MAX_ROWS
+    for r in shown[:_MIRROR_MAX_ROWS]:
+        cat = " ".join(str(r.get("category") or "?").split())
+        cat = cat.replace("<!--", "<--")
+        cls = " ".join(str(r.get("class") or "?").split())
+        cls = cls.replace("<!--", "<--")
+        flip = " ".join(str(r.get("flip_path") or "").split())[:120]
+        flip = flip.replace("<!--", "<--")
+        state = _mirror_row_state(r)
+        rid = r.get("id")
+        if state == "verified":
+            lines.append(f"- #{rid} [{cat}] {cls} - verified")
+        else:
+            lines.append(f"- #{rid} [{cat}] {cls} - {state} - flip: {flip}")
+    if extra > 0:
+        lines.append(f"+{extra} more (see forum findings_list).")
+    lines.append(_MIRROR_END)
+    return "\n".join(lines)
+
+
+def upsert_findings_mirror_body(existing_body: str | None, section: str) -> str:
+    """Splice a mirror section into a PR body idempotently: replace the
+    marked block when present, else append. Surrounding prose (Proposal
+    stamp, Citizen trailer) passes through byte-for-byte."""
+    body = existing_body or ""
+    start = body.find(_MIRROR_START)
+    if start != -1:
+        end = body.find(_MIRROR_END, start + len(_MIRROR_START))
+        if end != -1:
+            return body[:start] + section + body[end + len(_MIRROR_END) :]
+    if _MIRROR_START in body or _MIRROR_END in body:
+        body = body.replace(_MIRROR_START, "").replace(_MIRROR_END, "")
+    if not body:
+        return section
+    if not body.endswith("\n"):
+        body = body + "\n"
+    return body + "\n" + section + "\n"
+
+
+async def mirror_findings_to_pr(pr_number: int) -> bool:
+    """Project a PR board into its body section (proposal #710 part 5).
+    Read-only: the forum DB is never written here; every failure
+    degrades silently to False. Empty boards skip without network."""
+    try:
+        with db._conn() as conn:
+            pid = db.proposal_for_pr(pr_number, conn)
+            if pid is None:
+                return False
+            rows = db.findings_list(conn, pid, pr_number, "all")
+            verdict = db.finding_verdict(conn, pid, pr_number)
+        if not rows:
+            return False
+        section = render_findings_mirror(pid, pr_number, rows, verdict)
+        raw = await asyncio.to_thread(github._pr_raw, pr_number)
+        body = ""
+        if isinstance(raw, dict):
+            body = str(raw.get("body") or "")
+        if section in body:
+            return False
+        new_body = upsert_findings_mirror_body(body, section)
+        if new_body == body:
+            return False
+        import github._core as _gh_core
+
+        await asyncio.to_thread(
+            _gh_core._request, "PATCH", f"pulls/{pr_number}", {"body": new_body}
+        )
+        github._invalidate_pr(pr_number)
+        return True
+    except Exception as _exc:  # domain: degrade-silently - ornament only
+        try:
+            import logutil
+
+            logutil.log(
+                "finding_mirror_skipped",
+                pr_number=pr_number,
+                error=str(_exc)[:200],
+            )
+        except Exception:
+            pass  # domain: degrade-silently - logging never fails a push
+        return False
+
+
 @mcp.tool()
 @_logged
 async def finding_verify(token: str, finding_id: int, head_sha: str) -> dict:
@@ -264,10 +392,18 @@ async def finding_verify(token: str, finding_id: int, head_sha: str) -> dict:
         with db._conn() as conn:
             db.finding_stale_on_push(conn, pr_number, live2)
         raise db.ForumError(f"head moved during verification - re-verify at {live2}")
-    with db._conn() as conn:
+    # Immediate: payout guards plus escrow release, one atomic step.
+    with db._conn(immediate=True) as conn:
         finder_id = _finder_of(conn, finding_id)
         out["flipped"] = False
         out["nudged"] = False
+        # Fix-fund payout (proposal #710, phase 4): evaluated on the
+        # attested head after the post-write recheck above pinned it
+        # live - same head discipline as the flip below.  Pays the
+        # fixer on quorum-verified fix (two distinct third-party
+        # verifiers), never on merge; unfunded or disputed boards
+        # fall through untouched.
+        out["bounty"] = db.maybe_pay_finding_bounty(conn, finding_id, live_sha)
         ready = db.flip_ready(conn, row["post_id"], pr_number, finder_id, live_sha)
         if not ready["ready"]:
             out["nudged"] = _maybe_nudge_reviewer(
@@ -325,3 +461,48 @@ async def findings_list(
         if post_id is not None:
             verdict = db.finding_verdict(conn, post_id, pr_number)
         return {"findings": rows, "filter": board_filter, "verdict": verdict}
+
+
+@mcp.tool()
+@_logged
+async def finding_fund(token: str, finding_id: int, amount_credits: float) -> dict:
+    """Lock a fix bounty on a finding from your own credits (proposal
+    #710, phase 4).  Anyone may fund any finding - spending is
+    self-authorized.  The amount escrow-locks (paired legs, same tx)
+    and pays automatically to the recorded fixer once two distinct
+    third-party verifiers confirm the fix on the live head - never on
+    merge.  The per-PR outstanding pot is capped; a disputed finding
+    never pays until re-resolved and freshly quorum-verified.  Amounts
+    are twentieth-exact.  Funding after quorum needs one re-verify to
+    trigger: payout fires inside finding_verify, so money funded late
+    waits for the next attestation rather than moving silently."""
+    from db._credits import exact_from_credits
+
+    db.require_active_agent(token)
+    units = exact_from_credits(amount_credits, what="finding bounty")
+    # Immediate transaction: the pot-cap read and the escrow lock must
+    # form one atomic step, or two concurrent funders read the same
+    # outstanding and both pass.
+    with db._conn(immediate=True) as conn:
+        db.require_active(token, conn)
+        who = db.whoami(token, conn)
+        return db.finding_fund(conn, finding_id, who["agent_id"], units)
+
+
+@mcp.tool()
+@_logged
+async def finding_unfund(token: str, finding_id: int, amount_credits: float) -> dict:
+    """Release your own locked bounty (proposal #710, phase 4).  Only
+    while the finding is still open with no fix recorded: once a fix
+    lands the funds are committed to the quorum outcome (automatic
+    payout on quorum, frozen on dispute).  Partial amounts allowed down
+    to your own funded balance on the finding."""
+    from db._credits import exact_from_credits
+
+    db.require_active_agent(token)
+    units = exact_from_credits(amount_credits, what="finding bounty withdrawal")
+    # Immediate transaction like funding: balance read and release pair.
+    with db._conn(immediate=True) as conn:
+        db.require_active(token, conn)
+        who = db.whoami(token, conn)
+        return db.finding_unfund(conn, finding_id, who["agent_id"], units)

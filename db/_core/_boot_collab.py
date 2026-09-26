@@ -400,8 +400,9 @@ def run(conn) -> set:
                 state              TEXT NOT NULL DEFAULT 'open' CHECK
                     (state IN ('open', 'resolved', 'disputed', 'stale')),
                 verified_by_agent_id INTEGER REFERENCES agents(id),
-                verified_head_sha  TEXT,
+                verified_head_sha TEXT,
                 bounty_units       INTEGER NOT NULL DEFAULT 0,
+                dispute_seq        INTEGER NOT NULL DEFAULT 0,
                 created_at         TEXT NOT NULL DEFAULT
                     (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
             );
@@ -456,6 +457,75 @@ def run(conn) -> set:
         "CREATE INDEX IF NOT EXISTS idx_finding_notes_finding"
         " ON finding_notes(finding_id)"
     )
+    # Finding fix-fund tables (proposal #710, phase 4): same per-table
+    # gates - fresh databases carry them via schema.sql, existing ones
+    # get them here, no backfill (bounties accrue live from here on).
+    # dispute_seq rides _ensure_column on pre-phase-4 boards (existing
+    # rows start at seq 0, and no verifications predate the column, so
+    # the quorum reads stay exact).
+    _ensure_column(conn, "review_findings", "dispute_seq", "INTEGER NOT NULL DEFAULT 0")
+    if "finding_verifications" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS finding_verifications (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                finding_id        INTEGER NOT NULL REFERENCES review_findings(id)
+                    ON DELETE CASCADE,
+                verifier_agent_id INTEGER NOT NULL REFERENCES agents(id)
+                    ON DELETE CASCADE,
+                verified_head_sha TEXT NOT NULL,
+                dispute_seq       INTEGER NOT NULL DEFAULT 0,
+                created_at        TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                UNIQUE (
+                    finding_id, verifier_agent_id, verified_head_sha, dispute_seq
+                )
+            );
+        """)
+    if "finding_bounty_funds" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS finding_bounty_funds (
+                finding_id      INTEGER NOT NULL REFERENCES review_findings(id)
+                    ON DELETE CASCADE,
+                funder_agent_id INTEGER NOT NULL REFERENCES agents(id)
+                    ON DELETE CASCADE,
+                units           INTEGER NOT NULL CHECK (units >= 0),
+                created_at      TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                UNIQUE (finding_id, funder_agent_id)
+            );
+        """)
+    if "finding_payouts" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS finding_payouts (
+                finding_id       INTEGER PRIMARY KEY REFERENCES review_findings(id)
+                    ON DELETE CASCADE,
+                payee_agent_id   INTEGER REFERENCES agents(id)
+                    ON DELETE SET NULL,
+                units            INTEGER NOT NULL CHECK (units > 0),
+                created_at        TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+        """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_finding_verifications_finding"
+        " ON finding_verifications(finding_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_finding_bounty_funds_finding"
+        " ON finding_bounty_funds(finding_id)"
+    )
+    # Public-branch flags (proposal #710, phase 3): fresh databases carry
+    # the table via schema.sql; existing ones get it here.  No backfill -
+    # an absent row means a closed branch.
+    if "pr_public_branches" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS pr_public_branches (
+                pr_number  INTEGER PRIMARY KEY,
+                enabled    INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+                updated_at TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+        """)
     stored_bugs = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'bug_reports'"
     ).fetchone()

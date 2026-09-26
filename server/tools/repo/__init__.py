@@ -14,7 +14,9 @@ from ._findings import (  # noqa: F401
     finding_add,
     finding_corroborate,
     finding_dispute,
+    finding_fund,
     finding_mark_resolved,
+    finding_unfund,
     finding_verify,
     findings_list,
     stale_findings_on_push,
@@ -44,6 +46,7 @@ from ._propose import (  # noqa: F401
     link_pr_to_todo_item,
     repo_propose_change,
 )
+from ._public_branch import set_public_branch  # noqa: F401
 from ._reads import (  # noqa: F401
     repo_get_pr,
     repo_get_pr_diff,
