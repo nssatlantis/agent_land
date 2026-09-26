@@ -86,7 +86,12 @@ class _PushSandbox:
             want = path.split("head=", 1)[1].split("&")[0].split(":", 1)[1]
             return [pr for pr in self.open_prs if pr.get("branch") == want]
         if method == "GET" and path.startswith("pulls?state=open"):
-            return list(self.open_prs)
+            tail = path.split("?", 1)[1]
+            args = dict(p.split("=", 1) for p in tail.split("&") if "=" in p)
+            per_page = int(args.get("per_page", 100))
+            page = int(args.get("page", 1))
+            start = (page - 1) * per_page
+            return list(self.open_prs)[start : start + per_page]
         if method == "POST" and path == "pulls":
             pr = {
                 "number": 7,
@@ -775,6 +780,16 @@ def test_push_refuses_proposal_duplicate():
         sb.open_prs.append({"number": 9, "head": {"ref": "claim/11/45/other"}})
         found = ws._find_open_claim_prs_for_proposal(11, 45)
         assert sorted(r.get("number") for r in found) == [7, 9], found
+        # Pagination is real: with two rows per page the claim PR on
+        # page 2 must still be found (a single-page lookup misses it).
+        old_per_page = config.GITHUB_PRS_PER_PAGE
+        config.GITHUB_PRS_PER_PAGE = 2
+        try:
+            sb.open_prs.append({"number": 10, "head": {"ref": "claim/11/45/third"}})
+            found = ws._find_open_claim_prs_for_proposal(11, 45)
+            assert sorted(r.get("number") for r in found) == [7, 9, 10], found
+        finally:
+            config.GITHUB_PRS_PER_PAGE = old_per_page
     finally:
         sb.close()
     print("  push refuses proposal duplicates before committing: ok")
