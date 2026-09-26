@@ -353,7 +353,7 @@ async def _afrom_check_runs(runs):
 
 async def _afetch_jobs(run_id):
     """One workflow run's jobs, empty on any API failure - mirrors the
-    sync tier's per-run degrade."""
+    sync tier's per-job degrade."""
     if run_id is None:
         return []
     try:
@@ -482,6 +482,9 @@ async def _achecks_impl(number, *, _pr=None, _head_sha=None):
             result = await _afrom_check_runs(runs)
             if result["state"] == "failure":
                 await _asupplement_check_run_failures(result, head_sha)
+                result["failed_files_detail"] = _group_failures_by_file(
+                    result.get("failures") or []
+                )
             return result
     except RepoError:
         # domain: degrade-silently - fall through to the Actions tier on
@@ -494,7 +497,12 @@ async def _achecks_impl(number, *, _pr=None, _head_sha=None):
         )
         runs = data.get("workflow_runs") or []
         if runs:
-            return await _afrom_actions(runs)
+            result = await _afrom_actions(runs)
+            if result["state"] == "failure":
+                result["failed_files_detail"] = _group_failures_by_file(
+                    result.get("failures") or []
+                )
+            return result
     except RepoError:
         # domain: degrade-silently - fall through to combined status on
         # any Actions API failure, exactly like the sync chain.
@@ -502,9 +510,19 @@ async def _achecks_impl(number, *, _pr=None, _head_sha=None):
     try:
         data = await _core._arequest("GET", f"commits/{head_sha}/status")
         statuses = data.get("statuses") or []
-        return {
+        state = data.get("state") or ("unknown" if not statuses else "pending")
+        failures = [
+            {
+                "name": s.get("context") or "status",
+                "message": " ".join((s.get("description") or "").split()),
+                "log_url": s.get("target_url"),
+            }
+            for s in statuses
+            if s.get("state") in ("failure", "error")
+        ]
+        result = {
             "source": "statuses",
-            "state": data.get("state") or ("unknown" if not statuses else "pending"),
+            "state": state,
             "runs": [
                 {
                     "name": s.get("context") or "status",
@@ -514,20 +532,52 @@ async def _achecks_impl(number, *, _pr=None, _head_sha=None):
                 }
                 for s in statuses
             ],
-            "failures": [
-                {
-                    "name": s.get("context") or "status",
-                    "message": " ".join((s.get("description") or "").split()),
-                    "log_url": s.get("target_url"),
-                }
-                for s in statuses
-                if s.get("state") in ("failure", "error")
-            ],
+            "failures": failures,
         }
+        if state == "failure":
+            result["failed_files_detail"] = _group_failures_by_file(failures)
+        return result
     except RepoError:
         # domain: degrade-silently - a total outage yields the None shape
         # callers already treat as unknown.
         return None
+
+
+def _group_failures_by_file(failures: list[dict]) -> list[dict]:
+    """Group failures by file path: check-runs tier uses the explicit
+    ``path`` field; Actions-tier log lines are parsed for a
+    ``FAILED: <file>`` marker - subsequent lines (until the next
+    ``FAILED:``) are grouped under that file. Returns
+    ``[{path, errors: [msg, ...]}]`` capped at 5 files, 10 lines/file,
+    200 chars/line. Degrades silently: unparseable lines bucket under
+    ``(unknown)``."""
+    groups: dict[str, list[str]] = {}
+    current_file: str | None = None
+    for f in failures:
+        path = " ".join((f.get("path") or "").split()).strip() or None
+        msg = (f.get("message") or "").strip()
+        if not msg:
+            continue
+        if path:
+            groups.setdefault(path, []).append(msg)
+            current_file = None
+        else:
+            m = re.match(r"^FAILED:\s+([A-Za-z0-9_./-]+)", msg)
+            if m:
+                file = m.group(1)
+                if "/" not in file and file.endswith(".py"):
+                    file = "tests/" + file
+                groups.setdefault(file, []).append(msg)
+                current_file = file
+            elif current_file:
+                groups.setdefault(current_file, []).append(msg)
+            else:
+                groups.setdefault("(unknown)", []).append(msg)
+    detail = [
+        {"path": p, "errors": [e[:200] for e in errs[:10]]}
+        for p, errs in groups.items()
+    ]
+    return detail[:5]
 
 
 def pr_checks(
@@ -561,6 +611,10 @@ def pr_checks(
         "failures": [],
     }
     result = {"number": number, "head_sha": head_sha, **checks}
+    if checks.get("state") == "failure":
+        result["failed_files_detail"] = _group_failures_by_file(
+            checks.get("failures") or []
+        )
     _core._pr_cache.set(cache_key, result)
     return result
 

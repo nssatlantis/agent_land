@@ -567,6 +567,230 @@ def test_apr_checks_statuses_tier_collapses_description():
     print("  async statuses tier collapses multi-line descriptions: ok")
 
 
+# ---------------------------------------------------------------------------
+# _group_failures_by_file unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_group_failures_by_file_check_runs():
+    failures = [
+        {"name": "CI", "path": "tests/test_a.py", "message": "AssertionError: x"},
+        {"name": "CI", "path": "tests/test_a.py", "message": "ValueError: y"},
+        {"name": "CI", "path": "tests/test_b.py", "message": "KeyError: z"},
+    ]
+    detail = gh_checks._group_failures_by_file(failures)
+    assert len(detail) == 2, detail
+    assert detail[0]["path"] == "tests/test_a.py"
+    assert detail[0]["errors"] == ["AssertionError: x", "ValueError: y"]
+    assert detail[1]["path"] == "tests/test_b.py"
+    assert detail[1]["errors"] == ["KeyError: z"]
+    print("  group_failures_by_file check-runs: ok")
+
+
+def test_group_failures_by_file_actions_tier():
+    failures = [
+        {"name": "CI / test", "message": "some error before any FAILED"},
+        {"name": "CI / test", "message": "FAILED: test_x.py (1.2s)"},
+        {"name": "CI / test", "message": "AssertionError: expected 1 == 2"},
+        {"name": "CI / test", "message": "FAILED: test_y.py (0.8s)"},
+        {"name": "CI / test", "message": "ValueError: bad value"},
+    ]
+    detail = gh_checks._group_failures_by_file(failures)
+    assert len(detail) == 3, detail
+    paths = [d["path"] for d in detail]
+    assert "(unknown)" in paths
+    assert "tests/test_x.py" in paths
+    assert "tests/test_y.py" in paths
+    x = next(d for d in detail if d["path"] == "tests/test_x.py")
+    assert x["errors"] == [
+        "FAILED: test_x.py (1.2s)",
+        "AssertionError: expected 1 == 2",
+    ]
+    y = next(d for d in detail if d["path"] == "tests/test_y.py")
+    assert y["errors"] == ["FAILED: test_y.py (0.8s)", "ValueError: bad value"]
+    print("  group_failures_by_file actions tier: ok")
+
+
+def test_group_failures_by_file_capped():
+    failures = [
+        {"name": "CI", "path": f"tests/test_{i}.py", "message": f"err {i}"}
+        for i in range(7)
+    ]
+    detail = gh_checks._group_failures_by_file(failures)
+    assert len(detail) == 5, detail
+    print("  group_failures_by_file capped at 5: ok")
+
+
+def test_group_failures_by_file_long_message_truncated():
+    failures = [
+        {"name": "CI", "path": "tests/test_a.py", "message": "F" * 300},
+    ]
+    detail = gh_checks._group_failures_by_file(failures)
+    assert len(detail[0]["errors"][0]) == 200
+    print("  group_failures_by_file truncates long messages: ok")
+
+
+# ---------------------------------------------------------------------------
+# pr_checks failed_files_detail end-to-end
+# ---------------------------------------------------------------------------
+
+
+def test_pr_checks_failed_files_detail_end_to_end():
+    """pr_checks wires failed_files_detail end-to-end: a pathed check-run
+    annotation is grouped under its collapsed path, and the message is
+    surfaced verbatim (no newlines in the input, so no collapse needed)."""
+    gh.clear_cache()
+
+    def handler(request):
+        path = request.url.path
+        if path.endswith("/check-runs"):
+            return httpx.Response(
+                200,
+                json={
+                    "check_runs": [
+                        {
+                            "id": 77,
+                            "name": "CI",
+                            "status": "completed",
+                            "conclusion": "failure",
+                            "html_url": "https://ci/run/77",
+                        }
+                    ]
+                },
+            )
+        if path.endswith("/check-runs/77/annotations"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "path": "  tests/test_x.py  ",
+                        "start_line": 42,
+                        "message": "AssertionError: expected 1 == 2",
+                    }
+                ],
+            )
+        return httpx.Response(200, json={})
+
+    old = _install_mock(handler)
+    try:
+        result = gh.pr_checks(4246, _head_sha="deadsha")
+        assert result["source"] == "check_runs", result["source"]
+        assert result["state"] == "failure", result["state"]
+        detail = result.get("failed_files_detail")
+        assert detail is not None, result
+        assert len(detail) == 1, detail
+        assert detail[0]["path"] == "tests/test_x.py", detail[0]
+        assert detail[0]["errors"] == ["AssertionError: expected 1 == 2"], detail[0]
+    finally:
+        gh_core._client = old
+        gh.clear_cache()
+    print("  pr_checks failed_files_detail end-to-end: ok")
+
+
+# ---------------------------------------------------------------------------
+# apr_checks failed_files_detail async tier pins
+# ---------------------------------------------------------------------------
+
+
+def test_apr_checks_failed_files_detail_check_runs_tier():
+    """apr_pins :485 - async check-runs tier sets failed_files_detail:
+    a pathed annotation is grouped under its collapsed path."""
+    gh.clear_cache()
+
+    def handler(request):
+        path = request.url.path
+        if path.endswith("/check-runs"):
+            return httpx.Response(
+                200,
+                json={
+                    "check_runs": [
+                        {
+                            "id": 88,
+                            "name": "CI",
+                            "status": "completed",
+                            "conclusion": "failure",
+                            "html_url": "https://ci/run/88",
+                        }
+                    ]
+                },
+            )
+        if path.endswith("/check-runs/88/annotations"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "path": "tests/test_async.py",
+                        "start_line": 10,
+                        "message": "ValueError: async path pin",
+                    }
+                ],
+            )
+        return httpx.Response(200, json={})
+
+    old = _install_mock(handler)
+    try:
+        import asyncio
+
+        result = asyncio.run(gh.apr_checks(4247, _head_sha="deadsha"))
+        assert result is not None
+        assert result["source"] == "check_runs", result["source"]
+        assert result["state"] == "failure", result["state"]
+        detail = result.get("failed_files_detail")
+        assert detail is not None, result
+        assert len(detail) == 1, detail
+        assert detail[0]["path"] == "tests/test_async.py", detail[0]
+        assert detail[0]["errors"] == ["ValueError: async path pin"], detail[0]
+    finally:
+        gh_core._client = old
+        gh.clear_cache()
+    print("  apr_checks failed_files_detail check-runs tier: ok")
+
+
+def test_apr_checks_failed_files_detail_statuses_tier():
+    """apr_pins :538 - async statuses tier sets failed_files_detail:
+    check-runs and Actions both 500, statuses tier answers."""
+    gh.clear_cache()
+
+    def handler(request):
+        path = request.url.path
+        if path.endswith("/check-runs"):
+            return httpx.Response(500, json={"message": "not found"})
+        if path.endswith("/actions/runs"):
+            return httpx.Response(500, json={"message": "not found"})
+        if path.endswith("/status"):
+            return httpx.Response(
+                200,
+                json={
+                    "state": "failure",
+                    "statuses": [
+                        {
+                            "context": "CI",
+                            "state": "failure",
+                            "description": "AssertionError: status tier pin",
+                            "target_url": "https://ci/run/99",
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(200, json={})
+
+    old = _install_mock(handler)
+    try:
+        import asyncio
+
+        result = asyncio.run(gh.apr_checks(4248, _head_sha="deadsha"))
+        assert result is not None
+        assert result["source"] == "statuses", result["source"]
+        assert result["state"] == "failure", result["state"]
+        detail = result.get("failed_files_detail")
+        assert detail is not None, result
+        assert len(detail) >= 1, detail
+    finally:
+        gh_core._client = old
+        gh.clear_cache()
+    print("  apr_checks failed_files_detail statuses tier: ok")
+
+
 def main():
     test_transport_error_retries_once()
     test_remote_protocol_error_heals()
@@ -598,6 +822,13 @@ def main():
     test_comment_on_pr_missing_html_url_ok()
     test_ingress_collapse_end_to_end()
     test_apr_checks_statuses_tier_collapses_description()
+    test_group_failures_by_file_check_runs()
+    test_group_failures_by_file_actions_tier()
+    test_group_failures_by_file_capped()
+    test_group_failures_by_file_long_message_truncated()
+    test_pr_checks_failed_files_detail_end_to_end()
+    test_apr_checks_failed_files_detail_check_runs_tier()
+    test_apr_checks_failed_files_detail_statuses_tier()
     print("test_github_http: all ok")
     return 0
 
