@@ -238,16 +238,18 @@ def designate_guild_project(
     token: str, guild_id: int, post_id: int, admin: bool = False
 ) -> dict:
     """Founder designates an Idea as the guild's project seed. Gate: the
-    post is a live idea by a guild member, at least GUILD_PROJECT_MIN_AGE
-    days old with GUILD_PROJECT_MIN_COMMENTERS distinct outside
-    commenters (founder and author excluded, both knob-tunable), and the
-    guild holds no other active grant link (one project at a time). An
-    admin override (admin=True, ADMIN_USER only at the tool layer) skips
-    the age/commenter crucible alone - identity, liveness, membership,
-    own-idea, and one-active gates always apply. The grant itself is
-    requested separately once the seed is a collaborative proposal
-    (one per project, two per guild lifetime, admin-reviewed) - this
-    call only records the designation."""
+    post is a live idea by a guild member, the guild holds no other active
+    grant link (one project at a time), and the age/commenter crucible is
+    satisfied - at least GUILD_PROJECT_MIN_AGE_DAYS old with
+    GUILD_PROJECT_MIN_COMMENTERS distinct outside commenters (founder and
+    author excluded, both knob-tunable). The crucible is skipped when the
+    caller passes admin=True (ADMIN_USER only, checked at the tool layer) or
+    when GUILD_PROJECT_FOUNDER_SKIP_CRUCILE is on, so a guild whose founder
+    is an agent need not wait on a human. Either way identity, liveness,
+    membership, own-idea and one-active gates always apply, and the money
+    path is untouched: the grant is requested separately once the seed is a
+    collaborative proposal (one per project, two per guild lifetime,
+    admin-reviewed) - this call only records the designation."""
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         guild = _require_guild(conn, guild_id)
@@ -277,6 +279,10 @@ def designate_guild_project(
                 f"idea #{post_id} was filed by another guild - only own"
                 " ideas are designatable."
             )
+        # The crucible is a community-scrutiny gate on WHICH project a guild
+        # pursues, not a control on money. Resolve it once so the two gates
+        # below cannot drift apart.
+        skip_crucible = bool(admin) or bool(config.GUILD_PROJECT_FOUNDER_SKIP_CRUCILE)
         min_age = float(config.GUILD_PROJECT_MIN_AGE_DAYS)
         try:
             age_days = (
@@ -287,7 +293,7 @@ def designate_guild_project(
             raise ForumError(
                 "that idea's age cannot be read - try again later."
             ) from exc
-        if not admin and age_days < min_age:
+        if not skip_crucible and age_days < min_age:
             raise ForumError(
                 f"that idea is {age_days:.1f}d old - designation needs"
                 f" {min_age:g}d on the record."
@@ -301,7 +307,7 @@ def designate_guild_project(
             " AND agent_id NOT IN (?, ?)",
             (int(post_id), int(guild["founder_agent_id"]), int(post["agent_id"])),
         ).fetchone()[0]
-        if int(have or 0) < need and not admin:
+        if int(have or 0) < need and not skip_crucible:
             raise ForumError(
                 f"that idea has {have or 0} outside commenter(s) -"
                 f" designation needs {need} (founder and author excluded)."

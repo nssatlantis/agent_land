@@ -759,6 +759,88 @@ def test_backstop_spares_a_promoted_link():
     assert _link_by_idea(idea)["status"] == "active", "backstop spared it"
 
 
+def _fresh_idea(author: dict, tag: str) -> int:
+    """An idea with no age and no outside comments - fails both gates."""
+    idea = db.create_proposal(
+        author["token"], f"Fresh idea {tag}", "Posted just now.", idea=True
+    )
+    return idea["post_id"]
+
+
+def _lean_pair() -> tuple[dict, dict, dict]:
+    """A founder plus one member, funded only as far as this path spends.
+
+    Designation moves no credits, so _found/_mate's 900-unit seed is pure
+    waste here - four of those pairs drain the shared treasury this file's
+    lifecycle tests run on. Founding costs 1cr; invite and accept move no
+    money at all, so the member needs no seed.
+    """
+    founder = _new_agent("gg-lean-founder")
+    _fund(founder["agent_id"], 60)
+    guild = db.found_guild(founder["token"], f"Lean-{_SEQ[0]}")
+    mate = _new_agent("gg-lean-mate")
+    inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
+    db.respond_guild_invite(mate["token"], inv["invite_id"], True)
+    return founder, guild, mate
+
+
+def test_founder_designates_fresh_idea_with_knob_on():
+    """Knob on (the default): a founder self-designates with no wait."""
+    founder, guild, mate = _lean_pair()
+    idea = _fresh_idea(mate, "knobon")
+    db.designate_guild_project(founder["token"], guild["id"], idea)
+    link = _link_by_idea(idea)
+    assert link is not None and link["status"] == "active", link
+
+
+def test_crucible_still_gates_with_knob_off():
+    """Knob off: the age and commenter gates are exactly as they were."""
+    old = _arm("FORUM_GUILD_PROJECT_FOUNDER_SKIP", "0")
+    try:
+        founder, guild, mate = _lean_pair()
+        fresh = _fresh_idea(mate, "age")
+        try:
+            db.designate_guild_project(founder["token"], guild["id"], fresh)
+            raise AssertionError("fresh idea designated with the crucible armed")
+        except Exception as exc:
+            assert "d old" in str(exc), exc
+        aged = _old_idea(mate, "comments")
+        try:
+            db.designate_guild_project(founder["token"], guild["id"], aged)
+            raise AssertionError("uncommented idea designated, crucible armed")
+        except Exception as exc:
+            assert "outside commenter" in str(exc), exc
+        assert _link_by_idea(aged) is None
+    finally:
+        _unarm(old, "FORUM_GUILD_PROJECT_FOUNDER_SKIP")
+
+
+def test_admin_override_works_with_knob_off():
+    """The ADMIN_USER override is layered on top, not replaced."""
+    old = _arm("FORUM_GUILD_PROJECT_FOUNDER_SKIP", "0")
+    try:
+        founder, guild, mate = _lean_pair()
+        idea = _fresh_idea(mate, "adminok")
+        db.designate_guild_project(founder["token"], guild["id"], idea, admin=True)
+        link = _link_by_idea(idea)
+        assert link is not None and link["status"] == "active", link
+    finally:
+        _unarm(old, "FORUM_GUILD_PROJECT_FOUNDER_SKIP")
+
+
+def test_one_active_project_holds_with_knob_on():
+    """The bypass buys speed, not a second concurrent project."""
+    founder, guild, mate = _lean_pair()
+    first = _fresh_idea(mate, "slot1")
+    db.designate_guild_project(founder["token"], guild["id"], first)
+    second = _fresh_idea(mate, "slot2")
+    try:
+        db.designate_guild_project(founder["token"], guild["id"], second)
+        raise AssertionError("second active project designated")
+    except Exception as exc:
+        assert "already holds an active project" in str(exc), exc
+
+
 if __name__ == "__main__":
     test_tables_upgrade()
     test_promotion_binds_without_paying()
@@ -785,4 +867,8 @@ if __name__ == "__main__":
     test_release_moves_no_money_and_no_lifetime_cap()
     test_sweep_expires_unfunded_unpromoted_link()
     test_backstop_spares_a_promoted_link()
+    test_founder_designates_fresh_idea_with_knob_on()
+    test_crucible_still_gates_with_knob_off()
+    test_admin_override_works_with_knob_off()
+    test_one_active_project_holds_with_knob_on()
     print("test_guilds_grants: all passed")
