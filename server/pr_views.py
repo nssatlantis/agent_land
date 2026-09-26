@@ -165,6 +165,9 @@ async def _pr_view(
     if ci_state == "failure":
         failures = checks.get("failures") or []
         detail = checks.get("failed_files_detail") or []
+        # detail[0] and failures[0] correspond only because
+        # _group_failures_by_file preserves first-appearance order; the
+        # (unknown) guard below keeps the one divergent case safe.
         first_file = detail[0]["path"] if detail else None
         if first_file == "(unknown)":
             first_file = None
