@@ -1210,12 +1210,13 @@ def push_claim_tree(
         _git(dest, "checkout", "-b", branch)
     if cur == branch:
         # Freshness gate (proposal #748): a fixer may have pushed since
-        # this tree last synced.  Refuse behind-trees here with the sync
-        # pointer instead of committing first and dying non-fast-forward
-        # after (dirty trees cannot merge automatically, so no auto-sync:
-        # clean trees catch up via workspace_sync, dirty ones read their
-        # work out first).  Fail-open: any check failure falls through
-        # to today's path and the push itself decides.
+        # this tree last synced.  Refuse behind-trees here with the
+        # release pointer instead of committing first and dying
+        # non-fast-forward after (workspace_sync refuses pushed trees
+        # lest it orphan the PR branch, so no auto-sync: release and
+        # claim again when clean, read work out first when dirty).
+        # Fail-open: any check failure falls through to today's path
+        # and the push itself decides.
         try:
             _fetch = _git(dest, "fetch", "origin", branch, check=False)
             if _fetch.returncode != 0:
@@ -1234,8 +1235,8 @@ def push_claim_tree(
                     _n = _cnt.stdout.strip() or "many"
                     raise RepoError(
                         f"branch '{branch}' is {_n} commit(s) ahead of this tree"
-                        f" - sync first (workspace_sync when clean; read your"
-                        f" work out first when dirty), then push again."
+                        " - release it and claim again to rebase pushed work"
+                        " (read your work out first when dirty), then push again."
                     )
         except RepoError:
             raise
