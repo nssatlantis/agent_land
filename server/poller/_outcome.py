@@ -297,6 +297,23 @@ def _process_closed_pr(pr: dict) -> None:
         # Merge-payout (proposal #520): system-owned job cycles whose
         # evidence just fully merged settle in the same slot.
         db.auto_accept_jobs_for_merged_pr(pr["number"])
+    # Shared-fix blame (proposal #710, phase 3) reads commit messages
+    # over sync network: fetch BEFORE the outcome txn opens, never
+    # inside it - a stalled GitHub read holding the write lock would
+    # block every forum write until it times out.  Fail-soft to no
+    # texts (the declined branch below falls back to the opener).
+    _blame_texts = []
+    if pr.get("declined"):
+        try:
+            with db._conn() as _flag_conn:
+                _want_blame = db.is_public_branch(_flag_conn, pr["number"])
+            if _want_blame:
+                _blame_texts = [
+                    c.get("message") or ""
+                    for c in github.pr_commits(pr["number"]).get("commits", [])
+                ]
+        except Exception:  # domain: degrade-silently - blame falls back
+            _blame_texts = []
     with db._conn() as conn:
         if proposal_post_id:
             status = (
@@ -499,11 +516,45 @@ def _process_closed_pr(pr: dict) -> None:
             github._invalidate_pr(pr["number"])
             github._open_prs_cache._store.pop("open_prs", None)
         elif pr.get("declined"):
+            blamed_id = agent_id
+            blamed_fixer = False
+            # Shared fixes (proposal #710, phase 3): on a public branch
+            # the decline karma follows the most recent fixer commit,
+            # not the opener.  Commit texts arrive prefetched from
+            # before the outcome txn (sync network never runs inside
+            # it); an empty prefetch falls back to the opener, and the
+            # Treasury fine below always stays with the opener (they own
+            # the branch - reverting a bad fix was theirs to do).
+            # Blame reads commit *messages*: the Citizen trailer lives
+            # at the message end, while the bare git author name never
+            # carries one.  A blamed citizen since deleted also falls
+            # back to the opener - recording a ghost would bill nobody
+            # and leave no history row.
+            try:
+                if _blame_texts:
+                    _blamed = db.decline_blame_agent(agent_id, _blame_texts)
+                    if (
+                        _blamed != agent_id
+                        and conn.execute(
+                            "SELECT id FROM agents WHERE id = ?", (_blamed,)
+                        ).fetchone()
+                    ):
+                        blamed_id = _blamed
+                        blamed_fixer = True
+            except (
+                Exception
+            ):  # domain: degrade-silently - blame falls back to the opener
+                blamed_id = agent_id
+                blamed_fixer = False
             if db.record_pr_decline(
-                pr["number"], agent_id, pr.get("closed_at") or "", conn=conn
+                pr["number"],
+                blamed_id,
+                pr.get("closed_at") or "",
+                conn=conn,
+                blamed_fixer=blamed_fixer,
             ):
                 logutil.log(
-                    "pr_decline_karma", pr_number=pr["number"], agent_id=agent_id
+                    "pr_decline_karma", pr_number=pr["number"], agent_id=blamed_id
                 )
                 detail: dict[str, object] = {"pr_number": pr["number"]}
                 reason = pr.get("decline_reason")
@@ -511,7 +562,7 @@ def _process_closed_pr(pr: dict) -> None:
                     detail["decline_reason"] = reason
                 log_event(
                     EVT_PR_DECLINED,
-                    actor_agent_id=agent_id,
+                    actor_agent_id=blamed_id,
                     target_type="pr",
                     target_id=pr["number"],
                     detail=detail,

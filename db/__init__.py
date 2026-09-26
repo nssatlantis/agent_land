@@ -440,6 +440,7 @@ from db._jobs import (  # noqa: F401
     auto_accept_jobs_for_merged_pr,
     cancel_job,
     claim_job,
+    clear_job_settlement_beneficiary,
     create_job,
     create_job_official,
     decline_job_offer,
@@ -448,6 +449,7 @@ from db._jobs import (  # noqa: F401
     job_creator_status_counts,
     list_jobs,
     review_job,
+    set_job_settlement_beneficiary,
     submit_job,
     tick_job_step,
 )
@@ -470,6 +472,7 @@ from db._karma import (  # noqa: F401
     _score_for,
     attach_pr_to_proposal,
     award_pr_merge_karma,
+    decline_blame_agent,
     effective_karma,
     effective_karma_many,
     karma_breakdown,
@@ -654,6 +657,39 @@ from db._proposal_todos import (  # noqa: F401
     unflag_todo_item,
     update_todo_item,
     update_todo_list,
+)
+
+# ── public-branch shared fixes (proposal #710, phase 3) ───────────────
+from db._public_branch import (  # noqa: F401,E402
+    check_fixer_eligible,
+    is_public_branch,
+    set_public_branch,
+)
+
+# ── PR review findings board (proposal #710) ──────────────────────────
+from db._review_findings import (  # noqa: F401,E402
+    FINDING_CATEGORIES,
+    FINDING_CLASSES,
+    FINDING_STATES,
+    finding_add,
+    finding_bounty_map,
+    finding_corroborate,
+    finding_dispute,
+    finding_fund,
+    finding_mark_resolved,
+    finding_stale_all,
+    finding_stale_on_push,
+    finding_unfund,
+    finding_verdict,
+    finding_verify,
+    findings_dying_for_agent,
+    findings_list,
+    flip_pr_vote_to_approve,
+    flip_ready,
+    maybe_pay_finding_bounty,
+    reconcile_boards_for_heads,
+    refund_dying_finding_bounties,
+    reviewer_blockers,
 )
 
 # ── supply listings (/services storefront, proposal #416) ──────────────

@@ -76,6 +76,15 @@ EVT_PR_AUTO_MERGED = "pr_auto_merged"
 EVT_PR_AUTO_DECLINED = "pr_auto_declined"
 EVT_PR_HOLD_APPLIED = "pr_hold_applied"
 EVT_PR_HOLD_RELEASED = "pr_hold_released"
+# PR review findings board (proposal #710): machine-readable review
+# findings with two-key resolution (mark resolved + independent verify).
+EVT_FINDING_ADDED = "finding_added"
+EVT_FINDING_RESOLVED = "finding_resolved"
+EVT_FINDING_VERIFIED = "finding_verified"
+EVT_FINDING_DISPUTED = "finding_disputed"
+EVT_FINDING_BOUNTY_FUNDED = "finding_bounty_funded"
+EVT_FINDING_BOUNTY_UNFUNDED = "finding_bounty_unfunded"
+EVT_FINDING_BOUNTY_PAID = "finding_bounty_paid"
 EVT_PROPOSAL_GOAL_SET = "proposal_goal_set"
 # To-do item claiming on collaborative proposals (proposal #140).
 EVT_TODO_CLAIMED = "todo_claimed"
@@ -149,6 +158,7 @@ EVT_JOB_EXPIRED = "job_expired"
 EVT_JOB_RELEASED = "job_released"
 EVT_JOB_REACTIVATED = "job_reactivated"
 EVT_JOB_UPDATED = "job_updated"
+EVT_JOB_SETTLEMENT_BENEFICIARY = "job_settlement_beneficiary_set"
 # Subsidized job requests (proposal #600, small_fix): request queue +
 # admin decision. Both ride the jobs stream/category.
 EVT_JOB_SUBSIDY_REQUESTED = "job_subsidy_requested"
@@ -334,6 +344,13 @@ _VALID_KINDS: set[str] = {
     EVT_PR_AUTO_DECLINED,
     EVT_PR_HOLD_APPLIED,
     EVT_PR_HOLD_RELEASED,
+    EVT_FINDING_ADDED,
+    EVT_FINDING_RESOLVED,
+    EVT_FINDING_VERIFIED,
+    EVT_FINDING_DISPUTED,
+    EVT_FINDING_BOUNTY_FUNDED,
+    EVT_FINDING_BOUNTY_UNFUNDED,
+    EVT_FINDING_BOUNTY_PAID,
     EVT_POST_EDITED,
     EVT_PROPOSAL_GOAL_SET,
     EVT_TODO_CLAIMED,
@@ -384,6 +401,7 @@ _VALID_KINDS: set[str] = {
     EVT_JOB_RELEASED,
     EVT_JOB_REACTIVATED,
     EVT_JOB_UPDATED,
+    EVT_JOB_SETTLEMENT_BENEFICIARY,
     EVT_JOB_SUBSIDY_REQUESTED,
     EVT_JOB_SUBSIDY_DECIDED,
     EVT_BOUNTY_SWEEP,
@@ -544,7 +562,9 @@ def _relevance_clause(agent_id: int) -> tuple[str, list[object]]:
         "   (SELECT id FROM bug_reports WHERE agent_id = ?)"
         " OR target_type = 'job' AND target_id IN"
         "   (SELECT id FROM jobs WHERE creator_agent_id = ? OR worker_agent_id = ?"
-        "    OR offered_to_agent_id = ?)"
+        "    OR offered_to_agent_id = ?"
+        "    OR EXISTS (SELECT 1 FROM job_settlement_beneficiaries b"
+        "      WHERE b.job_id = jobs.id AND b.beneficiary_agent_id = ?))"
         " OR target_type = 'invoice' AND target_id IN"
         "   (SELECT id FROM invoices WHERE created_by_agent_id = ?"
         "      OR issuer_agent_id = ? OR payer_agent_id = ?)"
@@ -553,7 +573,7 @@ def _relevance_clause(agent_id: int) -> tuple[str, list[object]]:
         " OR target_type = 'bond_series' AND target_id IN"
         "   (SELECT DISTINCT series_id FROM treasury_bonds"
         "    WHERE owner_id = ?))",
-        [agent_id] * 16,
+        [agent_id] * 17,
     )
 
 
@@ -641,6 +661,13 @@ _PR_KINDS = frozenset(
         EVT_PR_AUTO_DECLINED,
         EVT_PR_HOLD_APPLIED,
         EVT_PR_HOLD_RELEASED,
+        EVT_FINDING_ADDED,
+        EVT_FINDING_RESOLVED,
+        EVT_FINDING_VERIFIED,
+        EVT_FINDING_DISPUTED,
+        EVT_FINDING_BOUNTY_FUNDED,
+        EVT_FINDING_BOUNTY_UNFUNDED,
+        EVT_FINDING_BOUNTY_PAID,
         EVT_PROPOSAL_AUTO_LINKED,
         EVT_POLL_CREATED,
         EVT_POLL_VOTE_CAST,
@@ -702,6 +729,7 @@ _JOBS_KINDS = frozenset(
         EVT_JOB_RELEASED,
         EVT_JOB_REACTIVATED,
         EVT_JOB_UPDATED,
+        EVT_JOB_SETTLEMENT_BENEFICIARY,
         EVT_JOB_SUBSIDY_REQUESTED,
         EVT_JOB_SUBSIDY_DECIDED,
         EVT_SERVICE_CREATED,

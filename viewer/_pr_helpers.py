@@ -185,6 +185,97 @@ def _proposal_prs_panel(p: dict) -> str:
     )
 
 
+def _bounty_badge(bounties: dict, finding_id: int) -> str:
+    """One finding's fix-fund badge (proposal #710, phase 4): the funded
+    bounty plus a paid marker, or empty when unfunded.  Single copy for
+    the open and verified row renderers below."""
+    bounty = bounties.get(finding_id, {})
+    if (bounty.get("bounty_units") or 0) <= 0:
+        return ""
+    from db._credits import format_credits
+
+    return (
+        f" <span style='color:var(--warn)'>"
+        f"bounty {esc(format_credits(bounty['bounty_units']))}"
+        f"{' (paid)' if bounty.get('paid') else ''}</span>"
+    )
+
+
+def _pr_findings_panel(pr_number: int) -> str:
+    """Review findings board panel for a single PR: open bugs/issues and
+    improvements with state, plus the derived verdict counts.  Read-only -
+    the board is written through the findings MCP tools.  Used by the
+    /prs/{number} detail page; degrades to empty when the proposal has
+    no board yet."""
+    try:
+        pid = db.proposal_for_pr(pr_number)
+    except Exception:  # domain: degrade-silently - panel is ornament, diff renders
+        return ""
+    if pid is None:
+        return ""
+    try:
+        with db._conn() as conn:
+            # PR-scoped: every finding anchors to its PR, so the panel
+            # renders exactly this PR's rows with the same predicate the
+            # ledger uses for blockers (an older PR's rows can never leak
+            # in, and a stale row never paints green).
+            rows = db.findings_list(conn, pid, pr_number, "all")
+            verdict = db.finding_verdict(conn, pid, pr_number)
+            bounties = db.finding_bounty_map(conn, pr_number)
+    except Exception:  # domain: degrade-silently - diff still renders
+        return ""
+    if not rows:
+        return ""
+    # Same predicate as the ledger (reviewer_blockers / findings_list
+    # open filter): only resolved-plus-verified counts as done.  A stale
+    # row still carries its old verifier id, so testing verified_by
+    # alone would paint it green while the board counts it open.
+    open_rows = [
+        r
+        for r in rows
+        if not (r["state"] == "resolved" and r["verified_by_agent_id"] is not None)
+    ]
+    done_rows = [
+        r
+        for r in rows
+        if r["state"] == "resolved" and r["verified_by_agent_id"] is not None
+    ]
+    lines = ""
+    for r in open_rows:
+        state_color = (
+            "var(--fail)"
+            if r["state"] in ("open", "disputed", "stale")
+            else "var(--warn)"
+        )
+        bounty_badge = _bounty_badge(bounties, r["id"])
+        lines += (
+            f"<li>#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
+            f"<span style='color:{state_color};font-weight:600'>"
+            f"{esc(r['state'])}</span>"
+            f" <span style='color:var(--muted)'>{esc(r['flip_path'][:120])}</span>"
+            f"{bounty_badge}</li>"
+        )
+    for r in done_rows:
+        bounty_badge = _bounty_badge(bounties, r["id"])
+        lines += (
+            f"<li>#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
+            f"<span style='color:var(--ok);font-weight:600'>verified</span>"
+            f"{bounty_badge}</li>"
+        )
+    blockers = verdict.get("open_auto_flip_by_voter") or []
+    verdict_line = f"{len(open_rows)} open / {len(done_rows)} verified" + (
+        f" - {sum(b['n'] for b in blockers)} open auto-flip findings"
+        if blockers
+        else ""
+    )
+    return (
+        f'<div class="panel"><h2>Review findings</h2>'
+        f'<p style="color:var(--muted);font-size:13px;margin:4px 0">'
+        f"{esc(verdict_line)}</p>"
+        f"<ul>{lines}</ul></div>"
+    )
+
+
 def _pr_vote_panel(pr_number: int) -> str:
     """Vote tally panel for a single PR: the up/down/net bar, the live
     threshold, auto-merge/decline eligibility, and the voter list.  Used

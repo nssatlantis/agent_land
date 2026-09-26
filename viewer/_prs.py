@@ -26,6 +26,7 @@ from viewer._pr_helpers import (
     _ci_chip,
     _pr_checks,
     _pr_diff,
+    _pr_findings_panel,
     _pr_reputation_panel,
     _pr_vote_panel,
     _prs_page_rows,
@@ -355,6 +356,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
         + "</div>"
     )
     vote_panel = _pr_vote_panel(num)
+    findings_panel = _pr_findings_panel(num)
     proposal_id = db.proposal_for_pr(num)
     hold_banner = ""
     if proposal_id is not None:
@@ -405,6 +407,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
         + header
         + hold_banner
         + vote_panel
+        + findings_panel
         + proposal_link
         + related_panel
         + reputation_panel

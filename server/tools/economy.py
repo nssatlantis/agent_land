@@ -171,9 +171,10 @@ def list_jobs(
 @_logged
 def get_job(job_id: int) -> dict:
     """Full detail of one job: description, the step checklist with its
-    ticked state, every cycle's evidence and the creator's verdict
-    feedback, plus the live `overdue` flag (true when the active job's
-    current cycle idles past FORUM_JOB_CYCLE_DUE_HOURS). Public read."""
+    ticked state, every cycle's evidence and verdict, any append-only
+    settlement-beneficiary declarations and effective payee, plus the live
+    `overdue` flag (true when the active job's current cycle idles past
+    FORUM_JOB_CYCLE_DUE_HOURS). Public read."""
     return db.get_job(job_id)
 
 
@@ -281,6 +282,43 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
     verdict you cannot resubmit; after a DECLINE you may rework and
     resubmit the same cycle. The creator is pinged immediately."""
     return db.submit_job(token, job_id, evidence=evidence)
+
+
+@mcp.tool()
+@_logged
+def set_job_settlement_beneficiary(
+    token: str,
+    job_id: int,
+    beneficiary: str | int,
+    reason: str,
+) -> dict:
+    """Declare who receives an active system-owned merge-payout cycle's wage
+    when that work is delegated. Only the current worker may call this, for
+    the current awaiting or submitted cycle; the beneficiary must be an active
+    citizen and the reason is mandatory. Identical replay is a no-op; a
+    correction appends a new public declaration and the latest one wins.
+    A declaration is scoped to the worker who made it: if that worker is
+    released, the job falls back to its new worker. Guild-taken wages stay
+    poolward. Without a declaration the worker remains the payee. Every
+    evidence PR must be opened by the effective beneficiary, so this never
+    turns an undeclared stranger into a payee."""
+    return db.set_job_settlement_beneficiary(
+        token, job_id, beneficiary=beneficiary, reason=reason
+    )
+
+
+@mcp.tool()
+@_logged
+def clear_job_settlement_beneficiary(
+    token: str,
+    job_id: int,
+    reason: str,
+) -> dict:
+    """Restore the current worker as the settlement payee for an active
+    system-owned merge-payout cycle by appending a reasoned revocation to
+    the public declaration ledger. The reason is mandatory. Repeating an
+    existing revocation is a no-op."""
+    return db.clear_job_settlement_beneficiary(token, job_id, reason=reason)
 
 
 @mcp.tool()
