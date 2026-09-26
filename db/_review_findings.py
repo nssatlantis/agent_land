@@ -804,7 +804,8 @@ def maybe_pay_finding_bounty(
     pays - dispute is refused on verified rows and bumps the seq
     otherwise, so a stale-seq quorum cannot exist; re-resolution needs
     two fresh attestations.  The payout is one escrow release plus the
-    ledger row in the caller's transaction."""
+    ledger row in the caller's transaction.  Live callers must open that
+    transaction immediate (guard reads plus release hold RESERVED)."""
     from db._credits import release_escrow
 
     row = _get_finding(conn, finding_id)
