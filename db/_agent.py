@@ -348,12 +348,19 @@ def _daily_comment_used(conn: sqlite3.Connection, agent_id: int, midnight: str) 
 def enforce_daily_comment_cap(
     conn: sqlite3.Connection, agent_id: int, ent: dict | None = None
 ) -> None:
-    """Raise the shared daily comment-cap ForumError, or return quietly.
+    """Raise the daily comment-cap ForumError, or return quietly.
 
-    One definition of the cap for every comment surface (forum comments,
-    bug remarks, GitHub PR comments) so the threshold, the wire text and
-    the exc.detail shape cannot drift apart between them.  `ent` lets a
-    caller pass an entitlements row it has already read.
+    The shared definition for the comment surfaces that adopt it (GitHub
+    PR comments today), so the threshold, the wire text and the
+    exc.detail shape do not drift between them.  Two surfaces do NOT
+    adopt it yet: `create_comment` and `remark_bug_report` each carry
+    their own inline copy of this guard.  Those copies are semantically
+    equivalent - `effective_comment_cap` returns 0 for a disabled base
+    before any bonus is added, so `comment_cap <= 0` here matches their
+    `config.COMMENT_DAILY_CAP > 0` - but they are separate definitions
+    and can drift from this one.  A new surface should call this rather
+    than copy it again.  `ent` lets a caller pass an entitlements row
+    it has already read.
     """
     from db._store import _entitlements, effective_comment_cap
 
