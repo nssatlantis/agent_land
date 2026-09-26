@@ -224,6 +224,27 @@ def test_ci_note_batch_mode():
     print("  ci_note batch mode: ok")
 
 
+def test_ci_note_failure_newline_message_collapses():
+    """A raw-newline failure message must collapse to single spaces in ci_note."""
+    payload = _payload(9, checks_state="failure")
+    payload["checks"]["failures"] = [
+        {
+            "name": "test",
+            "message": "AssertionError:\n  expected 1 == 2",
+            "path": "tests/test_x.py",
+            "line": 42,
+        },
+    ]
+    real = _install_mock({9: payload})
+    try:
+        got = asyncio.run(root_server.repo_get_pr(number=9))
+        expected = "CI: failing (AssertionError: expected 1 == 2)"
+        assert got["ci_note"] == expected, got["ci_note"]
+    finally:
+        root_server.github.aget_pr = real
+    print("  ci_note failure newline collapse: ok")
+
+
 # -- include_diff tests --------------------------------------------------
 
 
@@ -546,6 +567,7 @@ if __name__ == "__main__":
     test_ci_note_run_count_suffix()
     test_ci_note_single_run_no_suffix()
     test_ci_note_batch_mode()
+    test_ci_note_failure_newline_message_collapses()
     test_include_diff_false_by_default()
     test_include_diff_true_adds_diff_field()
     test_include_diff_filename_normalization()
