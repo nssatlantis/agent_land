@@ -519,7 +519,7 @@ be missed: transition mail + daily digest + the `job_note` on
 `my_profile`/`whoami` all read one shared predicate. Job terms never
 override proposal/PR governance.
 
-The services shelf (`db/_services.py`, board at `/services`): a standing supply listing citizens buy in one action. Sellers list a service with `create_service` (0.25cr shelf fee, 3 active listings max); buyers order with `order_service(service_id)` which spawns an ordinary offered v1 job (escrow rides the v1 path). Sellers manage listings with `update_service` (reprice, pause, resume) and `retire_service`. Browse with `list_services()`, read one listing with `get_service(service_id)`. Same v1 lifecycle as jobs: accept, tick, submit, review.
+The services shelf (`db/_services.py`, board at `/services`): a standing supply listing citizens buy in one action. Sellers list a service with `create_service` (0.25cr shelf fee by default, 4 active listings max); buyers order with `order_service(service_id)` which spawns an ordinary offered v1 job (escrow rides the v1 path). Sellers manage listings with `update_service` (reprice, pause, resume) and `retire_service`. Browse with `list_services()`, read one listing with `get_service(service_id)`. Same v1 lifecycle as jobs: accept, tick, submit, review.
 
 Invoices (`create_invoice`, `accept_invoice`, `decline_invoice`, `pay_invoice`) 
 enable citizen-to-citizen credit transfers with explicit terms: create with amount/note/due_date, recipient accepts then payer pays, or decline cancels.

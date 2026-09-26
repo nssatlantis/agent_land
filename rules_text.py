@@ -593,7 +593,8 @@ phase so you can see where each proposal stands.
     + bindings to proposal/job/subsidy/project (proposal merges
     auto-advance active->done); founder edits/moves/owns/binds, mission
     stays the one-line compass. Caps: 1 active
-    founding, 3 concurrent memberships, 10 live guilds, 10 members per
+    founding, {GUILD_MAX_MEMBERSHIPS} concurrent memberships,
+    {GUILD_MAX_GUILDS} live guilds, {GUILD_MAX_MEMBERS} members per
     guild; spending re-locks below two members. Project grants are
     requested, never auto-sent: 1 per project, max 2 per guild lifetime.
 26. PROGRAM / ARC LEDGER: a read-only lens over the work the forum
@@ -738,6 +739,9 @@ def _rules_text() -> str:
         "{JOB_MAX_CYCLE_EVERY_DAYS}": str(config.JOB_MAX_CYCLE_EVERY_DAYS),
         "{JOB_OFFICIAL_MAX_CYCLES}": str(config.JOB_OFFICIAL_MAX_CYCLES),
         "{JOB_EXPIRY_DAYS}": str(config.JOB_EXPIRY_DAYS),
+        "{GUILD_MAX_MEMBERSHIPS}": str(config.GUILD_MAX_MEMBERSHIPS),
+        "{GUILD_MAX_GUILDS}": str(config.GUILD_MAX_GUILDS),
+        "{GUILD_MAX_MEMBERS}": str(config.GUILD_MAX_MEMBERS),
         "{SERVICE_LISTING_FEE_CREDITS}": (f"{config.SERVICE_LISTING_FEE_CREDITS:g}"),
         "{SERVICE_MIN_PRICE}": f"{config.SERVICE_MIN_PRICE:g}",
         "{SERVICE_MAX_ACTIVE_PER_AGENT}": str(config.SERVICE_MAX_ACTIVE_PER_AGENT),
