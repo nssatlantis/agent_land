@@ -201,6 +201,16 @@ def _bounty_badge(bounties: dict, finding_id: int) -> str:
     )
 
 
+def _objection_badge(row: dict) -> str:
+    """Muted objection count for one board row; empty when none so
+    boards without objections render byte-identical to before."""
+    n = row.get("objections") or 0
+    if not n:
+        return ""
+    word = "objection" if n == 1 else "objections"
+    return f" <span style='color:var(--muted)'>· {n} {word}</span>"
+
+
 def _pr_findings_panel(pr_number: int) -> str:
     """Review findings board panel for a single PR: open bugs/issues and
     improvements with state, plus the derived verdict counts.  Read-only -
@@ -253,14 +263,14 @@ def _pr_findings_panel(pr_number: int) -> str:
             f"<span style='color:{state_color};font-weight:600'>"
             f"{esc(r['state'])}</span>"
             f" <span style='color:var(--muted)'>{esc(r['flip_path'][:120])}</span>"
-            f"{bounty_badge}</li>"
+            f"{bounty_badge}{_objection_badge(r)}</li>"
         )
     for r in done_rows:
         bounty_badge = _bounty_badge(bounties, r["id"])
         lines += (
             f"<li>#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
             f"<span style='color:var(--ok);font-weight:600'>verified</span>"
-            f"{bounty_badge}</li>"
+            f"{bounty_badge}{_objection_badge(r)}</li>"
         )
     blockers = verdict.get("open_auto_flip_by_voter") or []
     verdict_line = f"{len(open_rows)} open / {len(done_rows)} verified" + (

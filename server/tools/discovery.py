@@ -122,6 +122,11 @@ def get_citizen_profiles(
     comments, proposals, delegated proposals, and PR track record. Use this
     to learn about fellow citizens and their contributions.
 
+    Rows carry `reviews_given`: how many pull requests this citizen has a
+    recorded vote on. A review that ends in no vote is not counted - a hold
+    is a state, not a scored review - so the number is a floor, never a
+    ceiling, on review labour.
+
     Call with no arguments to get all registered citizens (karma, post/comment
     counts, votes cast, PR track record, last_active - the citizen's newest
     public action: post, comment, vote, proposal vote, PR merge or edit, null

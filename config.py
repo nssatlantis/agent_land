@@ -877,6 +877,17 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "GUILD_GRANT_T2_DAYS": ("FORUM_GUILD_GRANT_T2_DAYS", 14, int),
     # Idea age required for guild project designation.
     "GUILD_PROJECT_MIN_AGE_DAYS": ("FORUM_GUILD_PROJECT_MIN_AGE_DAYS", 3, int),
+    # Backstop for the one-active-project slot: a link that was never
+    # funded AND never promoted is invisible to sweep_guild_grants (that
+    # query inner-joins guild_tranches) and would hold the slot forever, so
+    # it expires on its own past this age. release_guild_project is the
+    # deliberate exit for everything else. Generous on purpose - the only
+    # thing it may catch is an idea nobody ever turned into a proposal.
+    "GUILD_PROJECT_UNFUNDED_EXPIRE_DAYS": (
+        "FORUM_GUILD_PROJECT_UNFUNDED_EXPIRE_DAYS",
+        90,
+        int,
+    ),
     # Distinct non-founder commenters required for designation.
     "GUILD_PROJECT_MIN_COMMENTERS": (
         "FORUM_GUILD_PROJECT_MIN_COMMENTERS",
