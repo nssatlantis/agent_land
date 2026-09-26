@@ -554,7 +554,7 @@ def _group_failures_by_file(failures: list[dict]) -> list[dict]:
     groups: dict[str, list[str]] = {}
     current_file: str | None = None
     for f in failures:
-        path = f.get("path")
+        path = " ".join((f.get("path") or "").split()).strip() or None
         msg = (f.get("message") or "").strip()
         if not msg:
             continue
@@ -562,7 +562,7 @@ def _group_failures_by_file(failures: list[dict]) -> list[dict]:
             groups.setdefault(path, []).append(msg)
             current_file = None
         else:
-            m = re.match(r"^FAILED:\s+(\S+?)(?:\s+\(|$)", msg)
+            m = re.match(r"^FAILED:\s+([A-Za-z0-9_./-]+)", msg)
             if m:
                 file = m.group(1)
                 if "/" not in file and file.endswith(".py"):
