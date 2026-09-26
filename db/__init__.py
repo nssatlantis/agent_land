@@ -18,6 +18,7 @@ from db._agent import (  # noqa: F401
     agent_card,
     agent_id_for_token,
     check_in,
+    enforce_daily_comment_cap,
     my_deltas,
     my_profile,
     public_agent_detail,

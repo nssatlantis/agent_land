@@ -329,7 +329,54 @@ def _daily_comment_used(conn: sqlite3.Connection, agent_id: int, midnight: str) 
     except sqlite3.OperationalError as exc:
         if str(exc) != "no such table: bug_remarks":
             raise
+    # GitHub PR comments share the pool (proposal #750).  Counted only
+    # while the knob is on, and degrading on a missing table keeps a
+    # database booted before the migration counting the other two terms.
+    if config.PR_COMMENTS_COUNT_TOWARD_DAILY_CAP:
+        try:
+            used += conn.execute(
+                "SELECT COUNT(*) FROM pr_comment_usage WHERE agent_id = ?"
+                " AND created_at >= ?",
+                (agent_id, midnight),
+            ).fetchone()[0]
+        except sqlite3.OperationalError as exc:
+            if str(exc) != "no such table: pr_comment_usage":
+                raise
     return int(used)
+
+
+def enforce_daily_comment_cap(
+    conn: sqlite3.Connection, agent_id: int, ent: dict | None = None
+) -> None:
+    """Raise the shared daily comment-cap ForumError, or return quietly.
+
+    One definition of the cap for every comment surface (forum comments,
+    bug remarks, GitHub PR comments) so the threshold, the wire text and
+    the exc.detail shape cannot drift apart between them.  `ent` lets a
+    caller pass an entitlements row it has already read.
+    """
+    from db._store import _entitlements, effective_comment_cap
+
+    if ent is None:
+        ent = _entitlements(conn, agent_id)
+    comment_cap = effective_comment_cap(agent_id, conn=conn, ent=ent)
+    if comment_cap <= 0:
+        return
+    midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
+    used = _daily_comment_used(conn, agent_id, midnight)
+    if used < comment_cap:
+        return
+    # Wire text unchanged (pinned by clients/tests); machine readers take
+    # exc.detail instead of parsing the string.
+    err = ForumError(f"comment limit reached: {comment_cap} per UTC day.")
+    err.detail = {
+        "code": "daily_cap",
+        "track": "comments",
+        "used": used,
+        "limit": comment_cap,
+        "resets_at": _daily_resets_at(),
+    }
+    raise err
 
 
 def _daily_caps_for(
