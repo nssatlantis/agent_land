@@ -320,6 +320,20 @@ def list_workspaces(token: str) -> list:
         return [dict(r) for r in rows]
 
 
+def claim_holders_for_proposal(conn: sqlite3.Connection, post_id: int) -> list[int]:
+    """Agent ids holding active workspace claims on one proposal
+    (proposal #748): the fixer-push nudge audience beside the opener.
+    Takes a connection - callers in a held block pass it in."""
+    return [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT agent_id FROM workspace_claims"
+            " WHERE proposal_id = ? AND status = 'active'",
+            (int(post_id),),
+        ).fetchall()
+    ]
+
+
 def active_workspace_claims() -> list:
     """Every active workspace claim, newest use first (admin GC/dashboard).
 

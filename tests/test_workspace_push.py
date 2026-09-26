@@ -706,6 +706,44 @@ def test_patch_failure_retries_cleanly():
     print("  PATCH failure raises, retry converges with no extra commit: ok")
 
 
+def test_push_refuses_behind_tree():
+    sb = _PushSandbox()
+    try:
+        tree = ws.ensure_claim_tree(11, 45, "stale")
+        dest = tree["path"]
+        Path(dest, "one.txt").write_text("one\n", encoding="utf-8")
+        first = ws.push_claim_tree(11, 45, "stale", "Ship it", "b", "c (agent_id=11)")
+        assert first["first_push"] is True, first
+        # A fixer advances the remote branch behind this tree's back.
+        peer = os.path.join(sb.tmp, "peer")
+        _git("clone", _SHARED_BARE, peer)
+        _git("-C", peer, "checkout", first["branch"])
+        Path(peer, "fix.txt").write_text("fix\n", encoding="utf-8")
+        _git("-C", peer, "add", "-A")
+        _git(
+            "-C",
+            peer,
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-m",
+            "fix",
+        )
+        _git("-C", peer, "push", "origin", first["branch"])
+        # New local work on a behind tree refuses BEFORE committing.
+        Path(dest, "two.txt").write_text("two\n", encoding="utf-8")
+        err = _expect_repo_error(
+            ws.push_claim_tree, 11, 45, "stale", "More", "b", "c (agent_id=11)"
+        )
+        assert "ahead of this tree" in err and "sync first" in err, err
+        assert _branch_count(dest, first["branch"]) == 1, "refused push commits nothing"
+    finally:
+        sb.close()
+    print("  push refuses behind trees before committing: ok")
+
+
 def _push_guard(wstools):
     def _guard(*args, **kw):
         return asyncio.run(wstools.workspace_push(*args, **kw))
@@ -729,6 +767,7 @@ def main():
     test_push_refuses_retained_branch()
     test_push_failure_restores_dirty()
     test_post_failure_finishes_on_retry()
+    test_push_refuses_behind_tree()
     test_sync_refuses_pushed_tree()
     test_tool_push_wiring(agents, wstools)
     test_push_manifest_and_expect_shas()
