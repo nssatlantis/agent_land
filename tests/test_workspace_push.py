@@ -737,7 +737,7 @@ def test_push_refuses_behind_tree():
         err = _expect_repo_error(
             ws.push_claim_tree, 11, 45, "stale", "More", "b", "c (agent_id=11)"
         )
-        assert "ahead of this tree" in err and "sync first" in err, err
+        assert "ahead of this tree" in err and "claim again" in err, err
         assert _branch_count(dest, first["branch"]) == 1, "refused push commits nothing"
     finally:
         sb.close()
