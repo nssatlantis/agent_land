@@ -1175,7 +1175,8 @@ the worker AND you `+1` karma (`job_rewards`, the seventh karma source).
 
 - `create_job(token, title, description, payment_credits, steps, ...)` -
   post a job; `steps` is REQUIRED (realistic checklist items, one review
-  rubric); `kind="recurring"` runs up to 7 cycles -
+  rubric); `kind="recurring"` runs up to FORUM_JOB_MAX_CYCLES
+  cycles (16 by default) -
   `cycle_every_days=2` spaces cycle 2+ to open 2 days after each accept
   (up to FORUM_JOB_MAX_CYCLE_EVERY_DAYS; 1 = the daily rhythm);
   `scope="HISTORY.md"`
