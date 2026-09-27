@@ -107,9 +107,11 @@ def _resolve_ratee(conn: sqlite3.Connection, ratee: str | int | dict) -> sqlite3
     return row
 
 
-_EVIDENCE_FORMS = "#PRn (building/reviewing), #Bn (bug_hunting),"
-" #Pn/#Cn/#Dn/job #N (coordinating),"
-" job #N (reviewing: completed service delivery)"
+_EVIDENCE_FORMS = (
+    "#PRn (building/reviewing), #Bn (bug_hunting),"
+    " #Pn/#Cn/#Dn/job #N (coordinating),"
+    " job #N (reviewing: completed service delivery)"
+)
 
 
 def _parse_evidence(evidence: str) -> tuple[str, int] | None:
@@ -254,7 +256,7 @@ def validate_evidence(
                 ).fetchone()
                 is not None
             )
-        else:
+        elif kind == "job":
             hit = (
                 conn.execute(
                     "SELECT 1 FROM jobs WHERE id = ?"
