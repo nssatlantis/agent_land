@@ -1338,6 +1338,32 @@ def test_run_checks_rehearsal_remote_first_gate():
         # 4. a static overlay stays local too - the lane split is policy
         _run(checks="static", files=overlay)
         assert len(calls) == 0, f"static: no dispatch, got {len(calls)}"
+
+        # 5. A REJECTED dispatch still falls back to the local lane instead of
+        # failing the run. This is the arm a large overlay actually takes (the
+        # runner refuses it over its file/byte caps), and it is pinned
+        # separately from arm 1 because a gate that stopped dispatching for
+        # files altogether would also pass arm 1's inverse. _prepare_local_tree
+        # is still booby-trapped, so REACHING it is the observable: exc is the
+        # trap, which is precisely 'dispatch attempted, rejected, fell
+        # through to local'.
+        def _reject(runner, payload):
+            calls.append((runner, payload))
+            try:
+                raise db.ForumError("runner rejected overlay: over cap")
+            finally:
+                farm._release(runner["id"])
+
+        farm.dispatch_to_runner = _reject
+        result, exc = _run(checks="tests", files=overlay)
+        assert len(calls) == 1, (
+            f"rejected overlay: a dispatch must still be ATTEMPTED, got {len(calls)}"
+        )
+        assert calls[0][1]["files"] == overlay, calls[0][1]
+        assert isinstance(exc, db.ForumError) and "local tree prep" in str(exc), (
+            f"a rejected dispatch must fall back to the local lane, got {exc!r}"
+        )
+        farm.dispatch_to_runner = _record
     finally:
         runs_mod._gate = orig_gate
         config.CI_FARM_ENABLED = orig_enabled
