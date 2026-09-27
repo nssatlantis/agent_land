@@ -357,7 +357,13 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
     )
     vote_panel = _pr_vote_panel(num)
     findings_panel = _pr_findings_panel(num)
-    proposal_id = db.proposal_for_pr(num)
+    try:
+        proposal_id = db.proposal_for_pr(num)
+    except Exception:
+        # Same failure the panel's lookup handler just degraded from.
+        # Unguarded here it re-raised and 500'd the page, so the degraded
+        # panel this PR adds was never actually sent (proposal #776).
+        proposal_id = None
     hold_banner = ""
     if proposal_id is not None:
         try:
