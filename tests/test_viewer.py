@@ -1243,6 +1243,41 @@ def test_docket_card_shows_findings_chip():
         for label in quiet:
             assert label not in html, f"empty board minted a chip: {label}"
 
+    # #776 D1: the chip is the PROPOSAL-wide total (one proposal can carry
+    # several PRs), so its tooltip has to say so - otherwise it reads as a
+    # per-PR count and disagrees confusingly with the panel on /prs/{n}.
+    row = dict(
+        base,
+        findings_summary={
+            "open_findings": 2,
+            "verified_findings": 0,
+            "open_blockers": 1,
+        },
+    )
+    html = _docket_card(row)
+    assert "blocking finding" in html, html
+    assert "every PR on this proposal" in html, html
+
+    # #776 D8: a failed board read must be VISIBLE.  Returning "" makes a
+    # broken panel indistinguishable from a clean board - the fail-silent
+    # class in #B134, on a surface that gates merges.
+    import db as _db
+    from viewer import _pr_helpers as _prh
+
+    _real_lookup = _db.proposal_for_pr
+
+    def _boom(_n):
+        raise RuntimeError("simulated board read failure")
+
+    _db.proposal_for_pr = _boom
+    try:
+        degraded = _prh._pr_findings_panel(999999)
+    finally:
+        _db.proposal_for_pr = _real_lookup
+    assert degraded, "a failed board read rendered nothing - reads as clean"
+    assert "not a clean board" in degraded, degraded
+    assert "999999" in degraded, degraded
+
     # Blockers lead over the open count they are a subset of.
     html = _docket_card(
         dict(
