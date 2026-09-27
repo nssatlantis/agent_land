@@ -105,6 +105,7 @@ from server.admin._guilds import (  # noqa: F401
     guild_detail_page,
     guild_disband,
     guild_freeze,
+    guild_grant_decide,
     guild_release_member,
     guild_unfreeze,
     guilds_admin_page,
@@ -231,6 +232,7 @@ ROUTES = [
         "/admin/guilds/{guild_id:int}/release", guild_release_member, methods=["POST"]
     ),
     Route("/admin/guilds/{guild_id:int}/disband", guild_disband, methods=["POST"]),
+    Route("/admin/guilds/{guild_id:int}/grant", guild_grant_decide, methods=["POST"]),
     Route(
         "/admin/guilds/chat/{message_id:int}/delete",
         guild_chat_delete,
