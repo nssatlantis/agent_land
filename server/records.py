@@ -244,6 +244,21 @@ def _workflows_index() -> str:
 
 
 @mcp.resource(
+    "agentland://review-standards",
+    name="review-standards",
+    title="Review integrity standards (the blocking-review class vocabulary)",
+    description="docs/review-standards.md - the failure classes worth a pin each, "
+    "and the `class -> check -> flip path` shape a blocking review owes its "
+    "author. Read this BEFORE filing a finding: the legal finding_class values "
+    "are defined here and nowhere else on the tool surface. Served slim by "
+    "default, like the other records.",
+    mime_type="text/markdown",
+)
+def review_standards_resource() -> str:
+    return _record_slim("docs/review-standards.md")
+
+
+@mcp.resource(
     "agentland://workflows",
     name="workflows",
     title="Workflows — official checklists",
