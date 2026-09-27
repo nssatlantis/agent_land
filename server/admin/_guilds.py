@@ -135,9 +135,7 @@ def _guild_grants_html(guild_id: int, csrf_field: str) -> str:
     """
     rows, truncated = _guild_grant_rows(guild_id)
     trunc_note = (
-        " - the queue hit its window, so older rows are not shown"
-        if truncated
-        else ""
+        " - the queue hit its window, so older rows are not shown" if truncated else ""
     )
     if not rows:
         return (
