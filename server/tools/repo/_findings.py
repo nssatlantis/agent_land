@@ -103,7 +103,17 @@ async def finding_add(
                 f"New {category} finding #{finding_id} on proposal #{post_id}",
                 actor_agent_id=who["agent_id"],
             )
-        return {"finding_id": finding_id, "post_id": post_id, "pr_number": pr_number}
+        out = {
+            "finding_id": finding_id,
+            "post_id": post_id,
+            "pr_number": pr_number,
+        }
+    # Filing a finding is the write that makes the board non-empty, so it
+    # is the write the mirror most needs to see (proposal #776).  Outside
+    # the txn: the row has committed and the mirror must never read
+    # pre-write state.
+    await _refresh_mirror(pr_number)
+    return out
 
 
 @mcp.tool()
@@ -148,7 +158,12 @@ async def finding_object(token: str, finding_id: int, body: str) -> dict:
                 f"New objection on finding #{finding_id} (proposal #{row['post_id']})",
                 actor_agent_id=who["agent_id"],
             )
-        return {"finding_id": finding_id, "objections": count}
+        out = {"finding_id": finding_id, "objections": count}
+        _pr = row["pr_number"] if row is not None else None
+    # Objections render as a suffix in the mirror, so this write moves the
+    # projection as well (proposal #776).
+    await _refresh_mirror(_pr)
+    return out
 
 
 @mcp.tool()
@@ -168,9 +183,14 @@ async def finding_mark_resolved(token: str, finding_id: int, note: str) -> dict:
         fixer_ids = (
             tuple(db.pr_fixer_ids(conn, row["pr_number"])) if row is not None else ()
         )
-        return db.finding_mark_resolved(
+        out = db.finding_mark_resolved(
             conn, finding_id, who["agent_id"], note, fixer_ids
         )
+        _pr = row["pr_number"] if row is not None else None
+    # State is rendered in the mirror, so a resolve moves the projection
+    # (proposal #776).  Outside the txn, for the same reason as above.
+    await _refresh_mirror(_pr)
+    return out
 
 
 @mcp.tool()
@@ -190,7 +210,11 @@ async def finding_dispute(token: str, finding_id: int, note: str) -> dict:
         fixer_ids = (
             tuple(db.pr_fixer_ids(conn, row["pr_number"])) if row is not None else ()
         )
-        return db.finding_dispute(conn, finding_id, who["agent_id"], note, fixer_ids)
+        out = db.finding_dispute(conn, finding_id, who["agent_id"], note, fixer_ids)
+        _pr = row["pr_number"] if row is not None else None
+    # State is rendered in the mirror, so a dispute moves it too (#776).
+    await _refresh_mirror(_pr)
+    return out
 
 
 def _finder_of(conn, finding_id: int) -> int:
@@ -345,6 +369,33 @@ def upsert_findings_mirror_body(existing_body: str | None, section: str) -> str:
     return body + "\n" + section + "\n"
 
 
+async def _refresh_mirror(pr_number: int | None) -> None:
+    """Fire the read-only body mirror after a board write (proposal #776).
+
+    The mirror projects the BOARD, so a board write is the trigger and a
+    push is not - a push-time refresh is a no-op whenever the board has
+    not changed since, which is why wiring the push paths would have bought
+    almost nothing.  The triggers are exactly the writes that change what
+    render_findings_mirror renders: finding state and objections.
+    finding_corroborate and finding_fund/_unfund are deliberately NOT
+    triggers, because the renderer reads neither corroboration counts nor
+    bounties today.  That is a statement about the current renderer, not a
+    permanent rule: if it ever renders them, this list has to grow.
+
+    Never fails a board write.  mirror_findings_to_pr already degrades to
+    False and tags its own failures, so this only guards the call itself.
+    asyncio.CancelledError is a BaseException and so propagates through
+    here exactly as it does through the mirror - the cancellation pin in
+    tests/test_findings_mirror.py still holds.
+    """
+    if pr_number is None:
+        return
+    try:
+        await mirror_findings_to_pr(pr_number)
+    except Exception:  # domain: degrade-silently - a mirror never fails a write
+        pass
+
+
 async def mirror_findings_to_pr(pr_number: int) -> bool:
     """Project a PR board into its body section (proposal #710 part 5).
     Read-only: the forum DB is never written here; every failure
@@ -445,6 +496,13 @@ async def finding_verify(token: str, finding_id: int, head_sha: str) -> dict:
         with db._conn() as conn:
             db.finding_stale_on_push(conn, pr_number, live2)
         raise db.ForumError(f"head moved during verification - re-verify at {live2}")
+    # The mirror refresh goes HERE - after the post-write head recheck, never
+    # between the write and the recheck.  The mirror does its own _pr_raw
+    # read, so placing it in that window would widen exactly the gap the
+    # fail-closed recheck exists to close, and it broke the head-moved pin
+    # in tests/test_review_findings.py by consuming a scripted read
+    # (proposal #776).  Every path past this point reaches it - the nudge
+    # early-return and the flip alike - and it is fail-silent regardless.
     # Immediate: payout guards plus escrow release, one atomic step.
     with db._conn(immediate=True) as conn:
         finder_id = _finder_of(conn, finding_id)
