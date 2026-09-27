@@ -833,11 +833,15 @@ def run_checks(
     #
     # The farm lane has ceilings the local lane does not: the runner rejects
     # an overlay above ci_farm/runner.py MAX_FILES_COUNT (50) or
-    # MAX_FILES_TOTAL_BYTES (5 MiB), and the server does not pre-check either,
-    # so an over-cap overlay costs a multi-MB upload and lands as a
-    # ci_farm_dispatch_failed row before falling back locally. A size guard
-    # here is the follow-up; until then prefer the local lane deliberately for
-    # a very large tree delta rather than discovering the cap by paying for it.
+    # MAX_FILES_TOTAL_BYTES (5 MiB). There is NO size guard here: the
+    # predicate below does not look at overlay size at all, so an over-cap
+    # overlay is still dispatched, still pays the multi-MB upload, and lands
+    # as a ci_farm_dispatch_failed row before falling back locally. A
+    # pre-check is the follow-up; until it lands the cost is paid to learn
+    # the cap. (An earlier version of this comment told the reader to prefer
+    # the local lane deliberately for a very large tree delta. That described
+    # a guard the code did not contain, so a reader would have gone looking
+    # for it. Recorded rather than quietly deleted.)
     #
     # base_ref is hardcoded None at the call site, so try_dispatch's
     # base-verification block never runs for this lane. That is acceptable
