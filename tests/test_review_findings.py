@@ -123,7 +123,8 @@ def main():
         assert len(db.findings_list(conn)) == 2, db.findings_list(conn)
         assert len(db.findings_queue(conn, limit=1)) == 1, "queue honours its bound"
         # A negative limit is UNBOUNDED in SQLite, so the cap must clamp.
-        assert len(db.findings_queue(conn, limit=-1)) == 2, "negative limit clamps"
+        # A negative LIMIT is UNBOUNDED in SQLite; the clamp floors it at 1.
+        assert len(db.findings_queue(conn, limit=-1)) == 1, "negative limit clamps to 1"
         # The unscoped read is the open queue only: "closed" must be refused
         # rather than answered with open rows under a "closed" label.
         err = expect_error(db.findings_list, conn, None, None, "closed")
