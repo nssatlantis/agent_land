@@ -19,11 +19,14 @@ hunting in the wrong direction.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
-import db
-
 _ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+import db  # noqa: E402
 _DOC = "docs/review-standards.md"
 
 # One row per legal class: | `token` | what it names |
