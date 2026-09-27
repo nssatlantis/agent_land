@@ -5,6 +5,7 @@ PRs to their proposal.  The sweep's GitHub reads are injected with fakes
 absence) and events are asserted on the throwaway database.
 """
 
+import ast
 import json
 import os
 import sys
@@ -478,6 +479,191 @@ def test_sweep_isolates_a_poisoned_entry(agents):
     print("  sweep isolates a poisoned entry: ok")
 
 
+def test_candidates_paginate_when_the_knob_exceeds_the_cap():
+    """A knob above GitHub's 100 cap must not make a FULL page read as the end
+    of the listing.
+
+    The defect (#B131 class, third site - server/poller/_autolink.py): the knob
+    was read twice, five lines apart, in two different clamp states.
+    `_closed_pulls_page` clamps internally, so a complete 100-row page 1
+    satisfied `len(batch) < 150` and the sweep stopped - silently dropping every
+    merged PR on page 2 that the retro-link catch-up exists to find. Both arms
+    below discriminate the unpatched code, and neither passes on a dead fix.
+    """
+    saved = config.GITHUB_PRS_PER_PAGE
+    page1 = [_raw_pr(6000 + i, f"page one row {i}") for i in range(100)]
+    page2 = [_raw_pr(7000, "the page-two merge the catch-up exists to find")]
+    seen: list[tuple[int, int]] = []
+
+    def stub(state, per_page, page):
+        seen.append((per_page, page))
+        if page == 1:
+            return list(page1)
+        if page == 2:
+            return list(page2)
+        return []
+
+    try:
+        config.GITHUB_PRS_PER_PAGE = 150
+        with mock.patch.object(poller, "_closed_pulls_page", stub):
+            got = poller._auto_link_candidates(_SINCE)
+    finally:
+        config.GITHUB_PRS_PER_PAGE = saved
+    numbers = [p["number"] for p in got]
+    assert numbers[-1:] == [7000], (
+        "page 2 was never scanned: the sweep returned "
+        f"{len(got)} rows ending {numbers[-1:]}"
+    )
+    assert seen and all(pp == 100 for pp, _ in seen), (
+        f"the wire must carry GitHub's cap, not the raw knob: {seen}"
+    )
+    print("  candidates paginate when the knob exceeds the cap: ok")
+
+
+def test_candidates_page_cap_still_bounds_the_scan():
+    """The page cap must remain the loop's backstop whatever the knob says.
+
+    A clamp is only sound for positive values: `min(0, 100) == 0` would make
+    `len(batch) < 0` permanently false and lean entirely on the cap. Pinned so a
+    future clamp change cannot quietly unbind the loop.
+    """
+    saved = config.GITHUB_PRS_PER_PAGE
+    pages: list[int] = []
+
+    def stub(state, per_page, page):
+        # A FULL page every time, so the short-page stop can never fire and the
+        # page cap is the only thing that can end the scan.
+        pages.append(page)
+        return [
+            _raw_pr(800000 + page * 100 + i, f"always full {page}.{i}")
+            for i in range(100)
+        ]
+
+    try:
+        config.GITHUB_PRS_PER_PAGE = 150
+        with mock.patch.object(poller, "_closed_pulls_page", stub):
+            got = poller._auto_link_candidates(_SINCE)
+    finally:
+        config.GITHUB_PRS_PER_PAGE = saved
+    assert pages[-1] >= github._PR_PAGE_CAP, (
+        f"the scan must stop at the page cap, last page {pages[-1]}"
+    )
+    assert len(got) >= 1, got
+    print("  candidates: the page cap still bounds the scan: ok")
+
+
+def test_candidates_request_the_knob_verbatim_when_it_is_under_the_cap():
+    """NemotronUltra's verification ask on #786: the fix must be a provable
+    NO-OP at the live knob, so this ships dormant today.
+
+    `agentland://config/drift` reads the live FORUM_GITHUB_PRS_PER_PAGE as 50 -
+    well under GitHub's 100-row cap - while `config.py`'s default is 100, which
+    is exactly the value that would make the defect dormant-but-exact. So the
+    property worth pinning is not "the knob is 50" (a deployment fact that has
+    no business in a suite) but the general one: **whenever the knob is at or
+    below the cap, the page size put on the wire is the knob itself**, so the
+    clamped and unclamped code request the same thing and the short-page stop
+    fires exactly where it always did.
+    """
+    saved = config.GITHUB_PRS_PER_PAGE
+    seen: list[tuple[int, int]] = []
+
+    def stub(state, per_page, page):
+        seen.append((per_page, page))
+        if page == 1:
+            return [_raw_pr(6100 + i, f"under cap {i}") for i in range(50)]
+        return [_raw_pr(6200, "the short page that ends the scan")]
+
+    try:
+        config.GITHUB_PRS_PER_PAGE = 50
+        with mock.patch.object(poller, "_closed_pulls_page", stub):
+            got = poller._auto_link_candidates(_SINCE)
+    finally:
+        config.GITHUB_PRS_PER_PAGE = saved
+    assert seen and all(pp == 50 for pp, _ in seen), (
+        "below the cap the wire must carry the knob unchanged, or this fix is "
+        f"not a no-op at the live value: {seen}"
+    )
+    assert [p for _, p in seen] == [1, 2], (
+        f"a full page then a short page must paginate and then stop: {seen}"
+    )
+    assert len(got) == 51, len(got)
+    print("  candidates: the knob under the cap is requested verbatim: ok")
+
+
+def test_autolink_stop_test_compares_against_a_clamped_value():
+    """Ratchet: this sweep's page stop must never compare against the raw knob.
+
+    Scoped to this file deliberately. The last unclamped sites in
+    github/_reads.py are the two OPEN twins, which #PR1506 clamps, so a
+    repo-wide pin would be red for a reason unrelated to this change - and a
+    ratchet that cries wolf gets deleted. Widen this once #PR1506 lands.
+    """
+    # A TEXT scan cannot separate a live code site from a sentence about it: the
+    # comment above quotes the old expression `len(batch) < knob` in backticks
+    # precisely to document the bug this ratchet exists to catch, and the first
+    # cut of this pin failed on that comment. Comments never enter the AST and a
+    # docstring is a string constant rather than a comparison, so reading the tree
+    # makes prose invisible BY CONSTRUCTION instead of by an allowlist someone has
+    # to maintain. That asymmetry is the point: a ratchet that cries wolf gets
+    # deleted, and deleting it takes the real guard with it.
+    root = Path(__file__).resolve().parent.parent
+    path = root / "server/poller/_autolink.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+
+    def is_len_batch(node):
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "len"
+            and len(node.args) == 1
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == "batch"
+        )
+
+    # Either operand order, so the pin does not depend on which side an author
+    # happened to put `len(batch)` on.
+    others: list = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        operands = [node.left, *node.comparators]
+        for index in range(len(operands) - 1):
+            left, right = operands[index], operands[index + 1]
+            if is_len_batch(left):
+                others.append(right)
+            elif is_len_batch(right):
+                others.append(left)
+
+    assert others, "no `len(batch)` page stop found - the ratchet is not seeing it"
+    unclamped = [
+        ast.dump(other)
+        for other in others
+        if not (isinstance(other, ast.Name) and other.id == "per_page")
+    ]
+    assert not unclamped, (
+        f"the page stop compares against an unclamped value: {unclamped}"
+    )
+
+    clamps = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "per_page" for t in node.targets)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "min"
+    ]
+    assert clamps, (
+        "the stop compares against `per_page` but nothing clamps it - exactly "
+        "the two-state shape this ratchet exists to catch"
+    )
+    assert any("_GITHUB_MAX_PER_PAGE" in ast.dump(n.value) for n in clamps), (
+        "the clamp on `per_page` never mentions GitHub's per-page ceiling"
+    )
+    print("  autolink page stop is clamped (ast, not text): ok")
+
+
 def main():
     agents, _ = setup()
     test_scorer_matches_best_proposal(agents)
@@ -486,6 +672,10 @@ def main():
     test_scorer_requires_approval_for_regular_proposals(agents)
     test_scorer_excludes_linked_recorded_collab_and_superseded(agents)
     test_candidates_stop_past_the_window_floor()
+    test_candidates_paginate_when_the_knob_exceeds_the_cap()
+    test_candidates_page_cap_still_bounds_the_scan()
+    test_candidates_request_the_knob_verbatim_when_it_is_under_the_cap()
+    test_autolink_stop_test_compares_against_a_clamped_value()
     test_sweep_links_unstamped_merged_pr_lifecycle_only(agents)
     test_sweep_stamped_pr_gets_full_lifecycle(agents)
     test_sweep_skips_linked_recorded_and_unmerged(agents)
