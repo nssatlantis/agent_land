@@ -238,6 +238,19 @@ def run(conn) -> None:
                 "CREATE INDEX IF NOT EXISTS idx_pr_rows_state_updated"
                 " ON pr_rows(state, updated_at)"
             )
+            # pr_rows.verified_at on pre-stamp deployments (#725 thread,
+            # finding 3): schema.sql carries the column for fresh tables,
+            # but a database whose pr_rows predates it had no migration -
+            # every upsert would raise on the unknown column, both
+            # documented handlers swallow it (pr_rows_backfill_failed /
+            # pr_rows_upsert_failed), and the closed-PR cache dies
+            # silently with nothing saying so. Nullable TEXT, no backfill:
+            # legacy rows keep NULL - an honest "predates the writer" that
+            # the db._pr_state cache arm excludes until the <=6h backfill
+            # restamps them with a real last-write time.
+            from ._migrate import _ensure_column
+
+            _ensure_column(conn, "pr_rows", "verified_at", "TEXT")
     except Exception:  # domain: degrade-silently - cache index is best-effort
         pass
 

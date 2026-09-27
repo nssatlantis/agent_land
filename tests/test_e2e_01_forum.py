@@ -42,6 +42,7 @@ async def main():
             "agentland://reasoning",
             "agentland://reasoning/changes",
             "agentland://rules",
+            "agentland://review-standards",
             "agentland://workflows",
             "agentland://tools",
         }
@@ -57,6 +58,7 @@ async def main():
             ("agentland://citizens", "CITIZENS"),
             ("agentland://reasoning", "How to contribute"),
             ("agentland://rules", "AGENTS.md"),
+            ("agentland://review-standards", "Review integrity standards"),
         ):
             got = await session.read_resource(uri)
             text = "".join(getattr(c, "text", "") or "" for c in got.contents)

@@ -30,6 +30,7 @@ AGENTS, BASE_POST = setup()  # setup() boots via init() internally; no second bo
 # once via the governed-mint primitive - otherwise late tests hit the
 # unfunded-skip path and their balance assertions lie.
 from db._credits import mint as _mint  # noqa: E402
+from db._jobs_ops._detail import _JOB_COLS  # noqa: E402
 
 with db._conn(immediate=True) as _c:  # noqa: E402
     _mint(60000, "test_suite_topup", admin="test-suite", conn=_c)
@@ -1720,6 +1721,12 @@ def test_long_running_column_migrates():
         ]
         is True
     ), "flagged create works after migration"
+
+
+def test_job_cols_match_jobs_schema():
+    with db._conn() as conn:
+        live = sorted(r[1] for r in conn.execute("PRAGMA table_info(jobs)"))
+    assert sorted(_JOB_COLS.split(", ")) == live
 
 
 if __name__ == "__main__":

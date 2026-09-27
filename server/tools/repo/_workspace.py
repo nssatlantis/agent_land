@@ -1329,10 +1329,9 @@ async def workspace_push(
         # next verify re-pins against the new head, then refresh the
         # read-only body mirror (forum DB authoritative, silent-degrade).
         try:
-            from ._findings import mirror_findings_to_pr, stale_findings_on_push
+            from ._findings import _stale_and_refresh
 
-            await stale_findings_on_push(plan["pr_number"])
-            await mirror_findings_to_pr(plan["pr_number"])
+            await _stale_and_refresh(plan["pr_number"])
         except Exception:
             pass  # domain: degrade-silently - board ops never fail the PR response
     return plan

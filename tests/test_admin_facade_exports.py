@@ -74,6 +74,7 @@ EXPECTED = [
     "admin_review_job",
     "admin_reactivate_job",
     "admin_set_job_long_running",
+    "admin_set_job_rotate_taker",
     "create_stake",
     "delete_stake",
     # workflows

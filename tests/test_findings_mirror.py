@@ -226,6 +226,98 @@ def main():
         github._pr_raw = real_raw
     assert network_calls == [], "empty boards skip without network"
 
+    # --- every declared trigger really CALLS the refresh (proposal #776) -
+    # A comment naming a call site is not a call site.  MiMo caught exactly
+    # that on this PR: finding_verify carried the comment explaining its new
+    # position and no call, and two rehearsals plus a green GitHub run were
+    # all perfectly happy, because the pins covered the helper's internals
+    # and nothing covered the wiring.  This asserts the wiring.
+    import ast
+    import inspect
+    import textwrap
+
+    def _refresh_sites(fn, name="_refresh_mirror"):
+        """(awaited, in_txn) for every call to `name` in fn.
+
+        Asked per CALL, not per function. The first version of this pin
+        asked whether the function contained a `with ... _conn` block at
+        all, which every trigger does - so it rejected correct code and
+        could not have passed wrong code. A comment can never satisfy
+        either tuple element, because both are read off the AST.
+        """
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        stack = []
+        sites = []
+
+        def walk(node):
+            stack.append(node)
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == name
+            ):
+                parent = stack[-2] if len(stack) > 1 else None
+                in_txn = any(
+                    isinstance(a, (ast.With, ast.AsyncWith)) and "_conn" in ast.dump(a)
+                    for a in stack
+                )
+                sites.append((isinstance(parent, ast.Await), in_txn))
+            for child in ast.iter_child_nodes(node):
+                walk(child)
+            stack.pop()
+
+        walk(tree)
+        return sites
+
+    for _fn in (
+        "finding_add",
+        "finding_object",
+        "finding_mark_resolved",
+        "finding_dispute",
+        "finding_verify",
+    ):
+        _sites = _refresh_sites(getattr(ftools, _fn))
+        assert _sites, f"{_fn} does not call _refresh_mirror"
+        assert all(a for a, _ in _sites), f"{_fn} calls it without await"
+        assert not any(t for _, t in _sites), (
+            f"{_fn} refreshes inside a db._conn() block"
+        )
+    # The deliberate non-trigger must not grow a call by accident.
+    assert not _refresh_sites(ftools.finding_corroborate), (
+        "finding_corroborate is not a trigger"
+    )
+    # The staling family is a trigger: it writes the rendered `state`.
+    assert _refresh_sites(ftools._stale_and_refresh), (
+        "staling must re-project; it writes the rendered state"
+    )
+
+    # --- the write-path trigger never fails a write (#776 D2) ------------
+    def _dead(number):
+        raise RuntimeError("network down")
+
+    github._pr_raw = _dead
+    try:
+        # A dead mirror is swallowed: a projection failure must never fail
+        # the board write that triggered it.
+        assert asyncio.run(ftools._refresh_mirror(4242)) is None
+
+        # Cancellation still propagates, exactly as through the mirror.
+        def _cancel(number):
+            raise asyncio.CancelledError()
+
+        github._pr_raw = _cancel
+        try:
+            asyncio.run(ftools._refresh_mirror(4242))
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("cancellation must propagate through refresh")
+        # A finding with no PR cannot be projected, and says so by doing
+        # nothing rather than raising.
+        assert asyncio.run(ftools._refresh_mirror(None)) is None
+    finally:
+        github._pr_raw = real_raw
+
     # --- cancellation propagates, never degrades ------------------------
     def _cancelled(number):
         raise asyncio.CancelledError()

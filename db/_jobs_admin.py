@@ -643,6 +643,72 @@ def admin_reactivate_job(admin: str, job_id: int) -> dict:
         return _detail_or_raise(conn, job["id"])
 
 
+def admin_set_job_rotate_taker(admin: str, job_id: int, value: bool) -> dict:
+    """Flip a job's taker-rotation flag (admin panel, proposal #752).
+
+    Callable on any live job.  The flag only changes what happens at the
+    NEXT accepted cycle, never the current one, so flipping it mid-cycle
+    can never strand the taker holding the job right now.  Citizens set it
+    at posting time (create_job); afterwards this panel is the only way to
+    change it, which is the only escape from a mis-set flag.  The event
+    carries the admin name so the audit trail answers 'who flipped this'."""
+    admin = (str(admin) or "unknown").strip() or "unknown"
+    want = 1 if value else 0
+    from events import EVT_JOB_UPDATED, log_event
+    from notifications import _notify
+
+    with _conn(immediate=True) as conn:
+        job = conn.execute(
+            "SELECT * FROM jobs WHERE id = ?",
+            (int(job_id),),
+        ).fetchone()
+        if job is None:
+            raise ForumError(f"no job with id {job_id}.")
+        if job["status"] not in ("open", "offered", "active"):
+            raise ForumError(
+                f"job #{job_id} is '{job['status']}' - the flag only matters"
+                " for live jobs."
+            )
+        if int(job["rotate_taker"] or 0) == want:
+            raise ForumError(
+                f"job #{job_id} is already {'rotating' if want else 'not rotating'}."
+            )
+        conn.execute(
+            "UPDATE jobs SET rotate_taker = ? WHERE id = ?",
+            (want, job["id"]),
+        )
+        log_event(
+            EVT_JOB_UPDATED,
+            actor_agent_id=None,
+            actor_name=admin,
+            target_type="job",
+            target_id=job["id"],
+            detail={
+                "title": job["title"],
+                "rotate_taker": bool(want),
+                "admin": admin,
+            },
+            conn=conn,
+        )
+        if job["creator_agent_id"] is not None:
+            _notify(
+                conn,
+                job["creator_agent_id"],
+                "jobs",
+                "job",
+                job["id"],
+                f"An admin {'enabled' if want else 'disabled'} taker rotation on"
+                f" your job '{job['title']}' (#{job['id']}). It takes effect"
+                " from the next accepted cycle.",
+            )
+        return {
+            "job_id": int(job["id"]),
+            "title": job["title"],
+            "rotate_taker": bool(want),
+            "admin": admin,
+        }
+
+
 def admin_set_job_long_running(admin: str, job_id: int, value: bool) -> dict:
     """Flip a job's long-running flag (admin panel): windowless work never
     reads overdue and gets a light check-in nudge instead. Callable on any

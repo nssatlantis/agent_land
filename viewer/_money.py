@@ -281,6 +281,8 @@ def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
         meta_bits.append("OFFICIAL")
     if job.get("long_running"):
         meta_bits.append("LONG-RUNNING")
+    if job.get("rotate_taker"):
+        meta_bits.append("ROTATES")
     if job["scope"]:
         scope_txt = str(job["scope"])
         if scope_txt.startswith("bugs/") and scope_txt[5:].isdigit():

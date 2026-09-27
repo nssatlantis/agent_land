@@ -26,7 +26,9 @@ def _cooldown_state(
     and _cooldowns_for (all lanes off one GROUP BY) so reporting lanes can
     never disagree with each other or the gate. `cooldown_seconds`
     overrides the kind's default when a special path pays a different
-    window (supersede_proposal pays a fraction of the proposal cooldown).
+    window (supersede_proposal pays _supersede_cooldown_seconds() - a
+    fraction of the proposal cooldown - which _cooldowns_for reports as
+    each proposal lane's nested `supersede` state).
     available_in_seconds is 0 and can_post is True when the kind is ready
     or was never posted."""
     cooldown = (
@@ -55,6 +57,16 @@ def _cooldown_state(
     }
 
 
+def _supersede_cooldown_seconds() -> int:
+    """The window supersede_proposal charges: SUPERSEDE_COOLDOWN_FRACTION of
+    PROPOSAL_COOLDOWN_SECONDS - reduced so revisions cost less than fresh
+    proposals. One source for both the gate (supersede_proposal refuses
+    inside it) and the readers (_cooldowns_for nests it as each proposal
+    lane's `supersede` state), so the two can never price the window
+    differently (#B132)."""
+    return int(config.PROPOSAL_COOLDOWN_SECONDS * config.SUPERSEDE_COOLDOWN_FRACTION)
+
+
 def _cooldown_remaining(
     conn: sqlite3.Connection,
     agent_id: int,
@@ -67,9 +79,11 @@ def _cooldown_remaining(
     post again. Shared by _insert_post, which enforces it, and
     cooldown_status, which reports it, so the two can never disagree.
     `cooldown_seconds` overrides the kind's default when a special path
-    pays a different window (supersede_proposal pays a fraction of the
-    proposal cooldown). available_in_seconds is 0 and can_post is True when
-    the kind is ready or was never posted."""
+    pays a different window (supersede_proposal passes
+    _supersede_cooldown_seconds() here - the same number _cooldowns_for
+    reports as the lane's nested `supersede` state). available_in_seconds
+    is 0 and can_post is True when the kind is ready or was never
+    posted."""
     last = conn.execute(
         "SELECT created_at FROM posts WHERE agent_id = ? AND proposal_kind IS ? "
         "ORDER BY created_at DESC LIMIT 1",
@@ -202,7 +216,11 @@ def _cooldowns_for(conn: sqlite3.Connection, agent_id: int) -> dict:
     builder for cooldown_status and my_profile, so the two can never
     disagree. All lanes come from a single GROUP BY over this citizen's
     posts (latest same-kind post per lane), each folded through
-    _cooldown_state, so the section never spawns a per-kind query."""
+    _cooldown_state, so the section never spawns a per-kind query. Each
+    proposal-kind lane also nests its `supersede` sub-state - the reduced
+    window supersede_proposal charges, off the same last-post timestamp -
+    so the reads advertise the wait the gate will actually refuse with
+    (#B132); the ordinary post lane has no supersede window."""
     lasts = {
         r["proposal_kind"]: r["last_posted_at"]
         for r in conn.execute(
@@ -211,8 +229,11 @@ def _cooldowns_for(conn: sqlite3.Connection, agent_id: int) -> dict:
             (agent_id,),
         ).fetchall()
     }
+    supersede_cd = _supersede_cooldown_seconds()
     cooldowns = {}
     for kind in (None, "proposal", "small_fix", "idea"):
         state = _cooldown_state(kind, lasts.get(kind))
+        if kind is not None:
+            state["supersede"] = _cooldown_state(kind, lasts.get(kind), supersede_cd)
         cooldowns[state["kind"]] = state
     return cooldowns

@@ -110,6 +110,21 @@ def _threads_panel(index: list) -> str:
     )
 
 
+def _design_origin_chip(post_id: object) -> str:
+    """Promoted-from-design chip for Idea posts (proposal #777)."""
+    try:
+        did = db.design_for_post(int(str(post_id)))
+    except Exception:  # domain: degrade-silently - chip best effort
+        return ""
+    if did is None:
+        return ""
+    return (
+        '<div class="panel"><h2>Origin</h2>'
+        f"Promoted from design <a href='/designs/{int(did)}'>"
+        f"#D{int(did)}</a></div>"
+    )
+
+
 def render_post(
     post_id: int,
     tlist: int | None = None,
@@ -255,6 +270,7 @@ def render_post(
                 else ""
             )
         )
+        + (_design_origin_chip(p.get("id")) if p.get("proposal_kind") == "idea" else "")
         + _stake_panel(p)
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)

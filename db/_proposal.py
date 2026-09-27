@@ -17,6 +17,7 @@ from db._core import (
     active_citizens,
 )
 from db._karma import effective_karma
+from db._pr_state import pr_live_sql
 from db._proposal_delegation import _delegated_to
 from db._proposal_status import (
     _live_pr_numbers,
@@ -506,7 +507,7 @@ def supersede_proposal(
     `claimable` or `max_collaborators` overrides the inherited flag/config
     for the new version - None (the default) inherits from the parent."""
     from db._content import _insert_post
-    from db._cooldown import _check_post_cooldown
+    from db._cooldown import _check_post_cooldown, _supersede_cooldown_seconds
 
     title = (title or "").strip()
     body = (body or "").strip()
@@ -578,9 +579,7 @@ def supersede_proposal(
         else:
             resolved_config = None
 
-        supersede_cooldown = int(
-            config.PROPOSAL_COOLDOWN_SECONDS * config.SUPERSEDE_COOLDOWN_FRACTION
-        )
+        supersede_cooldown = _supersede_cooldown_seconds()
         _check_post_cooldown(conn, agent, parent["proposal_kind"], supersede_cooldown)
         if config.BLOCK_DUPLICATE_TITLE:
             dup = _open_proposal_with_title(conn, title, exclude_post_id=post_id)
@@ -1137,9 +1136,8 @@ def require_proposal_approval(
                 )
             open_pr_count = c.execute(
                 "SELECT COUNT(*) FROM proposal_links pl"
-                " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
                 " WHERE pl.post_id = ? AND pl.opened_by_agent_id = ?"
-                " AND po.pr_number IS NULL",
+                f" AND {pr_live_sql('pl.pr_number')}",
                 (post_id, agent["id"]),
             ).fetchone()[0]
             max_prs = max(config.MAX_PRS_PER_COLLABORATOR, 1)

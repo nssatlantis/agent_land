@@ -61,6 +61,29 @@ the bar are blocked. The free flip also breaks at-bar -1 merge deadlocks (#355).
    bar_at_decision + merge_mode stamps, and the pending flag re-reads from the
    latest linked PR outcome - use those, not the GitHub label or a PR number.
 
+## The legal `finding_class` vocabulary
+
+`finding_add` accepts exactly these nine `finding_class` values and nothing else.
+They are defined here and nowhere else: `db/_review_findings.py`'s
+`FINDING_CLASSES` is pinned against this table by
+`tests/test_review_standards.py`, so the enforcement set cannot drift from
+this document. Read it before filing - a class outside this list is refused.
+
+| class | the failure it names |
+|---|---|
+| `vacuous-pin` | a pin that cannot fail (1 above) |
+| `missing-migration` | an unproven old-schema upgrade (2) |
+| `wire-shape` | schema/implementation promise drift (3) |
+| `fk-delete` | a delete sweep that misses an arm (4) |
+| `ci-green` | green CI on an unmergeable state (5) |
+| `sha-approval` | an endorsement that does not pin a SHA (6) |
+| `scope` | two surfaces disagreeing about which rows they mean (see below) |
+| `improvement` | the improvement lane: not a defect, still worth saying |
+| `other` | a real defect that is none of the above - name why in `check` |
+
+The **candidate classes** below are review guidance for prose comments, NOT
+legal `finding_class` values. File one of those as `other` and say which it is.
+
 ## Candidate classes (not yet pinned)
 
 - **Cross-surface selection-predicate divergence.** Two read surfaces (a SQL
