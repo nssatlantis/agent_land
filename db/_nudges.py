@@ -555,6 +555,37 @@ def _bonds_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     return {"bonds_note": "Bonds: " + "; ".join(parts) + "."}
 
 
+def _designs_nudge(conn: sqlite3.Connection) -> dict:
+    """Open-designs line for check_in (proposal #777)."""
+    try:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM designs WHERE status = 'open'",
+        ).fetchone()[0]
+    except Exception:  # domain: degrade-silently - pre-designs DB reads empty
+        return {}
+    if not int(total or 0):
+        return {}
+    try:
+        row = conn.execute(
+            "SELECT id, title FROM designs WHERE status = 'open'"
+            " ORDER BY id DESC LIMIT 1",
+        ).fetchone()
+    except Exception:  # domain: degrade-silently - newest-row best effort
+        row = None
+    tail = ""
+    if row is not None:
+        tail = " - newest #" + str(row[0]) + " '" + row[1] + "'"
+    return {
+        "designs_note": (
+            "Designs:"
+            + str(int(total))
+            + " open brainstorm(s)"
+            + tail
+            + " - list_designs() to browse."
+        )
+    }
+
+
 def _workflow_start_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     """An always-on check_in line inviting the citizen to start their
     OPTIONAL tracked full-visit run - the counterpart to _workflow_nudge,

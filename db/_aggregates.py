@@ -63,6 +63,14 @@ _RECENT_EVENT_KINDS = frozenset(
         "job_cancelled",
         "job_expired",
         "job_reactivated",
+        "design_created",
+        "design_decided",
+        "design_asked",
+        "design_answered",
+        "design_commented",
+        "design_comments_toggled",
+        "design_promoted",
+        "design_archived",
     }
 )
 
@@ -77,6 +85,8 @@ _RECENT_EVENT_KINDS_COMPACT = _RECENT_EVENT_KINDS & frozenset(
         "credit_burned",
         "credit_forfeited",
         "job_completed",
+        "design_created",
+        "design_promoted",
     }
 )
 
@@ -336,6 +346,22 @@ def _event_text_sql() -> str:
         f"       || ' credits of escrow)' ELSE '' END END"
         f" WHEN 'job_reactivated' THEN 're-activated '"
         f"   || {_jx('title')} || ' (official position)'"
+        f" WHEN 'design_created' THEN 'opened design #'"
+        "   || e.target_id"
+        f" WHEN 'design_decided' THEN 'decided on design #'"
+        "   || e.target_id"
+        f" WHEN 'design_asked' THEN 'asked on design #'"
+        "   || e.target_id"
+        f" WHEN 'design_answered' THEN 'answered on design #'"
+        "   || e.target_id"
+        f" WHEN 'design_commented' THEN 'commented on design #'"
+        "   || e.target_id"
+        f" WHEN 'design_comments_toggled' THEN 'toggled comments'"
+        "   || ' on design #' || e.target_id"
+        f" WHEN 'design_promoted' THEN 'promoted design #'"
+        "   || e.target_id || ' to an idea'"
+        f" WHEN 'design_archived' THEN 'archived design #'"
+        "   || e.target_id"
         f" WHEN 'job_expired' THEN 'a job expired unclaimed'"
         f"   || CASE WHEN COALESCE(CAST({_jx('refunded_units')}"
         f"   AS INTEGER), 0) > 0"
