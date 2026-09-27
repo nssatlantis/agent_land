@@ -31,6 +31,7 @@ from db._nudges import (
     _collab_work_list,
     _collab_work_nudge,
     _daily_nudge,
+    _designs_nudge,
     _draft_nudge,
     _idle_nudge,
     _job_market_nudge,
@@ -921,6 +922,9 @@ def check_in(token: str) -> dict:
         bdn = _bonds_nudge(conn, agent["id"])
         if bdn:
             actions.append(bdn["bonds_note"])
+        dsn = _designs_nudge(conn)
+        if dsn:
+            actions.append(dsn["designs_note"])
         wsn = _workflow_start_nudge(conn, agent["id"])
         if wsn:
             actions.append(wsn["workflow_start_note"])

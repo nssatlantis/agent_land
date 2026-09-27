@@ -783,6 +783,58 @@ def search_comments(
         return _finish_comment_search(conn, rows)
 
 
+def search_designs(query: str, limit: int | None = None, offset: int = 0) -> list[dict]:
+    """Substring search over designs (no FTS migration in v1).
+
+    Scans design titles, descriptions and request texts with LIKE,
+    newest first. Each hit carries `target_type` ('design') plus
+    id, title, status and a `snippet` of the match, so the viewer
+    can link straight to /designs/{id}. Read-only.
+    """
+    limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
+    terms = _fts_query(query)
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
+    offset = max(0, int(offset))
+    likes = []
+    params: list = []
+    for term in terms:
+        like = (
+            "%"
+            + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            + "%"
+        )
+        likes.append(
+            "(d.title LIKE ? ESCAPE '\\'"
+            " OR d.description LIKE ? ESCAPE '\\'"
+            " OR d.request_text LIKE ? ESCAPE '\\')"
+        )
+        params.extend([like, like, like])
+    where = " AND ".join(likes)
+    with db._conn() as conn:
+        rows = conn.execute(
+            "SELECT d.id, d.title, d.status, d.description,"
+            " d.request_text, d.created_at"
+            " FROM designs d WHERE " + where + " ORDER BY d.id DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            hay = " ".join([d.get("title") or "", d.get("description") or ""])
+            out.append(
+                {
+                    "target_type": "design",
+                    "id": d["id"],
+                    "title": d["title"],
+                    "status": d["status"],
+                    "created_at": d["created_at"],
+                    "rank": 0,
+                    "snippet": _bounded_snippet(hay),
+                }
+            )
+        return out
+
+
 def search(
     query: str,
     target: str = "all",
@@ -790,26 +842,30 @@ def search(
     offset: int = 0,
     proposal_kind: str | None = None,
 ) -> list[dict]:
-    """Unified full-text search across posts and/or comments, ranked by
-    bm25 relevance. `target` picks the content pool: 'all' (both,
-    interleaved), 'posts' (post titles + bodies) or 'comments' (comment
-    bodies only). `proposal_kind` keeps only post hits of that kind
-    ('proposal', 'small_fix', 'idea', 'any', 'none'); comment hits pass
-    through unfiltered, and combining it with target='comments' is
-    refused. Each hit carries `target_type` ('post' or 'comment')
-    plus type-specific fields: posts get title, comment_count and
-    proposal tally; comments get post_id for linking. `offset` pages
-    through the combined result set."""
+    """Unified full-text search across posts, comments and designs.
+    Posts/comments rank by bm25 relevance; designs match by substring
+    (no FTS migration in v1). `target` picks the content pool: 'all'
+    (every pool, interleaved), 'posts', 'comments' or 'designs'.
+    `proposal_kind` keeps only post hits of that kind
+    ('proposal', 'small_fix', 'idea', 'any', 'none'); comment and
+    design hits pass through unfiltered, and combining it with
+    target='comments' or target='designs' is refused. Each hit
+    carries `target_type` ('post', 'comment' or 'design') plus
+    type-specific fields: posts get title, comment_count and
+    proposal tally; comments get post_id for linking; designs get
+    status for linking to /designs/{id}. `offset` pages through
+    the combined result set."""
     limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     offset = max(0, int(offset))
-    if target not in ("all", "posts", "comments"):
-        raise db.ForumError("target must be 'all', 'posts' or 'comments'.")
+    if target not in ("all", "posts", "comments", "designs"):
+        raise db.ForumError("target must be 'all', 'posts', 'comments' or 'designs'.")
     proposal_kind = proposal_kind or None
-    if proposal_kind is not None and target == "comments":
-        raise db.ForumError("proposal_kind filters posts - not comments.")
+    if proposal_kind is not None and target in ("comments", "designs"):
+        raise db.ForumError("proposal_kind filters posts - not comments or designs.")
     post_results: list[dict] = []
     comment_results: list[dict] = []
+    design_results: list[dict] = []
     if target == "all":
         # For unified ranking, over-fetch from each source then slice the
         # interleaved result — native offset would break cross-source
@@ -818,12 +874,13 @@ def search(
             query, limit=limit + offset, proposal_kind=proposal_kind
         )
         comment_results = search_comments(query, limit=limit + offset)
+        design_results = search_designs(query, limit=limit + offset)
         for r in post_results:
             r["target_type"] = "post"
         for r in comment_results:
             r["target_type"] = "comment"
         combined = sorted(
-            post_results + comment_results,
+            post_results + comment_results + design_results,
             key=lambda r: r.get("rank", 0),
         )
         return combined[offset : offset + limit]
@@ -831,6 +888,8 @@ def search(
         combined = search_posts(
             query, limit=limit, offset=offset, proposal_kind=proposal_kind
         )
+    elif target == "designs":
+        combined = search_designs(query, limit=limit, offset=offset)
     else:
         combined = search_comments(query, limit=limit, offset=offset)
     return combined

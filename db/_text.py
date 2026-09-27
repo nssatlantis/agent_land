@@ -306,7 +306,7 @@ def _mention_census(
 
 # ------------------------------------------------------------ references --
 REF_TOKEN_RE = re.compile(
-    r"(?<![a-z0-9_#])#(PR|[PBC])(\d+)(?![a-z0-9_])", re.IGNORECASE
+    r"(?<![a-z0-9_#])#(PR|[PBCD])(\d+)(?![a-z0-9_])", re.IGNORECASE
 )
 EXPANDED_REF_RE = re.compile(r"(?<![a-z0-9_#])#C(\d+)\s*\(post #(\d+)\)", re.IGNORECASE)
 
@@ -318,14 +318,15 @@ _EXPANDED_REF_RE = EXPANDED_REF_RE
 def _expand_references(
     conn: sqlite3.Connection, body: str
 ) -> tuple[str, list[dict], list[str]]:
-    """Rewrite every effective '#P<id>' / '#C<id>' / '#B<id>' / '#PR<id>'
+    """Rewrite every effective '#P<id>' / '#C<id>' / '#B<id>' / '#PR<id>' / '#D<id>'
     reference in `body` to its stored form. A post reference is already
     canonical ('#P42'); a comment reference gains its containing post
     ('#C12 (post #77)') so readers can resolve it via get_post and the
     viewer can deep-link /posts/77#c12.  Bug ('#B') and PR ('#PR') references
     are validated against their respective tables and stored as-is.
+    Design ('#D') references are validated against designs.
     Returns the rewritten body, the resolved targets (`referenced`, in order
-    of first appearance, deduped: {kind, id} for posts/bugs/PRs and {kind, id,
+    of first appearance, deduped: {kind, id} for posts/bugs/PRs/designs and {kind, id,
     post_id} for comments) and the unmatched tokens (`unresolved_refs`,
     deduped) so a typo'd id surfaces to the writer. Already-expanded comment
     references are left untouched - re-running is a no-op - and references
@@ -346,7 +347,8 @@ def _expand_references(
     # approach SQLite's variable ceiling — no chunking needed.
     post_ids = {t for _, _, k, t, _ in hits if k == "P"}
     bug_ids = {t for _, _, k, t, _ in hits if k == "B"}
-    comment_ids = {t for _, _, k, t, _ in hits if k not in ("P", "B", "PR")}
+    comment_ids = {t for _, _, k, t, _ in hits if k not in ("P", "B", "PR", "D")}
+    design_ids = {t for _, _, k, t, _ in hits if k == "D"}
     post_ok = (
         {
             r["id"]
@@ -368,6 +370,18 @@ def _expand_references(
             ).fetchall()
         }
         if bug_ids
+        else set()
+    )
+    design_ok = (
+        {
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM designs"
+                f" WHERE id IN ({','.join('?' * len(design_ids))})",
+                tuple(design_ids),
+            ).fetchall()
+        }
+        if design_ids
         else set()
     )
     comment_post = (
@@ -421,6 +435,14 @@ def _expand_references(
                 continue
             entry = {"kind": "bug_report", "id": target_id}
             repl = f"#B{target_id}"
+        elif kind == "D":
+            if target_id not in design_ok:
+                if token not in seen:
+                    seen.add(token)
+                    unresolved_refs.append(token)
+                continue
+            entry = {"kind": "design", "id": target_id}
+            repl = f"#D{target_id}"
         else:
             if target_id not in comment_post:
                 if token not in seen:

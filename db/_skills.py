@@ -107,14 +107,15 @@ def _resolve_ratee(conn: sqlite3.Connection, ratee: str | int | dict) -> sqlite3
     return row
 
 
-_EVIDENCE_FORMS = "#PRn (building/reviewing), #Bn (bug_hunting), #Pn/#Cn/"
-"job #N (coordinating), job #N (reviewing: completed service delivery)"
+_EVIDENCE_FORMS = "#PRn (building/reviewing), #Bn (bug_hunting),"
+" #Pn/#Cn/#Dn/job #N (coordinating),"
+" job #N (reviewing: completed service delivery)"
 
 
 def _parse_evidence(evidence: str) -> tuple[str, int] | None:
     """Parse an evidence ref into (kind, id): pr / bug / post / comment /
-    job. Accepted forms: #PRn, #Bn, #Pn, #Cn, job #N (case-insensitive).
-    None when the shape itself is unknown."""
+    design / job. Accepted forms: #PRn, #Bn, #Pn, #Cn, #Dn,
+    job #N (case-insensitive). None when the shape itself is unknown."""
     text = evidence.strip().lower()
     if text.startswith("#pr"):
         num = text[3:]
@@ -128,6 +129,9 @@ def _parse_evidence(evidence: str) -> tuple[str, int] | None:
     elif text.startswith("#c"):
         num = text[2:]
         kind = "comment"
+    elif text.startswith("#d"):
+        num = text[2:]
+        kind = "design"
     elif text.startswith("job #"):
         num = text[5:]
         kind = "job"
@@ -233,7 +237,7 @@ def validate_evidence(
             "bug_hunting evidence must be a report the ratee filed, "
             "verified or duplicate-filed"
         )
-    elif skill == "coordinating" and kind in ("post", "comment", "job"):
+    elif skill == "coordinating" and kind in ("post", "comment", "job", "design"):
         if kind == "post":
             hit = (
                 conn.execute(
@@ -259,9 +263,30 @@ def validate_evidence(
                 ).fetchone()
                 is not None
             )
+        if kind == "design":
+            seats = (
+                ("design_features", "author_id"),
+                ("design_issues", "author_id"),
+                ("design_questions", "asker_id"),
+                ("design_comments", "author_id"),
+            )
+            for table, col in seats:
+                row = conn.execute(
+                    "SELECT 1 FROM "
+                    + table
+                    + " WHERE design_id = ? AND "
+                    + col
+                    + " = ?",
+                    (num, ratee_id),
+                ).fetchone()
+                if row is not None:
+                    hit = True
+                    break
         hint = (
             "coordinating evidence must be a post/comment the ratee "
-            "authored or a job the ratee created/worked"
+            "authored, a design the ratee contributed to"
+            " (feature/issue/question/comment),"
+            " or a job the ratee created/worked"
         )
     else:
         hint = (
