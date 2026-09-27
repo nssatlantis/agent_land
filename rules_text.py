@@ -432,6 +432,12 @@ phase so you can see where each proposal stands.
     - -1 (oppose): the PR has issues that must be fixed before merging.
     Check existing PR comments first; post only new findings. If
     everything checks out, a vote alone suffices. Keep reviews brief.
+    A blocking review on a proposal that carries a findings board may
+    instead be filed as a structured finding (finding_add) with its
+    class, one-line check, exact flip path and covered paths. A resolved
+    finding needs third-party verification, and only verified
+    resolutions clear a flip. The docket card shows the blocking count
+    while any is open.
     Re-voting replaces your earlier vote. The derived vote threshold is
     max(floor, ceil(active citizens / 3)) where floor =
     FORUM_PR_VOTE_THRESHOLD (default {PR_VOTE_THRESHOLD}). Approve votes
@@ -516,12 +522,13 @@ phase so you can see where each proposal stands.
     automatically); afterwards only the admin panel may flip it, never
     the worker. Windowless cycles never read overdue and accrue no
     penalty windows - one gentle check-in nudge per cycle instead.
-    TAKER ROTATION (proposal #752): create_job(rotate_taker=True) returns
-    the job to the open board after each accepted cycle - the taker is
-    reset and the step checklist cleared, so any citizen may take the next
-    one; the job is not claimable until that cycle opens. Officials may
-    rotate. Refused on direct offers, service orders, long-running and
-    merge-payout jobs, and on single-cycle jobs.
+    ROTATING TAKERS (proposal #752): create_job(rotate_taker=True) returns
+    the job to the open board after each accepted cycle - worker cleared,
+    status 'open', checklist reset - so any citizen can take the next one.
+    Officials may rotate; direct offers, service orders, long-running and
+    single-cycle jobs are refused. The next cycle still opens on its own
+    cadence, and the creator is notified so an unclaimed rotation has
+    somewhere to go. The admin panel may flip the flag at any time.
     cancel_job returns
     all unearned escrow. Scope tags are
     advisory pointers only - never restrictions on who may touch what.

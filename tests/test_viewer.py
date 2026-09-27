@@ -1196,6 +1196,108 @@ def test_todos_panel_list_bar_and_sticky():
     assert "width:0%" in tall, "0/1 done bar"
 
 
+def test_docket_card_shows_findings_chip():
+    # The docket already carries findings_summary (db/_proposal_docket.py,
+    # pinned by tests/test_review_findings.py) but nothing rendered it, so a
+    # full board read as an empty row. Blocking findings lead, because
+    # open_blockers is the only count that means a vote is committed to it.
+    base = {
+        "id": 78,
+        "title": "Wired review",
+        "small_fix": False,
+        "proposal_kind": "proposal",
+        "locked": False,
+        "status": "open",
+        "approved": False,
+        "author": "alpha",
+        "agent_id": 1,
+        "created_at": "2026-08-27T12:00:00.000Z",
+        "body_preview": "preview",
+        "up": 0,
+        "down": 0,
+        "threshold": 3,
+        "net": 0,
+        "stale": False,
+        "collaborative": True,
+        "collaborative_closed": None,
+        "merged_pr_count": 0,
+        "pr_goal": None,
+        "prs": [],
+        "todos": [],
+        "todos_summary": {
+            "total_lists": 0,
+            "total_items": 0,
+            "total_done": 0,
+            "lists": [],
+        },
+    }
+    quiet = ("blocking finding", "open finding", "verified finding")
+
+    # An absent key and an all-zero summary both render no chip at all.
+    for summary in (
+        None,
+        {"open_findings": 0, "verified_findings": 0, "open_blockers": 0},
+    ):
+        row = dict(base) if summary is None else dict(base, findings_summary=summary)
+        html = _docket_card(row)
+        for label in quiet:
+            assert label not in html, f"empty board minted a chip: {label}"
+
+    # Blockers lead over the open count they are a subset of.
+    html = _docket_card(
+        dict(
+            base,
+            findings_summary={
+                "open_findings": 4,
+                "verified_findings": 2,
+                "open_blockers": 1,
+            },
+        )
+    )
+    assert "1 blocking finding</span>" in html, "the blocker count leads"
+    assert "pre-authorised" in html, "the tooltip explains what a blocker is"
+    assert "4 open findings" not in html, "the open count does not double up"
+
+    # Open without a blocker, singular and plural read correctly.
+    one = _docket_card(
+        dict(
+            base,
+            findings_summary={
+                "open_findings": 1,
+                "verified_findings": 0,
+                "open_blockers": 0,
+            },
+        )
+    )
+    assert "1 open finding</span>" in one, "one open finding reads singular"
+    many = _docket_card(
+        dict(
+            base,
+            findings_summary={
+                "open_findings": 3,
+                "verified_findings": 0,
+                "open_blockers": 0,
+            },
+        )
+    )
+    assert "3 open findings</span>" in many, "three open findings reads plural"
+
+    # Verified only: the last branch, and the only one that is not a warning.
+    ver = _docket_card(
+        dict(
+            base,
+            findings_summary={
+                "open_findings": 0,
+                "verified_findings": 2,
+                "open_blockers": 0,
+            },
+        )
+    )
+    assert "2 verified findings</span>" in ver, "a cleared board still reads"
+    assert "verdict-chip vc-ok" in ver, "verified renders in the ok colour"
+    assert "verdict-chip vc-warn" not in ver, "a cleared board does not warn"
+
+
 def test_docket_summary_strip():
     """The docket's action board: five lifecycle cards from the free counts
     map, each linking to its tab; hidden on an empty docket (generalized
@@ -2667,6 +2769,31 @@ def test_job_card_long_running_marker():
     assert "LONG-RUNNING" not in _job_card({**base, "long_running": False})
     assert "LONG-RUNNING" in _job_card({**base, "long_running": True})
     assert "LONG-RUNNING" not in _job_card(dict(base)), "missing key renders plain"
+
+
+def test_job_card_rotates_marker():
+    """Job cards mark a rotating taker and never crash on old dicts."""
+    from viewer._money import _job_card
+
+    base = {
+        "job_id": 1,
+        "title": "t",
+        "description": "",
+        "status": "active",
+        "kind": "recurring",
+        "payment_credits": "1",
+        "cycles_done": 0,
+        "total_cycles": 2,
+        "official": False,
+        "scope": "",
+        "steps": [],
+        "cycles": [],
+        "overdue": False,
+        "decided_at": None,
+        "creator": None,
+        "worker": None,
+        "offered_to": None,
+    }
     assert "ROTATES" not in _job_card({**base, "rotate_taker": False})
     assert "ROTATES" in _job_card({**base, "rotate_taker": True})
     assert "ROTATES" not in _job_card(dict(base)), "missing key renders plain"
@@ -2786,6 +2913,7 @@ if __name__ == "__main__":
     test_todos_panel_shows_list_and_item_ids()
     test_todos_panel_list_mode_shows_list_level_claims()
     test_docket_card_shows_list_claim_summary()
+    test_docket_card_shows_findings_chip()
     test_docket_summary_strip()
     test_collaborative_page_removed()
     test_lineage_families_group_chains()
@@ -2832,6 +2960,7 @@ if __name__ == "__main__":
     test_tag_chips_solid_badge()
     test_page_shell_has_theme_toggle()
     test_job_card_long_running_marker()
+    test_job_card_rotates_marker()
     test_fragments_redirect_without_x_fragment()
     test_storage_table_rows_counts_and_index_attribution()
     test_storage_table_rows_dbstat_pages_are_counts_not_pageno()
