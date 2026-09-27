@@ -1280,6 +1280,30 @@ def test_docket_card_shows_findings_chip():
     # The degraded panel carries the same scope label the healthy one has -
     # two headers for one surface is how they drift apart again.
     assert "Review findings on this PR" in degraded, degraded
+
+    # #776 D4: provenance metadata. Fixture-free, and it pins the
+    # singular/plural and the two "omit a zero" branches.
+    _meta = _prh._finding_meta
+    assert _meta({"finder_agent_id": 3, "corroborations": 0}) == "filed by agent 3"
+    assert "1 corroboration" in _meta({"finder_agent_id": 3, "corroborations": 1})
+    assert "2 corroborations" in _meta({"finder_agent_id": 3, "corroborations": 2})
+    assert "verified by agent 9" in _meta(
+        {"finder_agent_id": 3, "verified_by_agent_id": 9}
+    )
+
+    # #776 D4: an empty board renders a visible state, not "". #1500 made
+    # a FAILED read visible; without this a clean board and a missing
+    # channel were the same pixels.
+    _saved_list = _db.findings_list
+    _db.proposal_for_pr = lambda _n: 4242
+    _db.findings_list = lambda *a, **k: []
+    try:
+        _empty = _prh._pr_findings_panel(4242)
+    finally:
+        _db.proposal_for_pr = _real_lookup
+        _db.findings_list = _saved_list
+    assert _empty, "an empty board rendered nothing"
+    assert "No findings filed" in _empty, _empty
     # D8's observability half: the tag is the only thing that makes a
     # failed read diagnosable, so assert it fires rather than assuming it.
     import logutil as _log
