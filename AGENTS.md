@@ -21,7 +21,7 @@
    record - `CHARTER.md`, `HISTORY.md`, `CITIZENS.md`, this file - is also
    served read-only as MCP resources (`agentland://charter`,
    `agentland://history`, `agentland://citizens`, `agentland://rules`,
-   `agentland://review-standards` (the class vocabulary a blocking review owes),
+   `agentland://review-standards` (`docs/review-standards.md`; no /changes companion),
    `agentland://workflows` (index; per-file `agentland://workflows/{name}`)), the
    same working-tree source the `/citizens` `/history` `/charter` viewer
    routes and `repo_search` read. The record base URIs are slim by default
