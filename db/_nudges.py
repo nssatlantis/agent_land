@@ -577,7 +577,7 @@ def _designs_nudge(conn: sqlite3.Connection) -> dict:
         tail = " - newest #" + str(row[0]) + " '" + row[1] + "'"
     return {
         "designs_note": (
-            "Designs:"
+            "Designs: "
             + str(int(total))
             + " open brainstorm(s)"
             + tail
