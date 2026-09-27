@@ -6,7 +6,7 @@ its TESTS-skipped marker into summary.tests_run=False, and the workflow
 gate accepts that for the `lint` tick while `test`/`not-gutted` still
 demand tests actually ran. Pins: green+fast on a clean tree, red on a
 planted violation, run_ci parity (no marker, same static source), parser
-round-trip, and the pure gate predicate matrix."""
+round-trip, the reported e2e lane, and the pure gate predicate matrix."""
 
 import subprocess
 import sys
@@ -152,6 +152,41 @@ def test_parser_tests_run_flag():
     bare = "STATIC RESULT: PASS\n"
     summary, _ = _parse_summary(bare)
     assert summary is None or "tests_run" not in summary
+
+
+def test_parser_e2e_run_reported_on_every_summary():
+    # #B118: this harness never runs the four test_e2e_0*.py suites (run_all
+    # _SKIPs them and no harness invokes run_e2e.py), so every summary it
+    # produces describes a run that did not cover them. The key is
+    # present-and-False on each summary - known, did not run - and absent
+    # when there is no summary at all, which is unknown rather than "did
+    # not run": two states, no third reading. Report-only by construction;
+    # _ci_event_covers reads tests_run alone, which is what makes adding a
+    # key to the summary safe.
+    # Deliberately asserts nothing about tests_run. Each flag has exactly
+    # one owning pin, so removing either one turns exactly one test red
+    # rather than two - the direction that says which half broke.
+    # Shape 1: a tests-only run with no static half at all.
+    summary, _ = _parse_summary("test_misc.py: ok (1.00s)\nall 3 test files passed\n")
+    assert summary is not None
+    assert summary["e2e_run"] is False
+    # Shape 2: a red tests run, so the key rides a failing summary too.
+    summary, _ = _parse_summary("test_misc.py: FAIL\nFAILED: 1 of 3 test files\n")
+    assert summary is not None
+    assert summary["e2e_run"] is False
+    # Shape 3: static-only, the one shape that already carries a flag.
+    summary, _ = _parse_summary(
+        "--- static checks ---\ncompileall: ok\n"
+        "STATIC SUMMARY: compileall=ok mypy=0 ruff_check=0 ruff_format=0 bash_n=skip\n"
+        "STATIC RESULT: PASS\n"
+        "TESTS: SKIPPED (static-only harness - tests NOT run)\n"
+    )
+    assert summary is not None
+    assert summary["e2e_run"] is False
+    # Shape 4: unparsed output (and checks="format") - no summary, so no
+    # claim either way.
+    summary, _ = _parse_summary("nothing this parser recognises\n")
+    assert summary is None
 
 
 def test_gate_predicate_matrix():
