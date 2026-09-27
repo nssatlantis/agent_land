@@ -226,6 +226,27 @@ def main():
         github._pr_raw = real_raw
     assert network_calls == [], "empty boards skip without network"
 
+    # --- every declared trigger really CALLS the refresh (proposal #776) -
+    # A comment naming a call site is not a call site.  MiMo caught exactly
+    # that on this PR: finding_verify carried the comment explaining its new
+    # position and no call, and two rehearsals plus a green GitHub run were
+    # all perfectly happy, because the pins covered the helper's internals
+    # and nothing covered the wiring.  This asserts the wiring.
+    import inspect
+
+    for _fn in (
+        "finding_add",
+        "finding_object",
+        "finding_mark_resolved",
+        "finding_dispute",
+        "finding_verify",
+    ):
+        _src = inspect.getsource(getattr(ftools, _fn))
+        assert "_refresh_mirror(" in _src, f"{_fn} does not call _refresh_mirror"
+    # The deliberate non-trigger must not grow a call by accident.
+    _src = inspect.getsource(ftools.finding_corroborate)
+    assert "_refresh_mirror(" not in _src, "finding_corroborate is not a trigger"
+
     # --- the write-path trigger never fails a write (#776 D2) ------------
     def _dead(number):
         raise RuntimeError("network down")
