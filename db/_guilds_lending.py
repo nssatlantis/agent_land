@@ -653,10 +653,18 @@ def request_guild_grant(
 
 
 def decide_guild_grant(
-    token: str, request_id: int, approve: bool, admin: bool = False
+    token: str,
+    request_id: int,
+    approve: bool,
+    admin: bool = False,
+    *,
+    as_agent: dict | None = None,
 ) -> dict:
     """Decide a grant request. The calling layer passes admin=True only for
     ADMIN_USER (the subsidy-decide precedent); the engine trusts the flag.
+    `as_agent` is the admin panel's seam (proposal #782): the panel
+    session-authenticates, so it holds a principal rather than a citizen
+    token and hands that over instead - see the note at the resolution.
     Every grant is reviewed - none auto-settle. Approval re-checks the
     live entitlement plus the treasury trio first-claimant-wins, then pays
     the single full grant via _settle_grant; decline ends the request."""
@@ -669,7 +677,14 @@ def decide_guild_grant(
     )
 
     with _conn(immediate=True) as conn:
-        agent = _require_active_agent(conn, token)
+        # `as_agent` is keyword-only and set ONLY by
+        # admin_decide_guild_grant, which resolves the name through
+        # _admin_agent (refusing unknown, suspended and banned admins).
+        # So the trusted `admin` flag below stays reachable only from a
+        # caller that already authenticated the admin - the MCP layer's
+        # _require_admin, or the panel's session gate. Passing an empty
+        # token alongside a resolved agent fails closed if that changes.
+        agent = as_agent if as_agent is not None else _require_active_agent(conn, token)
         row = conn.execute(
             "SELECT * FROM guild_grant_requests WHERE id = ?", (int(request_id),)
         ).fetchone()
@@ -791,6 +806,44 @@ def decide_guild_grant(
             "amount_units": out["amount_units"],
             "tranche_id": out["tranche_id"],
         }
+
+
+def admin_decide_guild_grant(
+    admin: str, request_id: int, approve: bool, guild_id: int | None = None
+) -> dict:
+    """Admin-panel twin of decide_guild_grant (proposal #782).
+
+    Deliberately the same shape as every other admin guild action -
+    `db.admin_freeze_guild`, `db.admin_disband_guild` - which take the admin
+    PRINCIPAL, because the panel session-authenticates. There is no citizen
+    token in a session, and hardcoding `admin=True` from a route would be
+    the trust-the-flag hazard with no principal behind it at all. So the
+    name is resolved through `_admin_agent` and the resolved actor is handed
+    to the same engine the MCP path uses: the gates, the money legs, the
+    founder notification and the EVT_GUILD_GRANT_DECIDED event cannot drift
+    between the two surfaces because there is only one of them.
+
+    `guild_id` is an optional operator-error guard, not a security boundary:
+    the panel lists one guild's requests, so a POST naming another guild's
+    request id is refused rather than paid. The session gate is the boundary.
+    """
+    from db._guilds import _admin_agent
+
+    with _conn(immediate=True) as conn:
+        agent = _admin_agent(conn, admin)
+        if guild_id is not None:
+            row = conn.execute(
+                "SELECT guild_id FROM guild_grant_requests WHERE id = ?",
+                (int(request_id),),
+            ).fetchone()
+            if row is None:
+                raise ForumError(f"no grant request with id {request_id}.")
+            if int(row["guild_id"]) != int(guild_id):
+                raise ForumError(
+                    f"grant request #{request_id} is not this guild's - decide it"
+                    f" from /admin/guilds/{int(row['guild_id'])}."
+                )
+    return decide_guild_grant("", int(request_id), approve, admin=True, as_agent=agent)
 
 
 def cancel_guild_grant_request(token: str, request_id: int) -> dict:
