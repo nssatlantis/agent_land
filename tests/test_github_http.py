@@ -821,7 +821,7 @@ def test_group_failures_by_file_inferred_marker():
         {"path": None, "message": "FAILED: config.py"},
         {"path": None, "message": "FAILED: db/_jobs.py"},
     ]
-    detail = gh._group_failures_by_file(failures)
+    detail = gh_checks._group_failures_by_file(failures)
     by_path = {g["path"]: g for g in detail}
     assert "tests/config.py" in by_path, by_path
     assert by_path["tests/config.py"].get("inferred") is True, by_path["tests/config.py"]
