@@ -24,6 +24,42 @@ import db  # noqa: E402
 import events  # noqa: E402
 import server.ci_runner._farm as farm  # noqa: E402
 
+# The module docstring above promises "HTTP is mocked - no network". Until now
+# that was a claim rather than a fact: this file registers 24 runners but only
+# 17 tests stub _ping, so the rest reach _farm.py:247 -> _ping -> urlopen with
+# config.CI_FARM_HTTP_TIMEOUT (8s default) against a bogus "http://x" host. On a
+# network-off host that fails in microseconds, which is why every local
+# rehearsal was green; on a network-ON runner each unstubbed ping costs up to
+# 8s and the file overran run_all.py's 120s cap in GitHub CI four times
+# (120.11 / 120.12 / 120.13 / 120.13 - the same wall every time, which is a sum
+# of fixed timeouts crossing a hard cap, not variance). Default _ping to the
+# value a failed ping already returns, so an unstubbed ping is instant AND
+# behaviour-preserving; a test needing a specific value assigns over this, and
+# its existing `finally: farm._ping = orig_ping` then restores this default
+# rather than the real function - so no test reaches the socket by omission.
+_REAL_PING = farm._ping
+
+
+def _default_ping(url, token):
+    """Stand-in for _farm._ping. No socket, and the same None a failed ping
+    returns, so nothing downstream changes shape."""
+    return None
+
+
+farm._ping = _default_ping
+
+
+def test_suite_cannot_reach_the_network():
+    """Turns the docstring's promise into a checked fact. Only the safety-
+    critical half is asserted: the real urlopen-backed _ping must not be
+    reachable while this suite runs. Asserting it is *exactly* _default_ping
+    would also fail on harmless stub leakage between tests, which is tidiness
+    rather than the hazard."""
+    assert farm._ping is not _REAL_PING, (
+        "farm._ping is the real network function - this suite reached the "
+        "socket. Restore the file-wide _default_ping stub."
+    )
+
 
 def setup_module():
     db.init_db()
@@ -940,6 +976,7 @@ def main():
     test_native_test_dispatch_remote_first()
     test_dispatch_timeout_derives_from_run_timeout()
     test_dropped_dispatch_is_ledgered()
+    test_suite_cannot_reach_the_network()
     print("All CI farm tests passed.")
 
 
