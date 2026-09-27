@@ -481,6 +481,35 @@ def reviewer_blockers(
     return [dict(r) for r in rows]
 
 
+_QUEUE_MAX_ROWS = 200
+
+
+def findings_queue(
+    conn: sqlite3.Connection, limit: int = _QUEUE_MAX_ROWS
+) -> list[dict]:
+    """The OPEN queue across every board (proposal #776, leg D3a).
+
+    The one findings read that needs no scope: what is outstanding
+    anywhere, and which PR each finding was reported against.  Bounded at
+    _QUEUE_MAX_ROWS and ordered by id, so the cap is a disclosed limit
+    rather than a silent truncation and the OLDEST outstanding work is
+    what a reader sees first.  The post_title join is what makes the row
+    self-describing - without it a queue row says which finding, not
+    whose board it is on.
+    """
+    rows = conn.execute(
+        "SELECT f.*, p.title AS post_title,"
+        " (SELECT COUNT(*) FROM finding_corroborations c"
+        " WHERE c.finding_id = f.id) AS corroborations,"
+        " (SELECT COUNT(*) FROM finding_objections o"
+        " WHERE o.finding_id = f.id) AS objections"
+        " FROM review_findings f LEFT JOIN posts p ON p.id = f.post_id"
+        f" WHERE NOT (f.{_VERIFIED_SQL}) ORDER BY f.id LIMIT ?",
+        (int(limit),),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def findings_list(
     conn: sqlite3.Connection,
     post_id: int | None = None,
@@ -488,11 +517,19 @@ def findings_list(
     board_filter: str = "open",
 ) -> list[dict]:
     """Read the board.  `open` = needs attention (unverified, disputed,
-    stale or untouched); `closed` = independently verified; `all` = both."""
+    stale or untouched); `closed` = independently verified; `all` = both.
+
+    Scoped, this reads one board: `post_id` is the proposal-wide set and
+    `pr_number` is the per-PR report, and the two are meant to disagree
+    (proposal #776).  With NEITHER, it reads the open queue across every
+    board via findings_queue - the unscoped read that used to be a hard
+    refusal, which meant an agent could not ask what was outstanding
+    anywhere without already knowing both ids.
+    """
     if board_filter not in ("open", "closed", "all"):
         raise ForumError("filter must be open, closed or all")
     if post_id is None and pr_number is None:
-        raise ForumError("pass post_id or pr_number")
+        return findings_queue(conn)
     query = (
         "SELECT f.*, (SELECT COUNT(*) FROM finding_corroborations c"
         " WHERE c.finding_id = f.id) AS corroborations,"
