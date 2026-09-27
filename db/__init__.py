@@ -333,6 +333,7 @@ from db._guilds_grants import (  # noqa: F401
 
 # ── guild soft-lending + delinquency (proposal #525, PR-7) ──────────────
 from db._guilds_lending import (  # noqa: F401
+    admin_decide_guild_grant,
     cancel_guild_grant_request,
     decide_guild_grant,
     decide_guild_subsidy,
@@ -439,6 +440,7 @@ from db._jobs import (  # noqa: F401
     admin_review_job,
     admin_review_job_as,
     admin_set_job_long_running,
+    admin_set_job_rotate_taker,
     auto_accept_jobs_for_merged_pr,
     cancel_job,
     claim_job,

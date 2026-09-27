@@ -8,7 +8,9 @@ executes. The TESTS marker below is load-bearing: the sandbox parser
 turns it into summary.tests_run=False, and the workflow gate accepts a
 static-only green for the `lint` tick while `test`/`not-gutted` still
 demand tests actually ran. Never cite a static-only green as merge
-evidence - the tests did NOT run.
+evidence - the tests did NOT run. A host without bash reports
+STATIC RESULT: INCOMPLETE (never PASS): the shell-check arm never
+executed, so the run vouches for nothing it did not run.
 
 Run directly with: python tests/run_static.py
 """
@@ -241,10 +243,14 @@ def run_static_checks(target: str = REPO) -> int:
         failures = 1
 
     # bash -n deploy/*.sh + ci_farm/*.sh (the line-19 apostrophe shipped
-    # because ci_farm was never covered - proposal #691)
+    # because ci_farm was never covered - proposal #691). A missing bash
+    # binary is NOT a pass: a required check never ran, so the run is
+    # incomplete (fail-closed). An empty script set is a genuine pass.
+    bash_incomplete = False
     if shutil.which("bash") is None:
         bash_n = "skip"
-        print("bash -n: skip (no bash on this host)")
+        bash_incomplete = True
+        print("bash -n: skip (no bash on this host - static is INCOMPLETE)")
     else:
         scripts = sorted(
             glob.glob(os.path.join(target, "deploy", "*.sh"))
@@ -264,6 +270,14 @@ def run_static_checks(target: str = REPO) -> int:
         f"STATIC SUMMARY: compileall={compileall} mypy={mypy_errors} "
         f"ruff_check={ruff_check} ruff_format={ruff_format} bash_n={bash_n}"
     )
+    if bash_incomplete:
+        # Coverage scope, not findings: the run did not execute every
+        # check it claims, so it vouches for neither pass nor fail. The
+        # non-zero return keeps the workflow gate closed via the same
+        # exit-code contract FAIL already rides (db/_workflow.py refuses
+        # lint/test/not-gutted on any non-zero exit).
+        print("STATIC RESULT: INCOMPLETE (bash unavailable - shell scripts unchecked)")
+        return failures or 1
     print("STATIC RESULT: FAIL" if failures else "STATIC RESULT: PASS")
     return failures
 

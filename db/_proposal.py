@@ -506,7 +506,7 @@ def supersede_proposal(
     `claimable` or `max_collaborators` overrides the inherited flag/config
     for the new version - None (the default) inherits from the parent."""
     from db._content import _insert_post
-    from db._cooldown import _check_post_cooldown
+    from db._cooldown import _check_post_cooldown, _supersede_cooldown_seconds
 
     title = (title or "").strip()
     body = (body or "").strip()
@@ -578,9 +578,7 @@ def supersede_proposal(
         else:
             resolved_config = None
 
-        supersede_cooldown = int(
-            config.PROPOSAL_COOLDOWN_SECONDS * config.SUPERSEDE_COOLDOWN_FRACTION
-        )
+        supersede_cooldown = _supersede_cooldown_seconds()
         _check_post_cooldown(conn, agent, parent["proposal_kind"], supersede_cooldown)
         if config.BLOCK_DUPLICATE_TITLE:
             dup = _open_proposal_with_title(conn, title, exclude_post_id=post_id)

@@ -832,6 +832,7 @@ def main():
     test_apaginate_cap_bounds_runaway_servers()
     test_pr_diff_cap_bounds_runaway_servers()
     test_open_prs_paginates_past_the_default_page()
+    test_open_prs_pagination_clamps_per_page_above_the_cap()
     test_request_text_follows_redirect_to_blob()
     test_supplement_enriches_thin_exit_code_annotations()
     test_apr_checks_fans_out_job_logs()
@@ -1083,6 +1084,71 @@ def test_open_prs_paginates_past_the_default_page():
         gh_core._client = old
         gh.clear_cache()
     print("  open_prs paginates past the first 100-item page: ok")
+
+
+def test_open_prs_pagination_clamps_per_page_above_the_cap():
+    """#B131: the open page loop stops at len(batch) < per_page while the
+    request is clamped to _GITHUB_MAX_PER_PAGE (100), so a
+    FORUM_GITHUB_PRS_PER_PAGE above 100 stopped after page 1 and silently
+    dropped every open PR past the newest 100. Knob at 150 with a full
+    100-item page 1: the clamp makes per_page 100, so page 2 must still be
+    fetched - sync and native-async twins both."""
+    hits: list[str] = []
+
+    def _pr_row(n: int) -> dict:
+        return {
+            "number": n,
+            "title": f"pr {n}",
+            "head": {"ref": f"head-{n}", "sha": f"sha{n:040x}"},
+            "base": {"ref": "main"},
+            "user": {"login": f"user{n}"},
+            "created_at": "2026-08-30T00:00:00Z",
+            "html_url": f"https://github.com/nssatlantis/agent_land/pull/{n}",
+            "mergeable_state": "clean",
+            "body": f"Citizen: test (agent_id={n})",
+            "labels": [{"name": f"label-{n}"}],
+        }
+
+    page1 = [_pr_row(n) for n in range(100, 0, -1)]
+    page2 = [_pr_row(n) for n in range(110, 100, -1)]
+
+    def handler(request):
+        url = str(request.url)
+        hits.append(url)
+        path, _, query = url.partition("?")
+        if not path.endswith("/pulls"):
+            return httpx.Response(404, json={"message": "not found"})
+        n = 1
+        for part in query.split("&"):
+            if part.startswith("page="):
+                n = int(part[len("page=") :])
+        if n == 1:
+            return httpx.Response(200, json=page1)
+        if n == 2:
+            return httpx.Response(200, json=page2)
+        return httpx.Response(200, json=[])
+
+    old = _install_mock(handler)
+    old_per_page = gh_reads.config.GITHUB_PRS_PER_PAGE
+    gh_reads.config.GITHUB_PRS_PER_PAGE = 150
+    try:
+        gh.clear_cache()
+        got = gh.open_prs()
+        assert len(got) == 110, f"sync stopped early: {len(got)} rows {hits}"
+        open_hits = [u for u in hits if "/pulls?" in u and "state=open" in u]
+        assert len(open_hits) == 2, open_hits
+        assert all("per_page=100" in u for u in open_hits), open_hits
+        gh.clear_cache()
+        before = len(hits)
+        native = asyncio.run(gh_reads.aopen_prs())
+        assert len(native) == 110, f"async stopped early: {len(native)} rows"
+        async_hits = [u for u in hits[before:] if "state=open" in u]
+        assert len(async_hits) == 2, async_hits
+    finally:
+        gh_reads.config.GITHUB_PRS_PER_PAGE = old_per_page
+        gh_core._client = old
+        gh.clear_cache()
+    print("  open_prs clamps per_page above the 100 cap: ok")
 
 
 def test_etag_revalidation_serves_304_without_a_body():

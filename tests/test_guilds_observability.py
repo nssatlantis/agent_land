@@ -273,6 +273,7 @@ def test_admin_routes_registered():
         "/admin/guilds/{guild_id:int}/freeze",
         "/admin/guilds/{guild_id:int}/release",
         "/admin/guilds/{guild_id:int}/disband",
+        "/admin/guilds/{guild_id:int}/grant",
         "/admin/guilds/chat/{message_id:int}/delete",
     ):
         assert p in paths, p

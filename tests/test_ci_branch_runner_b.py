@@ -400,7 +400,14 @@ def test_clean_merge_runs_and_reports_shape():
         assert result["pr_number"] == 7
         assert result["merge_conflict"] is False
         assert result["ok"] is True
-        assert result["summary"] == {"passed_files": 2, "failed_files": 0}
+        # Exact-equality on purpose (see the twin pin in
+        # test_ci_runner.py): the summary's whole shape, with e2e_run
+        # (#B118) stating that the e2e lane was not part of this run.
+        assert result["summary"] == {
+            "passed_files": 2,
+            "failed_files": 0,
+            "e2e_run": False,
+        }
         assert result["head_sha"] != result["base_sha"], "merge commit expected"
         assert len(result["head_sha"]) == 40 and len(result["base_sha"]) == 40
         assert holder["image_calls"] == 1

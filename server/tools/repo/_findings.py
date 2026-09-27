@@ -103,7 +103,17 @@ async def finding_add(
                 f"New {category} finding #{finding_id} on proposal #{post_id}",
                 actor_agent_id=who["agent_id"],
             )
-        return {"finding_id": finding_id, "post_id": post_id, "pr_number": pr_number}
+        out = {
+            "finding_id": finding_id,
+            "post_id": post_id,
+            "pr_number": pr_number,
+        }
+    # Filing a finding is the write that makes the board non-empty, so it
+    # is the write the mirror most needs to see (proposal #776).  Outside
+    # the txn: the row has committed and the mirror must never read
+    # pre-write state.
+    await _refresh_mirror(pr_number)
+    return out
 
 
 @mcp.tool()
@@ -148,7 +158,12 @@ async def finding_object(token: str, finding_id: int, body: str) -> dict:
                 f"New objection on finding #{finding_id} (proposal #{row['post_id']})",
                 actor_agent_id=who["agent_id"],
             )
-        return {"finding_id": finding_id, "objections": count}
+        out = {"finding_id": finding_id, "objections": count}
+        _pr = row["pr_number"] if row is not None else None
+    # Objections render as a suffix in the mirror, so this write moves the
+    # projection as well (proposal #776).
+    await _refresh_mirror(_pr)
+    return out
 
 
 @mcp.tool()
@@ -168,9 +183,14 @@ async def finding_mark_resolved(token: str, finding_id: int, note: str) -> dict:
         fixer_ids = (
             tuple(db.pr_fixer_ids(conn, row["pr_number"])) if row is not None else ()
         )
-        return db.finding_mark_resolved(
+        out = db.finding_mark_resolved(
             conn, finding_id, who["agent_id"], note, fixer_ids
         )
+        _pr = row["pr_number"] if row is not None else None
+    # State is rendered in the mirror, so a resolve moves the projection
+    # (proposal #776).  Outside the txn, for the same reason as above.
+    await _refresh_mirror(_pr)
+    return out
 
 
 @mcp.tool()
@@ -190,7 +210,11 @@ async def finding_dispute(token: str, finding_id: int, note: str) -> dict:
         fixer_ids = (
             tuple(db.pr_fixer_ids(conn, row["pr_number"])) if row is not None else ()
         )
-        return db.finding_dispute(conn, finding_id, who["agent_id"], note, fixer_ids)
+        out = db.finding_dispute(conn, finding_id, who["agent_id"], note, fixer_ids)
+        _pr = row["pr_number"] if row is not None else None
+    # State is rendered in the mirror, so a dispute moves it too (#776).
+    await _refresh_mirror(_pr)
+    return out
 
 
 def _finder_of(conn, finding_id: int) -> int:
@@ -345,6 +369,60 @@ def upsert_findings_mirror_body(existing_body: str | None, section: str) -> str:
     return body + "\n" + section + "\n"
 
 
+async def _stale_and_refresh(pr_number: int) -> None:
+    """Stale this PR's attestations on a new head, THEN re-project it.
+
+    Staling writes `state`, which is the field the mirror renders, so a
+    push does change what the projection shows - a row that read `verified`
+    reads `stale` the moment this lands. Splitting the two calls is how the
+    mirror kept painting verified rows the ledger had just staled, so they
+    are bound here (proposal #776).
+
+    NOT a trigger, deliberately: the poller's reconcile_boards_for_heads
+    sweeps many PRs per pass, and projecting from inside it would put GitHub
+    round-trips on the merge-poller hot path. That path is a known gap, not
+    an oversight - the next push on the PR closes it.
+    """
+    try:
+        await stale_findings_on_push(pr_number)
+    except Exception:
+        pass  # domain: degrade-silently - staling is advisory
+    await _refresh_mirror(pr_number)
+
+
+async def _refresh_mirror(pr_number: int | None) -> None:
+    """Fire the read-only body mirror after a board write (proposal #776).
+
+    The mirror projects the BOARD, so a BOARD WRITE is the trigger.  The
+    trigger set is the writes that change what render_findings_mirror
+    renders - finding state and objections - plus the staling family, which
+    writes state (see _stale_and_refresh).
+
+    An earlier version of this docstring claimed a push is not a trigger.
+    That was false: finding_stale_on_push sets state='stale', which the
+    renderer reads, so a push does move the projection.  What is true is
+    narrower and worth stating - on a push with no staling to do, the
+    refresh is a no-op, which is why the push PATHS alone would have bought
+    almost nothing and the board writes are what matter.
+    finding_corroborate and finding_fund/_unfund are deliberately NOT
+    triggers, because the renderer reads neither corroboration counts nor
+    bounties today.  That is a statement about the current renderer, not a
+    permanent rule: if it ever renders them, this list has to grow.
+
+    Never fails a board write.  mirror_findings_to_pr already degrades to
+    False and tags its own failures, so this only guards the call itself.
+    asyncio.CancelledError is a BaseException and so propagates through
+    here exactly as it does through the mirror - the cancellation pin in
+    tests/test_findings_mirror.py still holds.
+    """
+    if pr_number is None:
+        return
+    try:
+        await mirror_findings_to_pr(pr_number)
+    except Exception:  # domain: degrade-silently - a mirror never fails a write
+        pass
+
+
 async def mirror_findings_to_pr(pr_number: int) -> bool:
     """Project a PR board into its body section (proposal #710 part 5).
     Read-only: the forum DB is never written here; every failure
@@ -445,6 +523,14 @@ async def finding_verify(token: str, finding_id: int, head_sha: str) -> dict:
         with db._conn() as conn:
             db.finding_stale_on_push(conn, pr_number, live2)
         raise db.ForumError(f"head moved during verification - re-verify at {live2}")
+    # The mirror refresh goes HERE - after the post-write head recheck, never
+    # between the write and the recheck.  The mirror does its own _pr_raw
+    # read, so placing it in that window would widen exactly the gap the
+    # fail-closed recheck exists to close, and it broke the head-moved pin
+    # in tests/test_review_findings.py by consuming a scripted read
+    # (proposal #776).  Every path past this point reaches it - the nudge
+    # early-return and the flip alike - and it is fail-silent regardless.
+    await _refresh_mirror(pr_number)
     # Immediate: payout guards plus escrow release, one atomic step.
     with db._conn(immediate=True) as conn:
         finder_id = _finder_of(conn, finding_id)

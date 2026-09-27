@@ -943,6 +943,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- due window applies. Never reads overdue, accrues no overdue
     -- windows, gets a light periodic nudge instead. Default 0 = windowed.
     long_running        INTEGER NOT NULL DEFAULT 0 CHECK (long_running IN (0, 1)),
+    -- Taker rotation (proposal #752): after each accepted cycle the job
+    -- returns to the open board (worker cleared) so any citizen may take the
+    -- next one. Default 0 = the first taker holds every cycle.
+    rotate_taker        INTEGER NOT NULL DEFAULT 0 CHECK (rotate_taker IN (0, 1)),
     -- Merge-payout jobs (proposal #520): system-owned work (creator NULL)
     -- that pays out automatically when the cited evidence PRs merge, with
     -- no human review step. 1 = poller auto-accepts on merge; 0 = a citizen

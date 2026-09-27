@@ -306,6 +306,17 @@ def _render_jobs(request) -> str:
                 f"{'windowed' if lr_is_set else 'long-running'}</button></form>"
             )
 
+        rt_form = ""
+        if j["status"] in ("open", "offered", "active"):
+            rt_is_set = bool(j.get("rotate_taker"))
+            rt_form = (
+                f" <form method='post' action='/admin/jobs/{j['job_id']}/rotate-taker'"
+                f" style='display:inline'>{_csrf_field(request)}"
+                f"<input type='hidden' name='value' value={'0' if rt_is_set else '1'}>"
+                f"<button type='submit' style='font-size:11px' title='toggle taker rotation (each accepted cycle returns the job to the open board so anyone can take the next)'>"
+                f"{'fixed taker' if rt_is_set else 'rotating'}</button></form>"
+            )
+
         if (
             j["status"] == "active"
             and j["official"]
@@ -328,13 +339,14 @@ def _render_jobs(request) -> str:
             f"<tr><td>#{j['job_id']}</td><td>{esc(j['title'])}"
             f"{' <b>OFFICIAL</b>' if j['official'] else ''}"
             f"{' <b>LONG-RUNNING</b>' if j.get('long_running') else ''}"
+            f"{' <b>ROTATES</b>' if j.get('rotate_taker') else ''}"
             f" <span style='color:var(--muted)'>{esc(j['scope'] or '')}</span></td>"
             f"<td><span style='background:{status_color};color:white;"
             f"padding:1px 6px;border-radius:999px;font-size:11px'>{esc(j['status'])}</span></td>"
             f"<td>{esc(j['creator'])}</td>"
             f"<td>{who}</td><td>{esc(j['payment_credits'])} cr x "
             f"{j['cycles_done']}/{j['total_cycles']}</td>"
-            f"<td>{close_form}{review_form}{lr_form} "
+            f"<td>{close_form}{review_form}{lr_form}{rt_form} "
             f"<a href='/admin/jobs?q={j['job_id']}' style='font-size:11px'>manage</a></td></tr>"
         )
 
@@ -796,6 +808,35 @@ async def admin_reactivate_job(request):
         f"Official position #{job_id} '{result['title']}' re-activated"
         f" ({result['status']}, remaining payout re-escrowed from treasury).",
     )
+
+
+async def admin_set_job_rotate_taker(request):
+    if not _authorized(request):
+        return _denied()
+    form = await request.form()
+    if not _csrf_ok(request, form):
+        return _flash(request, "CSRF token missing or invalid - refresh and retry.")
+    try:
+        job_id = int(request.path_params["id"])
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain: fail-loudly - bad path param surfaces as flash
+        return _flash(request, "bad job id.")
+    raw_value = form.get("value")
+    if raw_value not in ("0", "1"):
+        # domain: fail-loudly - a malformed POST must never silently stop a
+        # rotation the creator asked for.
+        return _flash(request, "bad value - pass '1' or '0'.")
+    try:
+        result = db.admin_set_job_rotate_taker(
+            _admin_user(request), job_id, raw_value == "1"
+        )
+    except db.ForumError as exc:
+        # domain: fail-loudly - the gate's refusal is the feature; surface it verbatim
+        return _flash(request, str(exc))
+    state = "rotating" if result["rotate_taker"] else "fixed taker"
+    return _flash(request, f"Job #{job_id} '{result['title']}' set to {state}.")
 
 
 async def admin_set_job_long_running(request):
