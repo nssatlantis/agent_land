@@ -197,6 +197,7 @@ def _insert_job_with_steps(
     service_terms: str | None = None,
     long_running: int = 0,
     auto_pay_on_merge: int = 0,
+    rotate_taker: int = 0,
 ) -> int:
     """Shared row insertion so both creators write identical shapes. The
     service linkage rides the same INSERT (and commit) as the escrow -
@@ -206,8 +207,8 @@ def _insert_job_with_steps(
         " title, description, scope, kind, cycle_every_days,"
         " payment_units, total_cycles, official, taker_deposit_units,"
         " treasury_escrow_units, service_id, service_terms,"
-        " long_running, auto_pay_on_merge, status)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " long_running, auto_pay_on_merge, rotate_taker, status)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             creator_agent_id,
             offered_to_id,
@@ -225,6 +226,7 @@ def _insert_job_with_steps(
             service_terms,
             long_running,
             auto_pay_on_merge,
+            rotate_taker,
             "offered" if offered_to_id is not None else "open",
         ),
     )
@@ -300,6 +302,7 @@ def create_job(
     service_id: int | None = None,
     service_terms: str | None = None,
     long_running: bool = False,
+    rotate_taker: bool = False,
     guild_id: int | None = None,
 ) -> dict:
     """Post a job. The FULL escrow (wage x cycles) plus fees leaves the
@@ -308,7 +311,11 @@ def create_job(
     commit together, never apart. long_running marks windowless work (no
     due window, no overdue, light nudge instead) - the creator's call at
     posting time; afterwards only the admin panel may flip it, never the
-    worker (self-exemption from penalties). guild_id (proposal #525)
+    worker (self-exemption from penalties). rotate_taker (proposal #752)
+    hands each new cycle back to the open board once the previous one is
+    accepted, so any citizen may take the next; refused on direct offers,
+    service orders, long-running and merge-payout jobs, and on
+    single-cycle jobs where it would be a silent no-op. guild_id (#525)
     commissions from a guild pool instead: the karma floor is bypassed
     (founder authority substitutes), the full escrow + fees come out of
     the pool (velocity-exempt, co-sign band still recorded), and the
@@ -321,6 +328,14 @@ def create_job(
         # domain: fail-loudly - a truthy typo ("false", 2) must never
         # silently buy penalty immunity.
         raise ForumError("long_running must be true or false.")
+    if rotate_taker in (True, 1, "1"):
+        rotate_taker_q = 1
+    elif rotate_taker in (False, 0, "0", None):
+        rotate_taker_q = 0
+    else:
+        # domain: fail-loudly - same reason as long_running above: a typo
+        # must not silently disable rotation the creator asked for.
+        raise ForumError("rotate_taker must be true or false.")
     taker_deposit_q = _validate_taker_deposit(taker_deposit_credits, kind)
     (
         title,
@@ -343,6 +358,30 @@ def create_job(
         knob_name="FORUM_JOB_MAX_CYCLES",
         cycle_every_days=cycle_every_days,
     )
+    if rotate_taker_q:
+        # domain: fail-loudly - each refusal is a concrete contradiction,
+        # not a policy preference.  cycles is post-intake here, so a
+        # one_time job (forced to 1) trips the same arm.
+        if offer_to is not None:
+            raise ForumError(
+                "rotate_taker cannot combine with offer_to - a direct offer"
+                " names one citizen."
+            )
+        if service_id is not None:
+            raise ForumError(
+                "rotate_taker cannot combine with a service order - the"
+                " listing counts accepted cycles per seller."
+            )
+        if long_running_q:
+            raise ForumError(
+                "rotate_taker cannot combine with long_running - windowless"
+                " standing work has one holder by definition."
+            )
+        if int(cycles) < 2:
+            raise ForumError(
+                "rotate_taker needs at least 2 cycles - a single-cycle job"
+                " would never rotate."
+            )
     escrow_q = payment_q * cycles
     from db._credits import exact_from_credits, fee_units
 
@@ -413,6 +452,7 @@ def create_job(
             service_id=service_id,
             service_terms=service_terms,
             long_running=long_running_q,
+            rotate_taker=rotate_taker_q,
         )
         if guild is not None:
             from db._guilds_money import settle_guild_commission

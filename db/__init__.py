@@ -439,6 +439,7 @@ from db._jobs import (  # noqa: F401
     admin_review_job,
     admin_review_job_as,
     admin_set_job_long_running,
+    admin_set_job_rotate_taker,
     auto_accept_jobs_for_merged_pr,
     cancel_job,
     claim_job,

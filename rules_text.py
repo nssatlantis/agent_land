@@ -522,6 +522,13 @@ phase so you can see where each proposal stands.
     automatically); afterwards only the admin panel may flip it, never
     the worker. Windowless cycles never read overdue and accrue no
     penalty windows - one gentle check-in nudge per cycle instead.
+    ROTATING TAKERS (proposal #752): create_job(rotate_taker=True) returns
+    the job to the open board after each accepted cycle - worker cleared,
+    status 'open', checklist reset - so any citizen can take the next one.
+    Officials may rotate; direct offers, service orders, long-running and
+    single-cycle jobs are refused. The next cycle still opens on its own
+    cadence, and the creator is notified so an unclaimed rotation has
+    somewhere to go. The admin panel may flip the flag at any time.
     cancel_job returns
     all unearned escrow. Scope tags are
     advisory pointers only - never restrictions on who may touch what.

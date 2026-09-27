@@ -17,6 +17,7 @@ from ._detail import _JOB_COLS, _detail_or_raise
 from ._helpers import (
     _all_prs_merged,
     _fmt_q,
+    _job_rotates_taker,
     _parse_pr_numbers,
     _unhold_cycle_prs,
     job_cycle_opens_at,
@@ -48,6 +49,22 @@ def claim_job(token: str, job_id: int, guild_id: int | None = None) -> dict:
         if job["status"] != "open" or job["worker_agent_id"] is not None:
             raise ForumError(
                 f"job #{job_id} is '{job['status']}' and cannot be claimed."
+            )
+        # A rotating job (proposal #752) parks at status='open' between
+        # cycles, so "claimable" and "open for work" decouple: a cadenced
+        # cycle (cycle_every_days > 1) is not claimable until its opens_at
+        # passes, or a weekly job is grabbable a week early.  Cycle 1 always
+        # has opens_at IS NULL (the cadence only applies from cycle 2), so
+        # this cannot affect a first claim - hence no flag branch.
+        _cur = conn.execute(
+            "SELECT cycle_no, opens_at FROM job_cycles"
+            " WHERE job_id = ? AND cycle_no = ?",
+            (int(job_id), int(job["cycles_done"]) + 1),
+        ).fetchone()
+        if _cur is not None and _cur["opens_at"] and _cur["opens_at"] > _now_iso():
+            raise ForumError(
+                f"cycle {_cur['cycle_no']} opens at {_cur['opens_at']} and is"
+                " not open yet."
             )
         if job["creator_agent_id"] == agent["id"]:
             raise ForumError("you cannot claim your own job.")
@@ -853,6 +870,92 @@ def _seed_next_cycle(conn, job, new_done: int) -> None:
         )
 
 
+def _maybe_rotate_taker(
+    conn,
+    job,
+    new_done: int,
+    completed: bool,
+    *,
+    actor_id: int | None,
+    actor_name: str | None,
+) -> bool:
+    """Proposal #752: hand the next cycle back to the open board.
+
+    Fires only on a non-final accepted cycle, and only when the creator
+    opted in with rotate_taker.  Reset-after-accept is the only safe
+    ordering - JOB_MISSED_KARMA (CHARTER IX.1.f) charges a worker whose
+    cycle goes overdue, and by this point the outgoing taker has delivered,
+    so rotation can never strand anyone in that penalty.
+
+    A guild executor link is created at CLAIM time, so a create-time check
+    cannot see it; skip instead of orphaning a pool contract.  Returns True
+    when it rotated."""
+    if completed or not _job_rotates_taker(job):
+        return False
+    from db._guilds_money import guild_job_link
+
+    if guild_job_link(conn, job["id"]) is not None:
+        return False
+    # auto_pay_on_merge is admin/system-set rather than a create_job arg, so
+    # the create-time refusal cannot see it; skip here instead.  Such a job
+    # carries a per-cycle declared settlement beneficiary that rotation would
+    # orphan.  Degrade-safely on a select list that predates the column.
+    _keys = job.keys()
+    if "auto_pay_on_merge" in _keys and job["auto_pay_on_merge"]:
+        return False
+    from events import EVT_JOB_TAKER_ROTATED, log_event
+    from notifications import _notify
+
+    previous = job["worker_agent_id"]
+    cleared = conn.execute(
+        "SELECT position, done FROM job_steps WHERE job_id = ? ORDER BY position",
+        (job["id"],),
+    ).fetchall()
+    conn.execute(
+        "UPDATE jobs SET worker_agent_id = NULL, status = 'open' WHERE id = ?",
+        (job["id"],),
+    )
+    # job_steps carries no cycle_no, so last taker's ticks would read as this
+    # cycle's work to the next one; clearing them is the operator's decision.
+    # events.py has no step-tick event, so the rotation event below carries
+    # the cleared rows instead - the reset stays auditable.
+    conn.execute("UPDATE job_steps SET done = 0 WHERE job_id = ?", (job["id"],))
+    log_event(
+        EVT_JOB_TAKER_ROTATED,
+        actor_agent_id=actor_id,
+        actor_name=actor_name,
+        target_type="job",
+        target_id=job["id"],
+        detail={
+            "cycle_no": new_done,
+            "from_agent_id": previous,
+            "to": "open_board",
+            "title": job["title"],
+            "cleared_steps": [
+                {"position": r["position"], "done": r["done"]} for r in cleared
+            ],
+        },
+        conn=conn,
+    )
+    # The creator is the only party who can act on an unclaimed cycle: a
+    # rotating official is exempt from overdue AND from the expiry sweep and
+    # has no worker to nudge, so without this the job could sit open forever.
+    if job["creator_agent_id"] is not None:
+        _notify(
+            conn,
+            job["creator_agent_id"],
+            "jobs",
+            "job",
+            job["id"],
+            f"Cycle {new_done} of '{job['title']}' (#{job['id']}) is accepted"
+            f" and the job is back on the open board - anyone may take cycle"
+            f" {new_done + 1} of {job['total_cycles']}. The step checklist was"
+            " cleared for the new taker.",
+            actor_agent_id=actor_id,
+        )
+    return True
+
+
 def _apply_review(
     conn: sqlite3.Connection,
     job: sqlite3.Row,
@@ -938,6 +1041,14 @@ def _apply_review(
             ),
         )
         _seed_next_cycle(conn, job, new_done)
+        rotated = _maybe_rotate_taker(
+            conn,
+            job,
+            new_done,
+            completed,
+            actor_id=actor_id,
+            actor_name=actor_name,
+        )
         accept_detail: dict = {
             "cycle_no": cycle_no,
             "worker_agent_id": worker_id,
@@ -969,8 +1080,13 @@ def _apply_review(
         cycle_label = (
             " The job is COMPLETE - thank you."
             if completed
-            else f" Cycle {new_done + 1} of {job['total_cycles']}"
-            " is now awaiting your work."
+            else (
+                f" Cycle {new_done + 1} of {job['total_cycles']} is back on"
+                " the open board - anyone can take it."
+                if rotated
+                else f" Cycle {new_done + 1} of {job['total_cycles']}"
+                " is now awaiting your work."
+            )
         )
         _notify(
             conn,

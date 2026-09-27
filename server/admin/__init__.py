@@ -119,6 +119,7 @@ from server.admin._jobs import (  # noqa: F401  # noqa: F401
     admin_reactivate_job,
     admin_review_job,
     admin_set_job_long_running,
+    admin_set_job_rotate_taker,
     create_official_job,
     create_stake,
     delete_stake,
@@ -194,6 +195,11 @@ ROUTES = [
     Route(
         "/admin/jobs/{id:int}/long-running",
         admin_set_job_long_running,
+        methods=["POST"],
+    ),
+    Route(
+        "/admin/jobs/{id:int}/rotate-taker",
+        admin_set_job_rotate_taker,
         methods=["POST"],
     ),
     Route("/admin/jobs/{id:int}/review", admin_review_job, methods=["POST"]),
@@ -347,6 +353,7 @@ __all__ = [
     "admin_reactivate_job",
     "admin_review_job",
     "admin_set_job_long_running",
+    "admin_set_job_rotate_taker",
     "workflows_admin_page",
     "workflow_restart",
     "workflow_close_stale",
