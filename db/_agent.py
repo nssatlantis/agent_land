@@ -22,6 +22,7 @@ from db._karma import _karma_parts, _karma_spent_for, _pr_counts_for, effective_
 from db._nudges import (
     _IDLE_NUDGE_KEYS,
     _assigned_nudge,
+    _bar_close_nudge,
     _bench_nudge,
     _bonds_nudge,
     _bug_nudge,
@@ -33,6 +34,7 @@ from db._nudges import (
     _daily_nudge,
     _designs_nudge,
     _draft_nudge,
+    _held_pr_nudge,
     _idle_nudge,
     _job_market_nudge,
     _job_nudge,
@@ -48,6 +50,7 @@ from db._nudges import (
     _report_nudge,
     _review_nudge,
     _services_shelf_nudge,
+    _store_nudge,
     _subscription_lines,
     _subscription_nudge,
     _todo_open_rows,
@@ -543,6 +546,8 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result.update(_report_nudge(c))
         result.update(_bug_nudge(c))
         result.update(_claim_ship_nudge(c, agent["id"]))
+        result.update(_held_pr_nudge(c, agent["id"]))
+        result.update(_bar_close_nudge(c, agent["id"]))
         result.update(_assigned_nudge(c, agent["id"]))
         result.update(_job_nudge(c, agent["id"]))
         result.update(_invoice_nudge(c, agent["id"]))
@@ -750,6 +755,8 @@ def my_profile(token: str) -> dict:
             )
         )
         result.update(_claim_ship_nudge(conn, agent["id"]))
+        result.update(_held_pr_nudge(conn, agent["id"]))
+        result.update(_bar_close_nudge(conn, agent["id"]))
         result.update(_job_nudge(conn, agent["id"]))
         result.update(_invoice_nudge(conn, agent["id"]))
         result.update(_subscription_nudge(conn, agent["id"]))
@@ -907,6 +914,15 @@ def check_in(token: str) -> dict:
         cs_n = _claim_ship_nudge(conn, agent["id"])
         if cs_n:
             actions.append(cs_n["claim_ship_note"])
+        sn = _store_nudge(conn, agent["id"])
+        if sn:
+            actions.append(sn["store_note"])
+        hn = _held_pr_nudge(conn, agent["id"])
+        if hn:
+            actions.append(hn["held_pr_note"])
+        bn = _bar_close_nudge(conn, agent["id"])
+        if bn:
+            actions.append(bn["bar_close_note"])
         if not actions:
             actions.append(
                 "Nothing urgent. Browse recent_activity() or "
