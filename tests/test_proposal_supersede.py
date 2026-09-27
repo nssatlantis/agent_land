@@ -394,6 +394,72 @@ def main():
             else:
                 os.environ[k] = _saved_sup_cd[k]
 
+    # --- #B132: the cooldown reads surface the supersede window -----------
+    # supersede_proposal charges int(PROPOSAL_COOLDOWN_SECONDS *
+    # SUPERSEDE_COOLDOWN_FRACTION) off the parent's last same-kind post,
+    # but _cooldowns_for only ever folded the kind-default lane - so
+    # check_in / my_profile / cooldown_status advertised "ready" while the
+    # gate refused (small_fix lane 0 in tests / 3600 in production vs the
+    # reduced supersede window).
+    _b132_keys = (
+        "FORUM_PROPOSAL_COOLDOWN_SECONDS",
+        "FORUM_SUPERSEDE_COOLDOWN_FRACTION",
+        "FORUM_SMALL_FIX_COOLDOWN_SECONDS",
+    )
+    _saved_b132 = {k: os.environ.get(k) for k in _b132_keys}
+    try:
+        os.environ["FORUM_PROPOSAL_COOLDOWN_SECONDS"] = "500"
+        os.environ["FORUM_SUPERSEDE_COOLDOWN_FRACTION"] = "0.5"
+        os.environ["FORUM_SMALL_FIX_COOLDOWN_SECONDS"] = "0"
+        from db._cooldown import _cooldowns_for
+
+        cbb = db.register_agent("supersede-b132-readers")
+        p_b = db.create_proposal(
+            cbb["token"], "B132 supersede reader pin", "v1", small_fix=True
+        )["post_id"]
+        blocked_b = expect_error(
+            db.supersede_proposal,
+            cbb["token"],
+            p_b,
+            "B132 supersede reader pin v2",
+            "body",
+        )
+        assert "rate limited" in blocked_b, (
+            "the supersede gate charges its reduced window on a small_fix parent"
+        )
+        assert "cooldown is 250s" in blocked_b, blocked_b
+        wait_b = int(blocked_b.split("can post again in ")[1].split(" seconds")[0])
+        with db._conn() as conn:
+            got_b = _cooldowns_for(conn, cbb["agent_id"])
+            # Shape: every proposal-kind lane nests the reduced window; the
+            # ordinary post lane never does (supersede is proposal-only).
+            assert "supersede" not in got_b["post"], got_b["post"]
+            for _lane in ("proposal", "small_fix", "idea"):
+                _sup = got_b[_lane]["supersede"]
+                assert _sup["cooldown_seconds"] == 250, (_lane, _sup)
+                assert _sup["kind"] == _lane, _sup
+            # Parity: the reader reports the same window the gate just
+            # refused with, off the same last-post timestamp.
+            _sup_sf = got_b["small_fix"]["supersede"]
+            assert abs(_sup_sf["available_in_seconds"] - wait_b) <= 1, (
+                _sup_sf,
+                wait_b,
+            )
+            # Divergence (the reported symptom, now visible): the ordinary
+            # lane reads READY while the supersede window it never showed
+            # still blocks.
+            assert got_b["small_fix"]["can_post"] is True, got_b["small_fix"]
+            assert _sup_sf["can_post"] is False, _sup_sf
+            # Never-posted lanes carry the window but are ready.
+            assert got_b["proposal"]["last_posted_at"] is None, got_b["proposal"]
+            assert got_b["proposal"]["supersede"]["can_post"] is True, got_b["proposal"]
+    finally:
+        for k in _b132_keys:
+            if _saved_b132[k] is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = _saved_b132[k]
+
     # --- _supersede_chain: recursive CTE closure (item 4854) ---------------
     # Build a v1 -> v2 -> v3 chain with two short branches so the
     # closure must walk more than one hop AND branch.
