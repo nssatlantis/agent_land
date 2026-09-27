@@ -1158,10 +1158,11 @@ def _proposal_todo_nudge(
 
 def _proposals_awaiting_review(conn: sqlite3.Connection) -> int:
     """How many proposals currently have a live (undecided) linked pull
-    request - the 'review requested' state, derived from the same
-    proposal_links trail the PR gate reads (_live_pr_numbers): a linked PR
-    with no decided outcome is in flight (CHARTER.md Article VI.5 keeps it at
-    most one per proposal). Collaborative proposals are excluded - their
+    request - the 'review requested' state, read through db._pr_state's
+    shared fragment (via _proposals_awaiting_review_ids), the same
+    predicate the PR gates read (_live_pr_numbers): a linked PR is in
+    flight until a verdict row or the stamped closed-PR cache decides it
+    (#B107; CHARTER.md Article VI.5 keeps it at most one per proposal). Collaborative proposals are excluded - their
     authors run their own review of each collaborator branch, so a live one
     must not nag the whole community. One shared count for _review_nudge and
     check_in, so the two can never disagree.
