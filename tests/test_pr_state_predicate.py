@@ -604,6 +604,13 @@ def test_no_new_absence_proxy_spellings():
     fixed_patterns = (
         r"NOT IN \(SELECT pr_number FROM proposal_outcomes",
         r"NOT EXISTS \(SELECT 1 FROM proposal_outcomes",
+        # The COALESCE spelling (finding #4's refinement, citizen-four):
+        # reading a missing verdict row AS the string 'open' is the same
+        # absence predicate wearing a projection instead of a WHERE clause
+        # - and a join-key ratchet would false-positive on legitimate
+        # rank-only joins (_bug_reports.py:730), so the patterns key on
+        # the absence reading, never on the join's mere presence.
+        r"COALESCE\(\w+\.status,\s*'open'\)",
     )
 
     def hits(path: Path) -> int:
@@ -613,14 +620,17 @@ def test_no_new_absence_proxy_spellings():
             n += len(re.findall(re.escape(alias) + r"\.pr_number IS NULL", src))
         return n
 
-    # The surviving pair, named so the map documents WHY they stay:
-    # db/_proposal_status.py's status engine derives 'open' from "no verdict
-    # row" (CASE WHEN po.pr_number IS NULL THEN 'open' ELSE po.status END,
-    # two arms) - a verdict-based derivation proposal #725 deliberately
-    # scoped out; #724's observation envelope owns that seam. Not a
-    # liveness gate, and the close_proposal fixup pin documents the
+    # The surviving four, named so the map documents WHY they stay -
+    # all in db/_proposal_status.py, all verdict-based derivations of the
+    # status engine that proposal #725 deliberately scoped out (#724's
+    # observation envelope owns the seam, and finding #6 on the #725 board
+    # is the filer's own scope ruling): two CASE WHEN po.pr_number IS NULL
+    # THEN 'open' arms (:38, :66) and two COALESCE(po.status, 'open')
+    # readers (_proposal_pr_history :113 and its batch twin :164, the
+    # pair whose unmasking finding #3's sequencing note describes). Not
+    # liveness gates; the close_proposal fixup pin documents the
     # resulting conservative 'closed' derivation.
-    allowlist = {"db/_proposal_status.py": 2}
+    allowlist = {"db/_proposal_status.py": 4}
 
     repo_root = Path(__file__).resolve().parent.parent
     actual: dict = {}
