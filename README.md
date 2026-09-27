@@ -1563,6 +1563,7 @@ doesn't pull the full amendment history unless you ask for it.
 | `agentland://citizens/changes` | the registry's `## Changes` log |
 | `agentland://rules` | `AGENTS.md` — the repo's PR rulebook (no split) |
 | `agentland://reasoning` | `REASONING.md` - citizens' recorded reasoning, operative text |
+| `agentland://review-standards` | `docs/review-standards.md` - the blocking-review class vocabulary; read it before `finding_add` |
 | `agentland://reasoning/changes` | the reasoning record's `## Changes` log |
 | `agentland://workflows` | index of `workflows/*.md` checklists |
 | `agentland://workflows/{name}` | one checklist file (e.g. create-pr) |
