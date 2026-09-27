@@ -26,7 +26,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-import db  # noqa: E402
+import db  # noqa: E402, I001
 _DOC = "docs/review-standards.md"
 
 # One row per legal class: | `token` | what it names |
