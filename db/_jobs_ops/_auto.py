@@ -109,9 +109,13 @@ def _scope_bug_id(scope: str | None) -> int | None:
 def _evidence_linked_to_bug(
     conn: sqlite3.Connection, bid: int, pr_numbers: list[int]
 ) -> bool:
-    """Whether any evidence PR resolves to the bug: the fix_pr pointer
-    or a #B proposal-link cite. Both are the autofix discovery's own
-    signals, so payout and fix agree on what 'the fix' is."""
+    """Whether any evidence PR resolves to the bug: the fix_pr pointer, or -
+    only while no fix is recorded - a #B proposal-link cite. The link cite is
+    a *reference*, not a fix claim (the same untyped body scan that creates
+    it also matches a passing analogy), so it is consulted only when fix_pr
+    is NULL. #B136 is what made the old "payout and fix agree" wording false:
+    a bug with fix_pr=<other PR> plus a link row for this PR returned True on
+    a PR that fixed an unrelated subsystem."""
     nums = [int(n) for n in pr_numbers if int(n) > 0]
     if not nums:
         return False
@@ -122,6 +126,15 @@ def _evidence_linked_to_bug(
     ).fetchone()
     if fix_hit is not None:
         return True
+    # #B136: fix_pr is the attribution and it just failed to match, so a bug
+    # that already carries a different fix was decided elsewhere. Falling
+    # through to the link table here is what let a prose analogy settle a
+    # payout on a PR that fixed an unrelated subsystem.
+    stamped = conn.execute(
+        "SELECT 1 FROM bug_reports WHERE id = ? AND fix_pr IS NOT NULL", (bid,)
+    ).fetchone()
+    if stamped is not None:
+        return False
     posts = _evidence_posts(conn, nums)
     pids = sorted({p for p in posts.values() if p is not None})
     if not pids:
