@@ -248,6 +248,7 @@ from db._designs_issues import (  # noqa: F401
     resolve_issue,
 )
 from db._designs_readers import (  # noqa: F401
+    design_for_post,
     list_design_comments,
     list_questions,
 )
@@ -540,6 +541,17 @@ from db._pr_rows import (  # noqa: F401,E402
     pr_rows_watermark,
 )
 
+# ── live-PR predicate (one shared fragment; #B107 / proposal #725) ─────
+from db._pr_state import (  # noqa: F401,E402
+    pr_decided_sql,
+    pr_is_decided,
+    pr_is_live,
+    pr_live_sql,
+    pr_state_as_of,
+    proposal_decided_sql,
+    proposal_is_decided,
+)
+
 # ── PR voting ─────────────────────────────────────────────────────────
 from db._pr_vote import (  # noqa: F401,E402
     my_pr_vote,
@@ -691,6 +703,7 @@ from db._review_findings import (  # noqa: F401,E402
     finding_verify,
     findings_dying_for_agent,
     findings_list,
+    findings_queue,
     flip_pr_vote_to_approve,
     flip_ready,
     maybe_pay_finding_bounty,

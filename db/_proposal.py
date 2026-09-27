@@ -17,6 +17,7 @@ from db._core import (
     active_citizens,
 )
 from db._karma import effective_karma
+from db._pr_state import pr_live_sql
 from db._proposal_delegation import _delegated_to
 from db._proposal_status import (
     _live_pr_numbers,
@@ -1135,9 +1136,8 @@ def require_proposal_approval(
                 )
             open_pr_count = c.execute(
                 "SELECT COUNT(*) FROM proposal_links pl"
-                " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
                 " WHERE pl.post_id = ? AND pl.opened_by_agent_id = ?"
-                " AND po.pr_number IS NULL",
+                f" AND {pr_live_sql('pl.pr_number')}",
                 (post_id, agent["id"]),
             ).fetchone()[0]
             max_prs = max(config.MAX_PRS_PER_COLLABORATOR, 1)

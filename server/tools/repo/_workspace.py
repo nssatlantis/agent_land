@@ -13,6 +13,7 @@ import asyncio
 import inspect
 import os
 import re
+from contextlib import AbstractContextManager
 from functools import wraps
 
 import config
@@ -64,6 +65,49 @@ def _revalidate_claim_record(
         )
 
 
+def _acquire_workspace_lock(
+    dest: str, token: str, proposal_id: int, name: str, claim_id: int
+) -> AbstractContextManager[None]:
+    """Enter ``workspace_lock(dest)``, translating the #B117 race.
+
+    The wrappers resolve the claim *before* they acquire, and the lock
+    checks ``_has_git(dest)`` at acquisition - after any wait. A claim
+    replacement landing in that window (release + tree retire, then
+    re-claim) destroys the tree first, so ``workspace_lock`` raises
+    ``RepoError("no workspace tree held - claim it first.")`` and the
+    graceful re-check, which only runs once acquisition succeeds, never
+    gets its turn. The caller of a serialized mutator then receives an
+    infrastructure fault where the contract promises a recoverable one.
+
+    So translate at the point the two cases are still distinguishable -
+    the claim record, which the tree's absence cannot speak for:
+
+    - the claim is gone or a different claim now holds the triple: the
+      replacement case. Raise the same ``ForumError`` the post-acquire
+      re-check raises, so every serialized mutator has one recoverable
+      error contract regardless of where in the window the replacement
+      landed.
+    - the claim is unchanged: the tree is missing for some other reason,
+      which is a genuine infrastructure fault. Re-raise the ``RepoError``
+      untouched - translating it would teach callers to retry a fault
+      that retrying cannot fix.
+
+    Returns the entered context manager; the caller owns ``__exit__``.
+    """
+    lock = workspace_lock(dest)
+    try:
+        lock.__enter__()
+    except github.RepoError:
+        try:
+            _revalidate_claim_record(token, proposal_id, name, claim_id)
+        except db.ForumError as changed:
+            raise changed from None
+        # domain: fail-loudly - the claim is intact, so a missing tree is
+        # an infrastructure fault, not a lost race; the RepoError stands.
+        raise
+    return lock
+
+
 def _same_file_mode(current: int | None, selected: int | None) -> bool:
     if current is None or selected is None:
         return current is None and selected is None
@@ -79,21 +123,36 @@ def _workspace_serialized(func):
         async def async_wrapper(token, proposal_id, name, *args, **kwargs):
             record, dest = _resolve_claim_tree(token, proposal_id, name)
             claim_id = int(record["id"])
-            lock = workspace_lock(dest)
-            acquire = asyncio.create_task(asyncio.to_thread(lock.__enter__))
+            # The acquire runs the #B117 translation on the worker thread
+            # and yields the ENTERED lock; the cancellation callback below
+            # must exit that object (the entered one), never a pre-built
+            # context manager that never ran.
+            acquire = asyncio.create_task(
+                asyncio.to_thread(
+                    _acquire_workspace_lock,
+                    dest,
+                    token,
+                    proposal_id,
+                    name,
+                    claim_id,
+                )
+            )
             try:
                 await asyncio.shield(acquire)
             except asyncio.CancelledError:
 
-                def release_after_acquire(done: asyncio.Task[None]) -> None:
+                def release_after_acquire(
+                    done: asyncio.Task[AbstractContextManager[None]],
+                ) -> None:
                     try:
-                        done.result()
+                        entered = done.result()
                     except BaseException:
                         return
-                    lock.__exit__(None, None, None)
+                    entered.__exit__(None, None, None)
 
                 acquire.add_done_callback(release_after_acquire)
                 raise
+            lock = acquire.result()
             try:
                 _revalidate_serialized_claim(token, proposal_id, name, claim_id)
             except BaseException:
@@ -128,9 +187,12 @@ def _workspace_serialized(func):
     def sync_wrapper(token, proposal_id, name, *args, **kwargs):
         record, dest = _resolve_claim_tree(token, proposal_id, name)
         claim_id = int(record["id"])
-        with workspace_lock(dest):
+        lock = _acquire_workspace_lock(dest, token, proposal_id, name, claim_id)
+        try:
             _revalidate_serialized_claim(token, proposal_id, name, claim_id)
             return func(token, proposal_id, name, *args, **kwargs)
+        finally:
+            lock.__exit__(None, None, None)
 
     return sync_wrapper
 

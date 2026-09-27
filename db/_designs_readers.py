@@ -55,6 +55,20 @@ def list_questions(design_id, viewer_token=None, state=None):
         }
 
 
+def design_for_post(post_id: int) -> int | None:
+    """Design promoted to an Idea post, if any (proposal #777)."""
+    try:
+        pid = int(post_id)
+    except (TypeError, ValueError):
+        return None
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT design_id FROM design_links WHERE post_id = ?",
+            (pid,),
+        ).fetchone()
+        return int(row["design_id"]) if row is not None else None
+
+
 def list_design_comments(design_id, viewer_token=None):
     """Flat comments oldest-first with author names.
 

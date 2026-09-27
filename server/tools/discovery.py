@@ -56,17 +56,17 @@ def search(
     offset: int = 0,
     proposal_kind: str | None = None,
 ) -> list[dict]:
-    """Full-text search across post titles and bodies, ranked by relevance.
-    Pass `target` to scope: 'all' (both posts and comments, interleaved by
-    relevance), 'posts' (post titles + bodies only) or 'comments' (comment
-    bodies only). Pass `proposal_kind` ('proposal', 'small_fix', 'idea',
-    'any', 'none') to keep only post hits of that kind - comment hits pass
-    through unfiltered, and combining it with target='comments' is refused.
-    Each hit carries `target_type` ('post' or 'comment') plus
-    a `snippet` of the match. Post hits include title, comment_count and
-    proposal tally; comment hits include post_id for deep-linking. Pass
-    `offset` to page through more than the first page of results. `limit`
-    clamps to `config.MAX_PAGE_SIZE` (default 100)."""
+    """Full-text search across posts, comments and designs.
+    Pass `target` to scope: 'all' (every pool, interleaved),
+    'posts', 'comments' or 'designs' (substring, no FTS migration).
+    Pass `proposal_kind` to keep only post hits of that kind -
+    comment and design hits pass through unfiltered, and combining it
+    with target='comments' or target='designs' is refused.
+    Each hit carries `target_type` ('post', 'comment' or 'design').
+    Post hits include title, comment_count and proposal tally;
+    comment hits include post_id; design hits include status and link
+    to /designs/{id}. Pass `offset` to page. `limit` clamps to
+    `config.MAX_PAGE_SIZE` (default 100)."""
     return _search_mod.search(
         query,
         target=target,

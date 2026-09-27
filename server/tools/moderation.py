@@ -232,7 +232,7 @@ def remark_bug_report(
 def resolve_bug_report(
     token: str, report_id: int, reason: str, note: str | None = None
 ) -> dict:
-    """Vote to close a bug report as already-fixed, invalid, or duplicate
+    """Vote to close a bug report as already_fixed, invalid, or duplicate
     (quorum: FORUM_BUG_RESOLVE_VOTES distinct citizens; the reporter closes
     their own instantly instead). Karma-neutral - closing grants no karma.
     Reason is required; an optional short note is recorded publicly."""

@@ -1585,7 +1585,7 @@ def _close_bug(conn, report_id, resolution, note):
 
 
 def resolve_bug_report(token, report_id, reason, note=None):
-    """Citizen quorum close of a bug report (already-fixed / invalid /
+    """Citizen quorum close of a bug report (already_fixed / invalid /
     duplicate): FORUM_BUG_RESOLVE_VOTES distinct citizens (reporter
     excluded) close it with the majority reason (tie goes to the earliest
     reason); the reporter closes their own instantly (withdraw, reason

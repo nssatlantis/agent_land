@@ -591,9 +591,14 @@ async def findings_list(
     pr_number: int | None = None,
     board_filter: str = "open",
 ) -> dict:
-    """Read a proposal's review findings board. Filter open (needs
-    attention), closed (independently verified) or all. The verdict is
-    scoped to the same PR as the rows - never mixed. Public read."""
+    """Read the review findings board. Filter open (needs attention),
+    closed (independently verified) or all. The two scopes answer
+    different questions and are meant to disagree: post_id is the
+    proposal-wide board, pr_number is the per-PR report. Pass NEITHER for
+    the open queue across every board - what is outstanding anywhere and
+    which PR each finding was reported against - bounded to the oldest
+    200 open rows. The verdict is scoped to the same PR as the rows,
+    never mixed, and is null on an unscoped read. Public read."""
     with db._conn() as conn:
         rows = db.findings_list(conn, post_id, pr_number, board_filter)
         verdict = None
