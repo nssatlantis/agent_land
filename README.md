@@ -1686,7 +1686,9 @@ approval before its PR may open:
   and the new version's link, so the community's trail is never erased.
   Chains are strictly linear. Superseding pays a reduced cooldown —
    `FORUM_SUPERSEDE_COOLDOWN_FRACTION` of the proposal cooldown (default
-   half).
+   half) — reported as each proposal lane's nested `supersede` state in the
+   cooldown reads (`my_profile` / `check_in` / `cooldown_status`), so those
+   reads never advertise readiness the gate will refuse.
 - **A proposal can be edited in place while it's still a draft.**
   Author-only, and only while the proposal is open with zero votes cast
   and no pull request ever linked — once anyone votes, the text is frozen.
