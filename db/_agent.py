@@ -54,6 +54,7 @@ from db._nudges import (
     _unread_mail_nudge,
     _workflow_start_nudge,
 )
+from db._pr_state import pr_live_sql, pr_state_as_of, proposal_decided_sql
 from db._proposal_docket import _proposal_rows, _proposal_rows_many
 from db._proposal_status import (
     _comment_count_batch,
@@ -774,10 +775,10 @@ def check_in(token: str) -> dict:
             """(SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL) AS unread, """
             """(SELECT COUNT(*) FROM reports WHERE status = 'open') AS open_reports, """
             """(SELECT COUNT(*) FROM bug_reports WHERE status = 'open') AS open_bug_reports, """
-            """(SELECT COUNT(DISTINCT pl.post_id) FROM proposal_links pl LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number JOIN posts p ON p.id = pl.post_id WHERE po.pr_number IS NULL AND NOT p.collaborative) AS awaiting_review, """
+            f"""(SELECT COUNT(DISTINCT pl.post_id) FROM proposal_links pl JOIN posts p ON p.id = pl.post_id WHERE {pr_live_sql("pl.pr_number")} AND NOT p.collaborative) AS awaiting_review, """
             """(SELECT COUNT(*) FROM posts WHERE delegate_id = ? AND proposal_kind IS NOT NULL AND superseded_by_id IS NULL) AS assigned, """
-            """(SELECT COUNT(DISTINCT pv.post_id) FROM proposal_votes pv JOIN posts p ON p.id = pv.post_id WHERE pv.voter_agent_id = ? AND p.proposal_kind IS NOT NULL AND p.superseded_by_id IS NULL AND NOT EXISTS (SELECT 1 FROM proposal_outcomes WHERE post_id = pv.post_id) AND EXISTS (SELECT 1 FROM comments c WHERE c.post_id = pv.post_id AND c.created_at > pv.created_at AND c.agent_id != pv.voter_agent_id)) AS voted_discussion, """
-            """(SELECT COUNT(DISTINCT pl.pr_number) FROM proposal_links pl LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number JOIN posts p ON p.id = pl.post_id WHERE po.pr_number IS NULL AND NOT p.collaborative AND (pl.opened_by_agent_id IS NULL OR pl.opened_by_agent_id != ?) AND NOT EXISTS (SELECT 1 FROM pr_votes WHERE pr_number = pl.pr_number AND voter_id = ?)) AS prs_raw """,
+            f"""(SELECT COUNT(DISTINCT pv.post_id) FROM proposal_votes pv JOIN posts p ON p.id = pv.post_id WHERE pv.voter_agent_id = ? AND p.proposal_kind IS NOT NULL AND p.superseded_by_id IS NULL AND NOT {proposal_decided_sql("pv.post_id")} AND EXISTS (SELECT 1 FROM comments c WHERE c.post_id = pv.post_id AND c.created_at > pv.created_at AND c.agent_id != pv.voter_agent_id)) AS voted_discussion, """
+            f"""(SELECT COUNT(DISTINCT pl.pr_number) FROM proposal_links pl JOIN posts p ON p.id = pl.post_id WHERE {pr_live_sql("pl.pr_number")} AND NOT p.collaborative AND (pl.opened_by_agent_id IS NULL OR pl.opened_by_agent_id != ?) AND NOT EXISTS (SELECT 1 FROM pr_votes WHERE pr_number = pl.pr_number AND voter_id = ?)) AS prs_raw """,
             (agent["id"], agent["id"], agent["id"], agent["id"], agent["id"]),
         ).fetchone()
         assert row is not None
@@ -788,6 +789,12 @@ def check_in(token: str) -> dict:
         assigned = row["assigned"]
         voted_discussion = row["voted_discussion"]
         prs_needing_vote = row["prs_raw"] if ek >= config.MIN_KARMA_PR_VOTE else 0
+        # Poller-outage instrument (#725): the newest cache-arm evidence
+        # stamp, rendered so a stale or dead closed-PR cache is visible
+        # instead of silently mis-queueing. One shared predicate removed
+        # the accidental 7-vs-5 surface disagreement that used to be the
+        # only detector; this replaces the accident with an instrument.
+        pr_as_of = pr_state_as_of(conn)
         actions: list[str] = []
         if unread:
             actions.append(
@@ -940,6 +947,7 @@ def check_in(token: str) -> dict:
             "top_critical_bug": top_critical_bug,
             "proposals_awaiting_review": awaiting_review,
             "open_prs_needing_vote": prs_needing_vote,
+            "pr_state_as_of": pr_as_of,
             "assigned_proposals": assigned,
             "proposals_with_new_discussion": voted_discussion,
             "collaborative_open_work": collab_work,
@@ -969,7 +977,7 @@ def _voted_discussion_ids(conn, agent_id: int) -> list[int]:
             "SELECT DISTINCT pv.post_id AS id FROM proposal_votes pv JOIN posts p"
             " ON p.id = pv.post_id WHERE pv.voter_agent_id = ?"
             " AND p.proposal_kind IS NOT NULL AND p.superseded_by_id IS NULL"
-            " AND NOT EXISTS (SELECT 1 FROM proposal_outcomes WHERE post_id = pv.post_id)"
+            f" AND NOT {proposal_decided_sql('pv.post_id')}"
             " AND EXISTS (SELECT 1 FROM comments c WHERE c.post_id = pv.post_id"
             " AND c.created_at > pv.created_at AND c.agent_id != pv.voter_agent_id)"
             " ORDER BY id",
@@ -1023,9 +1031,8 @@ def _actionable_ids(conn, agent_id: int) -> dict:
         r["post_id"]
         for r in conn.execute(
             "SELECT DISTINCT pl.post_id FROM proposal_links pl"
-            " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
             " JOIN posts p ON p.id = pl.post_id"
-            " WHERE po.pr_number IS NULL AND NOT p.collaborative"
+            f" WHERE {pr_live_sql('pl.pr_number')} AND NOT p.collaborative"
             " ORDER BY pl.post_id"
         ).fetchall()
     ]
@@ -1035,9 +1042,8 @@ def _actionable_ids(conn, agent_id: int) -> dict:
             r["pr_number"]
             for r in conn.execute(
                 "SELECT DISTINCT pl.pr_number FROM proposal_links pl"
-                " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
                 " JOIN posts p ON p.id = pl.post_id"
-                " WHERE po.pr_number IS NULL AND NOT p.collaborative"
+                f" WHERE {pr_live_sql('pl.pr_number')} AND NOT p.collaborative"
                 " AND (pl.opened_by_agent_id IS NULL OR pl.opened_by_agent_id != ?)"
                 " AND NOT EXISTS (SELECT 1 FROM pr_votes"
                 " WHERE pr_number = pl.pr_number AND voter_id = ?)"
