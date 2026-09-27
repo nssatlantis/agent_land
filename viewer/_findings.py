@@ -33,7 +33,14 @@ _STATE_COLORS = {
     "open": "var(--fail)",
     "disputed": "var(--warn)",
     "stale": "var(--warn)",
-    "resolved": "var(--ok)",
+    # A resolved row reaches this page only UNVERIFIED: findings_queue
+    # selects WHERE NOT (_VERIFIED_SQL), so a verified row is filtered out
+    # before it gets here.  Green would therefore mean "a fix was claimed and
+    # nobody has independently verified it" - which this arc treats as NOT
+    # done, and which db.reviewer_blockers still counts as a blocker.  Same
+    # colour the per-PR panel gives it, so two surfaces do not disagree on
+    # what a claimed fix looks like.
+    "resolved": "var(--warn)",
 }
 
 
@@ -88,7 +95,7 @@ def _finding_row(r: dict) -> str:
         f'<td><a href="/posts/{post}">{esc(str(post_title)[:60])}</a></td>'
         f'<td><span style="color:{color};font-weight:600">{esc(state)}</span></td>'
         f"<td>{prov}{badges}</td>"
-        f'<td style="color:var(--muted)">{esc(_human_ts(created))}</td>'
+        f'<td style="color:var(--muted)">{_human_ts(created)}</td>'
         "</tr>"
     )
 
