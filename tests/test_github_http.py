@@ -850,6 +850,9 @@ def main():
     test_apr_checks_failed_files_detail_check_runs_tier()
     test_apr_checks_failed_files_detail_statuses_tier()
     test_group_failures_by_file_count_line_is_not_a_file()
+    test_etag_revalidation_serves_304_without_a_body()
+    test_etag_stale_copy_refetches_with_a_fresh_validator()
+    test_pr_has_label_reuses_passed_row_without_a_fetch()
     print("test_github_http: all ok")
     return 0
 
