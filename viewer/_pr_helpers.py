@@ -347,7 +347,7 @@ def _pr_findings_panel(pr_number: int) -> str:
             f"#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
             f"<span style='color:{state_color};font-weight:600'>"
             f"{esc(r['state'])}</span>"
-            f"<div style='margin:2px 0'>{esc(r.get('check', ''))}</div>"
+            f"<div style='margin:2px 0'>{esc(r['check_text'])}</div>"
             f"<div style='color:var(--muted);font-size:12px'>"
             f"{esc(_finding_meta(r))}</div>"
             f"{bounty_badge}{_objection_badge(r)}</li>"
@@ -358,7 +358,7 @@ def _pr_findings_panel(pr_number: int) -> str:
             f'<li title="{esc(r["flip_path"][:200])}">'
             f"#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
             f"<span style='color:var(--ok);font-weight:600'>verified</span>"
-            f"<div style='margin:2px 0'>{esc(r.get('check', ''))}</div>"
+            f"<div style='margin:2px 0'>{esc(r['check_text'])}</div>"
             f"<div style='color:var(--muted);font-size:12px'>"
             f"{esc(_finding_meta(r))}</div>"
             f"{bounty_badge}{_objection_badge(r)}</li>"
