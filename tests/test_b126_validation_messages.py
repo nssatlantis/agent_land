@@ -27,6 +27,27 @@ def _validation_error():
     raise AssertionError("model_validate must fail on the missing fields")
 
 
+def _value_error_validation():
+    """Build a ValidationError from a custom field_validator that raises
+    with the canary in its message - the value_error channel, where msg
+    is the validator's own free-form text (#B126 finding #9)."""
+    from pydantic import BaseModel, ValidationError, field_validator
+
+    class _Val(BaseModel):
+        title: str
+
+        @field_validator("title")
+        @classmethod
+        def _reject(cls, v: str) -> str:
+            raise ValueError(f"rejected: {v} {CANARY}")
+
+    try:
+        _Val.model_validate({"title": "x"})
+    except ValidationError as exc:
+        return exc
+    raise AssertionError("field_validator must reject the title")
+
+
 def test_validation_failure_names_fields_never_values():
     """#B126 integration: a bad tool call must report the missing fields
     and must never echo the submitted arguments (the token rides along)."""
@@ -116,10 +137,29 @@ def test_non_validation_failures_pass_through():
     assert _field_names_message("vote", wrong_prefix) is None
 
 
+def test_value_error_msg_never_reaches_wire():
+    """#B126 finding #9: a value_error's msg is the validator's raised
+    text (here the canary). The rewrite must keep the field name and the
+    machine-readable type and never carry that free-form text."""
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from server._mcp import _field_names_message
+
+    cause = _value_error_validation()
+    exc = ToolError(f"Error executing tool create_post: {cause}")
+    exc.__cause__ = cause
+    message = _field_names_message("create_post", exc)
+    assert message is not None, message
+    assert "title" in message, message
+    assert "value_error" in message, message
+    assert CANARY not in message, f"validator text leaked: {message}"
+
+
 def main():
     test_validation_failure_names_fields_never_values()
     test_validation_type_error_names_field_never_token()
     test_validation_rewrite_names_fields_drops_input()
+    test_value_error_msg_never_reaches_wire()
     test_non_validation_failures_pass_through()
     print("test_b126_validation_messages: all assertions passed")
 
