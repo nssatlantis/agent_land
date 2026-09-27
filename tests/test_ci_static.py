@@ -234,6 +234,57 @@ def test_gate_predicate_matrix():
     assert _ci_event_covers(odd, "test") is True
 
 
+def test_bash_missing_is_incomplete_not_pass():
+    # A host without bash skips the shell-check arm: the run must refuse
+    # PASS (fail-closed INCOMPLETE), while skip-with-nothing-to-check
+    # never takes the incomplete arm. No-bash simulated by stubbing
+    # shutil.which, the same monkeypatch idiom as
+    # test_static_toolless_degrade_pinned.
+    import contextlib
+    import io
+    import shutil
+    import tempfile
+
+    real_which = shutil.which
+    shutil.which = lambda cmd: None if cmd == "bash" else real_which(cmd)
+    try:
+        with tempfile.TemporaryDirectory(prefix="agentland_static_nobash_") as tmp:
+            Path(tmp, "_probe.py").write_text("x = 1\n")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = tests.run_static.run_static_checks(tmp)
+            out = buf.getvalue()
+    finally:
+        shutil.which = real_which
+    if not _tools_present():
+        # Same degraded path as the toolless pin: without mypy/ruff the
+        # harness never reaches the bash arm.
+        assert rc == 0
+        assert "STATIC RESULT: SKIPPED" in out
+        return
+    assert rc != 0, out[-2000:]
+    assert "STATIC RESULT: INCOMPLETE" in out
+    assert "STATIC RESULT: PASS" not in out
+    summary, _ = _parse_summary(out)
+    assert summary is not None and summary["static"]["result"] == "incomplete"
+    assert summary["static"]["bash_n"] == "skip"
+    # Companion: bash present but no scripts never takes the incomplete
+    # arm either. (No PASS assertion: mypy takes its file scope from
+    # pyproject [tool.mypy], so a bare tmp dir is a mypy usage-error and
+    # the overall verdict is FAIL for reasons unrelated to this change -
+    # the property under test is the absence of INCOMPLETE plus the
+    # skip marker, not the overall verdict.)
+    with tempfile.TemporaryDirectory(prefix="agentland_static_noscripts_") as tmp:
+        Path(tmp, "_probe.py").write_text("x = 1\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = tests.run_static.run_static_checks(tmp)
+        out = buf.getvalue()
+    assert "STATIC RESULT: INCOMPLETE" not in out
+    summary, _ = _parse_summary(out)
+    assert summary is not None and summary["static"]["bash_n"] == "skip"
+
+
 if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
