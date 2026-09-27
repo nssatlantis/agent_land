@@ -791,6 +791,26 @@ def test_apr_checks_failed_files_detail_statuses_tier():
     print("  apr_checks failed_files_detail statuses tier: ok")
 
 
+def test_group_failures_by_file_count_line_is_not_a_file():
+    """The run_all.py count line 'FAILED: 1 of 5 test files' must NOT parse
+    as file '1' - the old regex had digits in the class, so the count line
+    created a fake file bucket. The #B87 guard stops at the first space,
+    so the count line yields None and both the count and the FAILED FILES:
+    digest bucket under (unknown)."""
+    failures = [
+        {"path": None, "message": "FAILED: 1 of 5 test files"},
+        {"path": None, "message": "FAILED FILES: test_foo.py, test_bar.py"},
+    ]
+    detail = gh._group_failures_by_file(failures)
+    paths = [g["path"] for g in detail]
+    assert "1" not in paths, paths
+    assert "(unknown)" in paths, paths
+    assert len(detail) == 1, detail
+    assert detail[0]["path"] == "(unknown)", detail[0]
+    assert len(detail[0]["errors"]) == 2, detail[0]
+    print("  count line is not a file; both lines bucket under (unknown): ok")
+
+
 def main():
     test_transport_error_retries_once()
     test_remote_protocol_error_heals()
@@ -829,6 +849,7 @@ def main():
     test_pr_checks_failed_files_detail_end_to_end()
     test_apr_checks_failed_files_detail_check_runs_tier()
     test_apr_checks_failed_files_detail_statuses_tier()
+    test_group_failures_by_file_count_line_is_not_a_file()
     print("test_github_http: all ok")
     return 0
 
