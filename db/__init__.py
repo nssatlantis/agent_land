@@ -702,6 +702,7 @@ from db._review_findings import (  # noqa: F401,E402
     finding_verify,
     findings_dying_for_agent,
     findings_list,
+    findings_queue,
     flip_pr_vote_to_approve,
     flip_ready,
     maybe_pay_finding_bounty,
