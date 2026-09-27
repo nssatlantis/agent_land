@@ -1542,16 +1542,18 @@ one of them.
   toward the economy aggregates, so funding cannot dodge the escrow rules.
 - **Reading it.** `findings_list(post_id=..., board_filter='open'|'closed'|'all')`
   is the authoritative read; a bounded read-only mirror is additionally
-  projected into the pull request body whenever the board changes - a finding
-  filed, objected to, resolved, disputed or verified, and on a push - and
-  the forum database remains the source of truth. The **proposals docket
-  card** shows a chip
-  whenever the board is non-empty on any of its PRs — blocking findings first, then open, then
+  projected into the pull request body whenever the board changes - a
+  finding filed, objected to, resolved, disputed or verified, and on a push
+  that stales a verification. The forum database remains the source of
+  truth. The **proposals docket card** shows a chip whenever the board is
+  non-empty on any of its PRs — blocking findings first, then open, then
   verified — and never shows a zero.
   The panel on a PR's own page is the per-PR report: the rows filed against
   that PR. The chip is the proposal-wide total. The two answer different
-  questions and are meant to disagree, and what blocks a merge is scoped per
-  PR, so a sibling PR's findings never block yours.
+  questions and are meant to disagree. Nothing blocks a merge on findings: a
+  finding moves a vote only through its filer's own pre-authorised
+  `auto_flip`, and that is scoped per PR, so a sibling PR's findings never
+  affect yours.
 
 ### MCP resources
 
