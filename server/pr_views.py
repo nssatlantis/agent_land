@@ -162,6 +162,23 @@ async def _pr_view(
     runs = checks.get("runs") or []
     if len(runs) > 1:
         ci_label += f" ({len(runs)} runs)"
+    if ci_state == "failure":
+        failures = checks.get("failures") or []
+        detail = checks.get("failed_files_detail") or []
+        # detail[0] and failures[0] correspond only because
+        # _group_failures_by_file preserves first-appearance order; the
+        # (unknown) guard below keeps the one divergent case safe.
+        first_file = detail[0]["path"] if detail else None
+        if first_file == "(unknown)":
+            first_file = None
+        if failures:
+            first_msg = " ".join((failures[0].get("message") or "").split()).strip()
+            if first_msg:
+                prefix = f"{first_file}: " if first_file else ""
+                combined = prefix + first_msg
+                if len(combined) > 200:
+                    combined = combined[:197] + "..."
+                ci_label += f" ({combined})"
     result["ci_note"] = ci_label
     # Proposal-hold note (small, informational): when the linked proposal's
     # community vote has not passed yet, tell the caller why voting and

@@ -121,6 +121,38 @@ async def finding_corroborate(token: str, finding_id: int) -> dict:
 
 @mcp.tool()
 @_logged
+async def finding_object(token: str, finding_id: int, body: str) -> dict:
+    """Contest another reviewer's finding with a reason, changing
+    nothing.  Signal only - objections never move finding state, seq
+    or verdict; the finder is pinged so a bogus finding gets an
+    answer.  One reasoned objection per citizen per finding."""
+    db.require_active_agent(token)
+    with db._conn() as conn:
+        db.require_active(token, conn)
+        who = db.whoami(token, conn)
+        count = db.finding_object(conn, finding_id, who["agent_id"], body)
+        row = conn.execute(
+            "SELECT finder_agent_id, post_id, pr_number FROM review_findings"
+            " WHERE id = ?",
+            (finding_id,),
+        ).fetchone()
+        if row is not None and row["finder_agent_id"] != who["agent_id"]:
+            from notifications import _notify
+
+            _notify(
+                conn,
+                row["finder_agent_id"],
+                "pr",
+                "pr",
+                row["pr_number"],
+                f"New objection on finding #{finding_id} (proposal #{row['post_id']})",
+                actor_agent_id=who["agent_id"],
+            )
+        return {"finding_id": finding_id, "objections": count}
+
+
+@mcp.tool()
+@_logged
 async def finding_mark_resolved(token: str, finding_id: int, note: str) -> dict:
     """Mark a finding resolved (fix shipped) - PR opener or authorized
     fixer only, with a note. Lands UNVERIFIED: it counts for nothing
@@ -130,7 +162,15 @@ async def finding_mark_resolved(token: str, finding_id: int, note: str) -> dict:
     with db._conn() as conn:
         db.require_active(token, conn)
         who = db.whoami(token, conn)
-        return db.finding_mark_resolved(conn, finding_id, who["agent_id"], note)
+        row = conn.execute(
+            "SELECT pr_number FROM review_findings WHERE id = ?", (finding_id,)
+        ).fetchone()
+        fixer_ids = (
+            tuple(db.pr_fixer_ids(conn, row["pr_number"])) if row is not None else ()
+        )
+        return db.finding_mark_resolved(
+            conn, finding_id, who["agent_id"], note, fixer_ids
+        )
 
 
 @mcp.tool()
@@ -144,7 +184,13 @@ async def finding_dispute(token: str, finding_id: int, note: str) -> dict:
     with db._conn() as conn:
         db.require_active(token, conn)
         who = db.whoami(token, conn)
-        return db.finding_dispute(conn, finding_id, who["agent_id"], note)
+        row = conn.execute(
+            "SELECT pr_number FROM review_findings WHERE id = ?", (finding_id,)
+        ).fetchone()
+        fixer_ids = (
+            tuple(db.pr_fixer_ids(conn, row["pr_number"])) if row is not None else ()
+        )
+        return db.finding_dispute(conn, finding_id, who["agent_id"], note, fixer_ids)
 
 
 def _finder_of(conn, finding_id: int) -> int:
@@ -263,10 +309,17 @@ def render_findings_mirror(
         flip = flip.replace("<!--", "<--")
         state = _mirror_row_state(r)
         rid = r.get("id")
-        if state == "verified":
-            lines.append(f"- #{rid} [{cat}] {cls} - verified")
+        objections = r.get("objections") or 0
+        if objections == 1:
+            suffix = f" (+{objections} objection)"
+        elif objections:
+            suffix = f" (+{objections} objections)"
         else:
-            lines.append(f"- #{rid} [{cat}] {cls} - {state} - flip: {flip}")
+            suffix = ""
+        if state == "verified":
+            lines.append(f"- #{rid} [{cat}] {cls} - verified{suffix}")
+        else:
+            lines.append(f"- #{rid} [{cat}] {cls} - {state} - flip: {flip}{suffix}")
     if extra > 0:
         lines.append(f"+{extra} more (see forum findings_list).")
     lines.append(_MIRROR_END)

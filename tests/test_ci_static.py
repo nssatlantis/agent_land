@@ -6,7 +6,7 @@ its TESTS-skipped marker into summary.tests_run=False, and the workflow
 gate accepts that for the `lint` tick while `test`/`not-gutted` still
 demand tests actually ran. Pins: green+fast on a clean tree, red on a
 planted violation, run_ci parity (no marker, same static source), parser
-round-trip, and the pure gate predicate matrix."""
+round-trip, the reported e2e lane, and the pure gate predicate matrix."""
 
 import subprocess
 import sys
@@ -154,6 +154,41 @@ def test_parser_tests_run_flag():
     assert summary is None or "tests_run" not in summary
 
 
+def test_parser_e2e_run_reported_on_every_summary():
+    # #B118: this harness never runs the four test_e2e_0*.py suites (run_all
+    # _SKIPs them and no harness invokes run_e2e.py), so every summary it
+    # produces describes a run that did not cover them. The key is
+    # present-and-False on each summary - known, did not run - and absent
+    # when there is no summary at all, which is unknown rather than "did
+    # not run": two states, no third reading. Report-only by construction;
+    # _ci_event_covers reads tests_run alone, which is what makes adding a
+    # key to the summary safe.
+    # Deliberately asserts nothing about tests_run. Each flag has exactly
+    # one owning pin, so removing either one turns exactly one test red
+    # rather than two - the direction that says which half broke.
+    # Shape 1: a tests-only run with no static half at all.
+    summary, _ = _parse_summary("test_misc.py: ok (1.00s)\nall 3 test files passed\n")
+    assert summary is not None
+    assert summary["e2e_run"] is False
+    # Shape 2: a red tests run, so the key rides a failing summary too.
+    summary, _ = _parse_summary("test_misc.py: FAIL\nFAILED: 1 of 3 test files\n")
+    assert summary is not None
+    assert summary["e2e_run"] is False
+    # Shape 3: static-only, the one shape that already carries a flag.
+    summary, _ = _parse_summary(
+        "--- static checks ---\ncompileall: ok\n"
+        "STATIC SUMMARY: compileall=ok mypy=0 ruff_check=0 ruff_format=0 bash_n=skip\n"
+        "STATIC RESULT: PASS\n"
+        "TESTS: SKIPPED (static-only harness - tests NOT run)\n"
+    )
+    assert summary is not None
+    assert summary["e2e_run"] is False
+    # Shape 4: unparsed output (and checks="format") - no summary, so no
+    # claim either way.
+    summary, _ = _parse_summary("nothing this parser recognises\n")
+    assert summary is None
+
+
 def test_gate_predicate_matrix():
     def detail(static="pass", **kw):
         d = {
@@ -197,6 +232,57 @@ def test_gate_predicate_matrix():
     odd = detail(static="fail")
     assert _ci_event_covers(odd, "lint") is True
     assert _ci_event_covers(odd, "test") is True
+
+
+def test_bash_missing_is_incomplete_not_pass():
+    # A host without bash skips the shell-check arm: the run must refuse
+    # PASS (fail-closed INCOMPLETE), while skip-with-nothing-to-check
+    # never takes the incomplete arm. No-bash simulated by stubbing
+    # shutil.which, the same monkeypatch idiom as
+    # test_static_toolless_degrade_pinned.
+    import contextlib
+    import io
+    import shutil
+    import tempfile
+
+    real_which = shutil.which
+    shutil.which = lambda cmd: None if cmd == "bash" else real_which(cmd)
+    try:
+        with tempfile.TemporaryDirectory(prefix="agentland_static_nobash_") as tmp:
+            Path(tmp, "_probe.py").write_text("x = 1\n")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = tests.run_static.run_static_checks(tmp)
+            out = buf.getvalue()
+    finally:
+        shutil.which = real_which
+    if not _tools_present():
+        # Same degraded path as the toolless pin: without mypy/ruff the
+        # harness never reaches the bash arm.
+        assert rc == 0
+        assert "STATIC RESULT: SKIPPED" in out
+        return
+    assert rc != 0, out[-2000:]
+    assert "STATIC RESULT: INCOMPLETE" in out
+    assert "STATIC RESULT: PASS" not in out
+    summary, _ = _parse_summary(out)
+    assert summary is not None and summary["static"]["result"] == "incomplete"
+    assert summary["static"]["bash_n"] == "skip"
+    # Companion: bash present but no scripts never takes the incomplete
+    # arm either. (No PASS assertion: mypy takes its file scope from
+    # pyproject [tool.mypy], so a bare tmp dir is a mypy usage-error and
+    # the overall verdict is FAIL for reasons unrelated to this change -
+    # the property under test is the absence of INCOMPLETE plus the
+    # skip marker, not the overall verdict.)
+    with tempfile.TemporaryDirectory(prefix="agentland_static_noscripts_") as tmp:
+        Path(tmp, "_probe.py").write_text("x = 1\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = tests.run_static.run_static_checks(tmp)
+        out = buf.getvalue()
+    assert "STATIC RESULT: INCOMPLETE" not in out
+    summary, _ = _parse_summary(out)
+    assert summary is not None and summary["static"]["bash_n"] == "skip"
 
 
 if __name__ == "__main__":

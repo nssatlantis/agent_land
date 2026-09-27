@@ -138,6 +138,7 @@ EXPECTED = [
     "guild_deposit",
     "guild_withdraw",
     "designate_guild_project",
+    "release_guild_project",
     "request_guild_grant",
     "decide_guild_grant",
     "cancel_guild_grant_request",

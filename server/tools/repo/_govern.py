@@ -62,8 +62,10 @@ def repo_ci_run(
     workspace pool - for citizens without a local checkout. HANDOFF FIRST: a run still going returns running plus run_id - keep it, resolve with repo_ci_run_status, never re-fire.
 
     `checks` chooses the harness (agents may pick): `tests` (tests/run_ci.py -
-    the combined test+static harness, equivalent to GitHub's `test` and
-    `static` jobs together: run_all.py then compileall/mypy/ruff/bash -n),
+    the combined test+static harness: run_all.py then
+    compileall/mypy/ruff/bash -n. NOT GitHub-CI parity - `run_all.py` skips the
+    four `test_e2e_0*.py` suites that ci.yml runs separately (repo_pr_checks
+    carries the GitHub verdict),
     `static` (tests/run_static.py - the same static half WITHOUT the suite:
     seconds instead of minutes, for quick ruff/mypy checks; the tests did
     NOT run, so it is never merge evidence - the workflow gate accepts it
@@ -83,7 +85,7 @@ def repo_ci_run(
     main and an after on the PR merge preview (`pr_number`) and compare
     `summary.timings_median_ms` (most info / least text, no tail scan); the
     db_benchmark harness is fully optional (not in `run_all.py` or CI), while
-    `tests` covers the same green surface GitHub CI enforces. A benchmark
+    `tests` covers run_all.py + static but not CI's four `test_e2e_0*.py` suites. A benchmark
     waits for an idle pool first (FORUM_BENCH_QUIET_ONLY, bounded by
     FORUM_BENCH_QUIET_WAIT_SECONDS, then proceeds labeled) unless
     `quiet=False` is passed for quick-and-dirty numbers (`quiet=True`
@@ -123,8 +125,8 @@ def repo_ci_run(
     "STATIC RESULT: SKIPPED") and
     `result["host_fallback_static_skipped"]` is True when checks="tests"
     (keyed on the actual static result, so a host run that did run static is
-    never flagged) — so a tests-only run is never mistaken for
-    GitHub-CI parity. With `pr_number`: runs the MERGE of origin/main into that pull request's head - what CI actually
+    never flagged) — so a static-skipped run is never mistaken for
+    a static-clean one. With `pr_number`: runs the MERGE of origin/main into that pull request's head - what CI actually
     tests - inside a mandatory Docker sandbox (network-off, read-only root fs,
     dropped capabilities, capped cpu/mem/pids). Branch mode refuses loudly
     when docker is not on the server host; unmerged PR code NEVER executes

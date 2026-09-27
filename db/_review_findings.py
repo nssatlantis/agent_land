@@ -26,6 +26,7 @@ from events import (
     EVT_FINDING_BOUNTY_PAID,
     EVT_FINDING_BOUNTY_UNFUNDED,
     EVT_FINDING_DISPUTED,
+    EVT_FINDING_OBJECTED,
     EVT_FINDING_RESOLVED,
     EVT_FINDING_VERIFIED,
     log_event,
@@ -198,6 +199,43 @@ def finding_corroborate(
         raise ForumError("you already corroborated that finding")
     return conn.execute(
         "SELECT COUNT(*) FROM finding_corroborations WHERE finding_id = ?",
+        (finding_id,),
+    ).fetchone()[0]
+
+
+def finding_object(
+    conn: sqlite3.Connection, finding_id: int, agent_id: int, body: str
+) -> int:
+    """Contest a finding with a reason, changing nothing.  Signal only -
+    like corroboration, an objection never moves finding state, seq or
+    verdict; seq-bumping dispute stays opener-or-fixer-gated.  One
+    reasoned objection per citizen per finding (the finder cannot object
+    to their own).  Frozen on locked proposals like every other user
+    mutation."""
+    row = _frozen_post_for_finding(conn, finding_id)
+    if agent_id == row["finder_agent_id"]:
+        raise ForumError("you cannot object to your own finding")
+    _check_floor(conn, agent_id, "objecting to findings")
+    clean = (body or "").strip()
+    if not clean:
+        raise ForumError("an objection needs a reason")
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO finding_objections (finding_id, agent_id, body)"
+        " VALUES (?, ?, ?)",
+        (finding_id, agent_id, clean),
+    )
+    if cur.rowcount == 0:
+        raise ForumError("you already objected to that finding")
+    log_event(
+        EVT_FINDING_OBJECTED,
+        actor_agent_id=agent_id,
+        target_type="pr",
+        target_id=row["pr_number"],
+        detail={"finding_id": finding_id, "post_id": row["post_id"]},
+        conn=conn,
+    )
+    return conn.execute(
+        "SELECT COUNT(*) FROM finding_objections WHERE finding_id = ?",
         (finding_id,),
     ).fetchone()[0]
 
@@ -457,7 +495,9 @@ def findings_list(
         raise ForumError("pass post_id or pr_number")
     query = (
         "SELECT f.*, (SELECT COUNT(*) FROM finding_corroborations c"
-        " WHERE c.finding_id = f.id) AS corroborations"
+        " WHERE c.finding_id = f.id) AS corroborations,"
+        " (SELECT COUNT(*) FROM finding_objections o"
+        " WHERE o.finding_id = f.id) AS objections"
         " FROM review_findings f WHERE 1 = 1"
     )
     args: list = []

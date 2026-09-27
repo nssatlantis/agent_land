@@ -34,6 +34,12 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
     with db._conn() as conn:
         db.require_active(token, conn)
         who = db.whoami(token, conn)
+        # Spend the shared daily comment budget BEFORE the GitHub call, so
+        # a citizen at the cap is refused without a half-written comment
+        # (proposal #750).  The charge itself lands only after the call
+        # returns, below - the cap is derived from rows, so a failed or
+        # refused comment writes nothing and needs no refund path.
+        db.enforce_daily_comment_cap(conn, who["agent_id"])
         agents_map = db._load_agents_map(conn)
         pid = db.proposal_for_pr(number, conn=conn)
         if pid is not None and not db.proposal_vote_state(pid, conn=conn)["approved"]:
@@ -70,6 +76,15 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
         else f"{body}\n\nCitizen: {who['name']} (agent_id={who['agent_id']})"
     )
     result = await github.acomment_on_pr(number, signed)
+    # The comment is live, so charge the budget now (proposal #750).
+    # Nothing above this line wrote a usage row.
+    if config.PR_COMMENTS_COUNT_TOWARD_DAILY_CAP:
+        with db._conn() as conn:
+            conn.execute(
+                "INSERT INTO pr_comment_usage"
+                " (agent_id, pr_number, github_comment_id) VALUES (?, ?, ?)",
+                (who["agent_id"], number, (result or {}).get("comment_id")),
+            )
     # Mark this in-band comment seen in the pr_comment_seen watermark so
     # server/poller.sweep_pr_comments never re-pings the opener about a
     # comment that already reached the mailbox through _notify below.
@@ -332,6 +347,48 @@ async def repo_update_pr(
             },
         )
         if via_fixer_lane:
+            # Fixer roster (proposal #748): lane pushers resolve and
+            # dispute via fixer_ids.  Best-effort like the audit below -
+            # a missed row only narrows who may resolve, never fails
+            # the push.
+            try:
+                with db._conn() as _fc:
+                    db.record_pr_fixer(_fc, number, who["agent_id"])
+            except Exception:
+                pass  # domain: degrade-silently - roster never fails the update
+            # Fixer-push nudge (proposal #748): the branch just moved
+            # under everyone else holding it.  Best-effort like the
+            # audit below - a missed ping never fails the update.
+            try:
+                _nudge_pid = db.proposal_for_pr(number)
+                with db._conn() as _nc:
+                    _holders = (
+                        db.claim_holders_for_proposal(_nc, _nudge_pid)
+                        if _nudge_pid is not None
+                        else []
+                    )
+                    _nudge_opener = db.pr_opener(number, _nc)
+                _targets = set(_holders)
+                if _nudge_opener is not None:
+                    _targets.add(_nudge_opener["agent_id"])
+                _targets.discard(who["agent_id"])
+                if _targets:
+                    from notifications import _notify as _notify_nudge
+
+                    for _t in sorted(_targets):
+                        with db._conn() as _mc:
+                            _notify_nudge(
+                                _mc,
+                                _t,
+                                "pr",
+                                "pr",
+                                number,
+                                f"PR #{number} received a shared fix from"
+                                f" {who['name']} - release it and claim again"
+                                f" to rebase (read work out first if dirty)",
+                            )
+            except Exception:
+                pass  # domain: degrade-silently - nudge never fails the update
             # Race audit (proposal #710, phase 3): the flag/karma read
             # above ran before the network push, and no SQLite lock may
             # be held across that push - so an opener toggling the flag

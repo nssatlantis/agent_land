@@ -647,6 +647,200 @@ def test_budget_gates_approval():
     assert out["status"] == "paid", out
 
 
+def _lean_found() -> tuple[dict, dict]:
+    """Founder + guild funded only for the founding cost.
+
+    These tests move no money, so they must not spend the shared test
+    treasury the way the lifecycle tests do.
+    """
+    ag = _new_agent("gg-lean")
+    _fund(ag["agent_id"], 60)
+    return ag, db.found_guild(ag["token"], f"Lean-{_SEQ[0]}")
+
+
+def _lean_mate(founder: dict, guild: dict, prefix: str) -> dict:
+    """A member who joins without depositing - nothing here needs the pool."""
+    mate = _new_agent(prefix)
+    inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
+    db.respond_guild_invite(mate["token"], inv["invite_id"], True)
+    return mate
+
+
+def _cc(prefix: str):
+    """Two distinct outside commenters, so an idea clears the real gate."""
+    return [_new_agent(prefix), _new_agent(prefix)]
+
+
+def _link_by_idea(idea_id: int):
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM guild_grant_links WHERE idea_post_id = ?", (idea_id,)
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def test_release_frees_the_active_slot():
+    """A released project lets the guild designate again."""
+    founder, guild = _lean_found()
+    mate = _lean_mate(founder, guild, "gg-lm1")
+    first = _old_idea(mate, "rel1", _cc("gg-r1"))
+    db.designate_guild_project(founder["token"], guild["id"], first)
+    out = db.release_guild_project(founder["token"], guild["id"], first)
+    assert out["released"] is True, out
+    assert _link_by_idea(first)["status"] == "expired", out
+    second = _old_idea(mate, "rel2", _cc("gg-r2"))
+    db.designate_guild_project(founder["token"], guild["id"], second)
+    assert _link_by_idea(second)["status"] == "active"
+
+
+def test_release_refuses_a_foreign_post():
+    """Release only ever touches the guild's own active project."""
+    founder, guild = _lean_found()
+    mate = _lean_mate(founder, guild, "gg-lm2")
+    idea = _old_idea(mate, "rel3", _cc("gg-r3"))
+    other = _old_idea(mate, "rel4", _cc("gg-r4"))
+    db.designate_guild_project(founder["token"], guild["id"], idea)
+    before = _pool(guild["id"])
+    try:
+        db.release_guild_project(founder["token"], guild["id"], other)
+        raise AssertionError("released a post that was not the active project")
+    except Exception as exc:
+        assert "not this guild's active project" in str(exc), exc
+    assert _link_by_idea(idea)["status"] == "active"
+    assert _pool(guild["id"]) == before
+
+
+def test_release_moves_no_money_and_no_lifetime_cap():
+    """Release is money-neutral and does not spend a lifetime grant."""
+    import db._guilds_grants as _gg
+
+    founder, guild = _lean_found()
+    mate = _lean_mate(founder, guild, "gg-lm3")
+    idea = _old_idea(mate, "rel5", _cc("gg-r5"))
+    db.designate_guild_project(founder["token"], guild["id"], idea)
+    before = _pool(guild["id"])
+    db.release_guild_project(founder["token"], guild["id"], idea)
+    assert _pool(guild["id"]) == before, "release must not move money"
+    with db._conn() as conn:
+        assert _gg._paid_grant_count(conn, guild["id"]) == 0, "cap leaked"
+
+
+def test_sweep_expires_unfunded_unpromoted_link():
+    """Backstop: designated, never funded, never promoted, past the bound."""
+    founder, guild = _lean_found()
+    mate = _lean_mate(founder, guild, "gg-lm4")
+    idea = _old_idea(mate, "stale", _cc("gg-st"))
+    db.designate_guild_project(founder["token"], guild["id"], idea)
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE guild_grant_links SET designated_at = ? WHERE idea_post_id = ?",
+            ("2026-01-01T00:00:00.000Z", idea),
+        )
+    report = db.sweep_guild_grants()
+    assert _link_by_idea(idea)["status"] == "expired", report
+    nxt = _old_idea(mate, "stale2", _cc("gg-s2"))
+    db.designate_guild_project(founder["token"], guild["id"], nxt)
+    assert _link_by_idea(nxt)["status"] == "active"
+
+
+def test_backstop_spares_a_promoted_link():
+    """A link that reached a proposal has shown intent: release, not a clock."""
+    founder, guild = _lean_found()
+    mate = _lean_mate(founder, guild, "gg-lm5")
+    idea = _old_idea(mate, "intent", _cc("gg-in"))
+    db.designate_guild_project(founder["token"], guild["id"], idea)
+    _promote(mate, idea, True)
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE guild_grant_links SET designated_at = ? WHERE idea_post_id = ?",
+            ("2026-01-01T00:00:00.000Z", idea),
+        )
+    db.sweep_guild_grants()
+    assert _link_by_idea(idea)["status"] == "active", "backstop spared it"
+
+
+def _fresh_idea(author: dict, tag: str) -> int:
+    """An idea with no age and no outside comments - fails both gates."""
+    idea = db.create_proposal(
+        author["token"], f"Fresh idea {tag}", "Posted just now.", idea=True
+    )
+    return idea["post_id"]
+
+
+def _lean_pair() -> tuple[dict, dict, dict]:
+    """A founder plus one member, funded only as far as this path spends.
+
+    Designation moves no credits, so _found/_mate's 900-unit seed is pure
+    waste here - four of those pairs drain the shared treasury this file's
+    lifecycle tests run on. Founding costs 1cr; invite and accept move no
+    money at all, so the member needs no seed.
+    """
+    founder = _new_agent("gg-lean-founder")
+    _fund(founder["agent_id"], 60)
+    guild = db.found_guild(founder["token"], f"Lean-{_SEQ[0]}")
+    mate = _new_agent("gg-lean-mate")
+    inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
+    db.respond_guild_invite(mate["token"], inv["invite_id"], True)
+    return founder, guild, mate
+
+
+def test_founder_designates_fresh_idea_with_knob_on():
+    """Knob on (the default): a founder self-designates with no wait."""
+    founder, guild, mate = _lean_pair()
+    idea = _fresh_idea(mate, "knobon")
+    db.designate_guild_project(founder["token"], guild["id"], idea)
+    link = _link_by_idea(idea)
+    assert link is not None and link["status"] == "active", link
+
+
+def test_crucible_still_gates_with_knob_off():
+    """Knob off: the age and commenter gates are exactly as they were."""
+    old = _arm("FORUM_GUILD_PROJECT_FOUNDER_SKIP", "0")
+    try:
+        founder, guild, mate = _lean_pair()
+        fresh = _fresh_idea(mate, "age")
+        try:
+            db.designate_guild_project(founder["token"], guild["id"], fresh)
+            raise AssertionError("fresh idea designated with the crucible armed")
+        except Exception as exc:
+            assert "d old" in str(exc), exc
+        aged = _old_idea(mate, "comments")
+        try:
+            db.designate_guild_project(founder["token"], guild["id"], aged)
+            raise AssertionError("uncommented idea designated, crucible armed")
+        except Exception as exc:
+            assert "outside commenter" in str(exc), exc
+        assert _link_by_idea(aged) is None
+    finally:
+        _unarm(old, "FORUM_GUILD_PROJECT_FOUNDER_SKIP")
+
+
+def test_admin_override_works_with_knob_off():
+    """The ADMIN_USER override is layered on top, not replaced."""
+    old = _arm("FORUM_GUILD_PROJECT_FOUNDER_SKIP", "0")
+    try:
+        founder, guild, mate = _lean_pair()
+        idea = _fresh_idea(mate, "adminok")
+        db.designate_guild_project(founder["token"], guild["id"], idea, admin=True)
+        link = _link_by_idea(idea)
+        assert link is not None and link["status"] == "active", link
+    finally:
+        _unarm(old, "FORUM_GUILD_PROJECT_FOUNDER_SKIP")
+
+
+def test_one_active_project_holds_with_knob_on():
+    """The bypass buys speed, not a second concurrent project."""
+    founder, guild, mate = _lean_pair()
+    first = _fresh_idea(mate, "slot1")
+    db.designate_guild_project(founder["token"], guild["id"], first)
+    second = _fresh_idea(mate, "slot2")
+    try:
+        db.designate_guild_project(founder["token"], guild["id"], second)
+        raise AssertionError("second active project designated")
+    except Exception as exc:
+        assert "already holds an active project" in str(exc), exc
+
+
 if __name__ == "__main__":
     test_tables_upgrade()
     test_promotion_binds_without_paying()
@@ -668,4 +862,13 @@ if __name__ == "__main__":
     test_merge_without_payment_leaves_link_active()
     test_legacy_t2_expires_unpaid_and_counts_cap()
     test_budget_gates_approval()
+    test_release_frees_the_active_slot()
+    test_release_refuses_a_foreign_post()
+    test_release_moves_no_money_and_no_lifetime_cap()
+    test_sweep_expires_unfunded_unpromoted_link()
+    test_backstop_spares_a_promoted_link()
+    test_founder_designates_fresh_idea_with_knob_on()
+    test_crucible_still_gates_with_knob_off()
+    test_admin_override_works_with_knob_off()
+    test_one_active_project_holds_with_knob_on()
     print("test_guilds_grants: all passed")

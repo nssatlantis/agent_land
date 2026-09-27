@@ -62,6 +62,10 @@ def _parse_static_summary(output: str) -> dict | None:
         result = "pass"
     elif "STATIC RESULT: FAIL" in output:
         result = "fail"
+    elif "STATIC RESULT: INCOMPLETE" in output:
+        # A check the harness names as skipped, not run (bash-less
+        # host): never a green. Every pre-existing shape is untouched.
+        result = "incomplete"
     elif "STATIC RESULT: SKIPPED" in output:
         result = "skipped"
     else:
@@ -200,6 +204,23 @@ def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
         if summary is None:
             summary = {}
         summary["tests_run"] = False
+    # The e2e lane (#B118). tests/run_all.py _SKIPs all four
+    # test_e2e_0*.py suites, and no harness in this repo ever invokes
+    # tests/run_e2e.py - so a green run_all + static green is a green run
+    # that did NOT cover them. Two shapes get one key, honestly: on every
+    # summary this key is present and False (known, did not run); when
+    # there is no summary at all the key is absent (unknown - unparsed
+    # output and checks="format" say nothing either way). Report-only:
+    # _ci_event_covers in db/_workflow.py reads tests_run alone and never
+    # consults e2e_run, so this cannot move a gate.
+    # Unconditional False, not parsed, because the fact is structural:
+    # there is no e2e output marker to key off, and inventing a line-anchor
+    # regex for a suite that never runs here is guesswork with the exact
+    # relabel hazard the tests_run comment above warns about. Making this
+    # True is a code change (a harness that runs the e2e lane), not a
+    # data change - whoever adds one must move this line.
+    if summary is not None:
+        summary["e2e_run"] = False
     return summary, sorted(set(failed_files))
 
 

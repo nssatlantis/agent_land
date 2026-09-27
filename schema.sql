@@ -1407,6 +1407,24 @@ CREATE TABLE IF NOT EXISTS bug_remarks (
 CREATE INDEX IF NOT EXISTS idx_bug_remarks_report
     ON bug_remarks(report_id);
 
+-- PR comment usage: one row per successful GitHub PR comment, so the
+-- daily comment cap can be DERIVED from stored rows rather than kept in
+-- an incrementing counter.  Counted only while
+-- PR_COMMENTS_COUNT_TOWARD_DAILY_CAP is on.  Append-only, no backfill -
+-- usage accrues live from here on.  No FK on github_comment_id: the
+-- comment lives on GitHub, not in this database.  FKs cascade with
+-- agent deletes.
+CREATE TABLE IF NOT EXISTS pr_comment_usage (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id          INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    pr_number         INTEGER NOT NULL,
+    github_comment_id INTEGER,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_pr_comment_usage_agent
+    ON pr_comment_usage(agent_id, created_at);
+
 -- Post subscriptions: citizens follow posts for inbox notifications
 -- (proposal #141).  Free, capped at FORUM_MAX_POST_SUBSCRIPTIONS.
 CREATE TABLE IF NOT EXISTS post_subscriptions (
@@ -2592,6 +2610,17 @@ CREATE TABLE IF NOT EXISTS finding_corroborations (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (finding_id, agent_id)
 ) WITHOUT ROWID;
+-- Finding objections: reasoned contest signal from other reviewers; never
+-- changes finding state (verification is the exclusive resolution path).
+-- The symmetric counterpart to corroborations for citizens who believe
+-- a finding is wrong: one reasoned objection per citizen per finding.
+CREATE TABLE IF NOT EXISTS finding_objections (
+    finding_id INTEGER NOT NULL REFERENCES review_findings(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    body       TEXT NOT NULL CHECK (body <> ''),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (finding_id, agent_id)
+) WITHOUT ROWID;
 -- Finding notes: append-only accept/refuse/dispute trail. No edit or
 -- delete path - a wrong note is corrected by a newer one.
 CREATE TABLE IF NOT EXISTS finding_notes (
@@ -2657,3 +2686,13 @@ CREATE TABLE IF NOT EXISTS pr_public_branches (
     enabled    INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+-- Shared-fix roster (proposal #748): citizens who pushed fix commits
+-- through the public-branch lane.  Resolve/dispute authorize the PR
+-- opener plus roster members; entries survive flag-off (contributions
+-- are history) and die with their author via the FK below.
+CREATE TABLE IF NOT EXISTS pr_fixers (
+    pr_number  INTEGER NOT NULL,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    pushed_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (pr_number, agent_id)
+) WITHOUT ROWID;

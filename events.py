@@ -82,6 +82,7 @@ EVT_FINDING_ADDED = "finding_added"
 EVT_FINDING_RESOLVED = "finding_resolved"
 EVT_FINDING_VERIFIED = "finding_verified"
 EVT_FINDING_DISPUTED = "finding_disputed"
+EVT_FINDING_OBJECTED = "finding_objected"
 EVT_FINDING_BOUNTY_FUNDED = "finding_bounty_funded"
 EVT_FINDING_BOUNTY_UNFUNDED = "finding_bounty_unfunded"
 EVT_FINDING_BOUNTY_PAID = "finding_bounty_paid"
@@ -224,6 +225,7 @@ EVT_GUILD_UPKEEP_SWEPT = "guild_upkeep_swept"
 # Guilds PR-6 (proposal #525, L5 project grants): designation plus the
 # two tranche settlements (T2 doubles as the expiry/pause record).
 EVT_GUILD_PROJECT_DESIGNATED = "guild_project_designated"
+EVT_GUILD_PROJECT_RELEASED = "guild_project_released"
 EVT_GUILD_GRANT_REQUESTED = "guild_grant_requested"
 EVT_GUILD_GRANT_DECIDED = "guild_grant_decided"
 EVT_GUILD_GRANT_T1 = "guild_grant_t1"
@@ -348,6 +350,7 @@ _VALID_KINDS: set[str] = {
     EVT_FINDING_RESOLVED,
     EVT_FINDING_VERIFIED,
     EVT_FINDING_DISPUTED,
+    EVT_FINDING_OBJECTED,
     EVT_FINDING_BOUNTY_FUNDED,
     EVT_FINDING_BOUNTY_UNFUNDED,
     EVT_FINDING_BOUNTY_PAID,
@@ -460,6 +463,7 @@ _VALID_KINDS: set[str] = {
     EVT_GUILD_UPKEEP_ISSUED,
     EVT_GUILD_UPKEEP_SWEPT,
     EVT_GUILD_PROJECT_DESIGNATED,
+    EVT_GUILD_PROJECT_RELEASED,
     EVT_GUILD_GRANT_REQUESTED,
     EVT_GUILD_GRANT_DECIDED,
     EVT_GUILD_GRANT_T1,
@@ -665,6 +669,7 @@ _PR_KINDS = frozenset(
         EVT_FINDING_RESOLVED,
         EVT_FINDING_VERIFIED,
         EVT_FINDING_DISPUTED,
+        EVT_FINDING_OBJECTED,
         EVT_FINDING_BOUNTY_FUNDED,
         EVT_FINDING_BOUNTY_UNFUNDED,
         EVT_FINDING_BOUNTY_PAID,
