@@ -221,7 +221,7 @@ def _findings_panel_degraded(pr_number: int, reason: str) -> str:
     the matching log tag is emitted by the caller.
     """
     note = (
-        f"Board unavailable for PR #{pr_number} ({esc(reason)}). Findings may "
+        f"Board unavailable for PR #{pr_number} ({reason}). Findings may "
         "exist; this is a read failure, not a clean board. Read the board "
         f"directly with findings_list(post_id=..., pr_number={pr_number})."
     )
