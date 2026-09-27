@@ -505,7 +505,7 @@ def findings_queue(
         " WHERE o.finding_id = f.id) AS objections"
         " FROM review_findings f LEFT JOIN posts p ON p.id = f.post_id"
         f" WHERE NOT (f.{_VERIFIED_SQL}) ORDER BY f.id LIMIT ?",
-        (int(limit),),
+        (max(1, min(int(limit), _QUEUE_MAX_ROWS)),),
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -529,6 +529,15 @@ def findings_list(
     if board_filter not in ("open", "closed", "all"):
         raise ForumError("filter must be open, closed or all")
     if post_id is None and pr_number is None:
+        # Unscoped reads the OPEN queue (proposal #776, leg D3a), and only
+        # the open filter: findings_queue IS the open set, so honouring
+        # "closed" here would hand back open rows inside a payload that
+        # still asserts "filter": "closed".  Fail closed and say what to do.
+        if board_filter != "open":
+            raise ForumError(
+                "an unscoped read is the open queue; pass post_id or"
+                " pr_number for closed/all"
+            )
         return findings_queue(conn)
     query = (
         "SELECT f.*, (SELECT COUNT(*) FROM finding_corroborations c"
