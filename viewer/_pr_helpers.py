@@ -243,6 +243,25 @@ def _findings_panel_degraded(pr_number: int, reason: str) -> str:
     )
 
 
+def _finding_meta(row: dict) -> str:
+    """Provenance for one board row: who filed it, how many reviewers
+    corroborated it, who verified it. The one-line proof is the row body
+    (see _pr_findings_panel); this is the who beside it, which the panel
+    previously omitted entirely.
+
+    Corroboration is rendered because db.findings_list returns it; a
+    zero is omitted rather than shown, matching the docket chip's "never
+    mint a zero" call.
+    """
+    bits = [f"filed by agent {row.get('finder_agent_id', 'unknown')}"]
+    n = int(row.get("corroborations") or 0)
+    if n:
+        bits.append(f"{n} corroboration{'' if n == 1 else 's'}")
+    if row.get("verified_by_agent_id") is not None:
+        bits.append(f"verified by agent {row.get('verified_by_agent_id')}")
+    return " / ".join(bits)
+
+
 def _pr_findings_panel(pr_number: int) -> str:
     """Review findings board panel for a single PR: open bugs/issues and
     improvements with state, plus the derived verdict counts.  Read-only -
@@ -291,7 +310,16 @@ def _pr_findings_panel(pr_number: int) -> str:
         )
         return _findings_panel_degraded(pr_number, "board read failed")
     if not rows:
-        return ""
+        # An empty board is a RESULT, not an absence. #1500 made a failed
+        # read visible; returning "" here made a clean board and a missing
+        # channel look identical, so a brand-new PR had no presence at all.
+        return (
+            '<div class="panel"><h2>Review findings on this PR</h2>'
+            '<p style="color:var(--muted);font-size:13px;margin:4px 0">'
+            "No findings filed on this PR. A reviewer who wants to change it "
+            "files one with <code>finding_add</code> - class, one-line check, "
+            "flip path, covered files.</p></div>"
+        )
     # Same predicate as the ledger (reviewer_blockers / findings_list
     # open filter): only resolved-plus-verified counts as done.  A stale
     # row still carries its old verifier id, so testing verified_by
@@ -315,17 +343,24 @@ def _pr_findings_panel(pr_number: int) -> str:
         )
         bounty_badge = _bounty_badge(bounties, r["id"])
         lines += (
-            f"<li>#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
+            f'<li title="{esc(r["flip_path"][:200])}">'
+            f"#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
             f"<span style='color:{state_color};font-weight:600'>"
             f"{esc(r['state'])}</span>"
-            f" <span style='color:var(--muted)'>{esc(r['flip_path'][:120])}</span>"
+            f"<div style='margin:2px 0'>{esc(r.get('check', ''))}</div>"
+            f"<div style='color:var(--muted);font-size:12px'>"
+            f"{esc(_finding_meta(r))}</div>"
             f"{bounty_badge}{_objection_badge(r)}</li>"
         )
     for r in done_rows:
         bounty_badge = _bounty_badge(bounties, r["id"])
         lines += (
-            f"<li>#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
+            f'<li title="{esc(r["flip_path"][:200])}">'
+            f"#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
             f"<span style='color:var(--ok);font-weight:600'>verified</span>"
+            f"<div style='margin:2px 0'>{esc(r.get('check', ''))}</div>"
+            f"<div style='color:var(--muted);font-size:12px'>"
+            f"{esc(_finding_meta(r))}</div>"
             f"{bounty_badge}{_objection_badge(r)}</li>"
         )
     blockers = verdict.get("open_auto_flip_by_voter") or []
