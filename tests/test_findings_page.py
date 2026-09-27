@@ -72,7 +72,22 @@ def main():
     finally:
         db._conn = real_conn  # type: ignore[assignment]
     assert "could not be read" in html, html
+    # #1523 finding 11: the notice alone was true before AND after the fix,
+    # so it could never fail.  The count line is the discriminating half - a
+    # degraded read must NOT print a positive count of the very thing it
+    # just failed to read.  This is the assertion whose absence let the
+    # defect survive three instrumented iterations.
+    assert "open finding(s) across every board" not in html, html
+    assert "0 open finding" not in html, html
     print("  degraded read: ok")
+
+    # positive control: the SAME page on a working read DOES print the count
+    # (real_conn was restored by the finally above and the fixture row is
+    # still on the board), so the assertion above discriminates rather than
+    # passing vacuously.
+    _healthy = _findings_body()
+    assert "open finding(s) across every board" in _healthy, _healthy
+    print("  count line is discriminating: ok")
 
     print("test_findings_page: all assertions passed")
     import shutil
