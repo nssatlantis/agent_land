@@ -62,6 +62,10 @@ def _parse_static_summary(output: str) -> dict | None:
         result = "pass"
     elif "STATIC RESULT: FAIL" in output:
         result = "fail"
+    elif "STATIC RESULT: INCOMPLETE" in output:
+        # A check the harness names as skipped, not run (bash-less
+        # host): never a green. Every pre-existing shape is untouched.
+        result = "incomplete"
     elif "STATIC RESULT: SKIPPED" in output:
         result = "skipped"
     else:
