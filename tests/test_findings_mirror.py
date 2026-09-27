@@ -232,9 +232,8 @@ def main():
     # position and no call, and two rehearsals plus a green GitHub run were
     # all perfectly happy, because the pins covered the helper's internals
     # and nothing covered the wiring.  This asserts the wiring.
-    import inspect
-
     import ast
+    import inspect
     import textwrap
 
     def _refresh_sites(fn, name="_refresh_mirror"):
@@ -259,8 +258,7 @@ def main():
             ):
                 parent = stack[-2] if len(stack) > 1 else None
                 in_txn = any(
-                    isinstance(a, (ast.With, ast.AsyncWith))
-                    and "_conn" in ast.dump(a)
+                    isinstance(a, (ast.With, ast.AsyncWith)) and "_conn" in ast.dump(a)
                     for a in stack
                 )
                 sites.append((isinstance(parent, ast.Await), in_txn))
