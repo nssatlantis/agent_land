@@ -433,9 +433,9 @@ async def repo_update_pr(
             # the PR's findings board (proposal #710) - stale them so the
             # next verify re-pins against the new head.
             try:
-                from ._findings import stale_findings_on_push
+                from ._findings import _stale_and_refresh
 
-                await stale_findings_on_push(number)
+                await _stale_and_refresh(number)
             except Exception:
                 pass  # domain: degrade-silently - staling never fails the update response
     return result
@@ -543,9 +543,9 @@ async def repo_resolve_conflicts(
         # A resolution merge pushes a new head, invalidating prior
         # verification attestations exactly like any other push.
         try:
-            from ._findings import stale_findings_on_push
+            from ._findings import _stale_and_refresh
 
-            await stale_findings_on_push(number)
+            await _stale_and_refresh(number)
         except Exception:
             pass  # domain: degrade-silently - staling never fails the response
         return resolved
