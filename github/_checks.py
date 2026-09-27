@@ -648,9 +648,9 @@ def _group_failures_by_file(failures: list[dict]) -> list[dict]:
                 groups.setdefault(current_file, []).append(msg)
             else:
                 groups.setdefault("(unknown)", []).append(msg)
-    detail = []
+    detail: list[dict] = []
     for p, errs in groups.items():
-        d = {"path": p, "errors": [e[:200] for e in errs[:10]]}
+        d: dict[str, object] = {"path": p, "errors": [e[:200] for e in errs[:10]]}
         if p in inferred:
             d["inferred"] = True
         detail.append(d)
