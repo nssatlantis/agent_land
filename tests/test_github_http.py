@@ -832,6 +832,28 @@ def test_group_failures_by_file_inferred_marker():
     print("  inferred marker present on synthesized paths only: ok")
 
 
+def test_group_failures_by_file_source_seam_order_independence():
+    """#B131 follow-up: the source seam (Actions log lines vs check-run
+    annotations) must not carry current_file across. A check-run
+    annotation with path=None goes to (unknown), not under a filename
+    from a different source's log. Order-independence: the same two
+    messages in both orders yield the same attribution."""
+    actions_line = {"message": "FAILED: tests/test_foo.py (line 42)"}
+    annotation = {"path": None, "message": "Process completed with exit code 1."}
+    merged = [actions_line, annotation]
+    detail = gh_checks._group_failures_by_file(merged)
+    by_path = {g["path"]: g for g in detail}
+    assert "tests/test_foo.py" in by_path, by_path
+    assert len(by_path["tests/test_foo.py"]["errors"]) == 1, by_path
+    assert "(unknown)" in by_path, by_path
+    assert len(by_path["(unknown)"]["errors"]) == 1, by_path
+    reversed_merged = [annotation, actions_line]
+    detail2 = gh_checks._group_failures_by_file(reversed_merged)
+    by_path2 = {g["path"]: g for g in detail2}
+    assert by_path == by_path2, (by_path, by_path2)
+    print("  source-seam reset + order-independence: ok")
+
+
 def main():
     test_transport_error_retries_once()
     test_remote_protocol_error_heals()
@@ -873,6 +895,7 @@ def main():
     test_apr_checks_failed_files_detail_statuses_tier()
     test_group_failures_by_file_count_line_is_not_a_file()
     test_group_failures_by_file_inferred_marker()
+    test_group_failures_by_file_source_seam_order_independence()
     test_etag_revalidation_serves_304_without_a_body()
     test_etag_stale_copy_refetches_with_a_fresh_validator()
     test_pr_has_label_reuses_passed_row_without_a_fetch()
