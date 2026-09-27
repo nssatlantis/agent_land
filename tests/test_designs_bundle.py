@@ -87,9 +87,11 @@ def main():
         note = _designs_nudge(conn)
     assert "designs_note" in note, note
     ci = db.check_in(beta["token"])
-    assert any("Designs:" in a for a in ci["suggested_actions"]), ci[
-        "suggested_actions"
-    ]
+    # Pin the RENDERED line, not the "Designs:" prefix: the substring
+    # assertion is what let a missing space survive as "fixed".
+    assert any("Designs: 1 open brainstorm(s)" in a for a in ci["suggested_actions"]), (
+        ci["suggested_actions"]
+    )
     print("  nudge + check_in: ok")
 
     # --- design_for_post + subscriber plumbing ---
@@ -113,6 +115,27 @@ def main():
     assert f["state"] == "pending", f
     with db._conn() as conn:
         validate_evidence("coordinating", f"#D{did}", int(beta["agent_id"]), conn)
+    with db._conn() as conn:
+        assert "contributed" in expect_error(
+            validate_evidence,
+            "coordinating",
+            f"#D{did}",
+            int(gamma["agent_id"]),
+            conn,
+        )
+    # Discriminating arm for the #1502 fix: seed a jobs row whose id EQUALS
+    # the design id, credited to gamma. Under the fixed coordinating arm the
+    # jobs table is never consulted for a design and gamma has no seats, so
+    # gamma is refused. Revert the fix to `else:` and gamma is ACCEPTED via
+    # the colliding job, so this arm reds - which is what the presence-only
+    # arm above cannot do. (Gamma, not beta: beta proposed a feature on this
+    # design above, so beta legitimately holds a seat.)
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "INSERT INTO jobs (id, creator_agent_id, title, description,"
+            " payment_units, total_cycles) VALUES (?, ?, ?, '', 1, 1)",
+            (did, int(gamma["agent_id"]), f"colliding job #{did}"),
+        )
     with db._conn() as conn:
         assert "contributed" in expect_error(
             validate_evidence,
