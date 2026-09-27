@@ -46,7 +46,10 @@ import server.ci_runner._farm as farm  # noqa: E402
 # A test needing a specific value assigns over these, and its existing
 # `finally: farm._ping = orig_ping` then restores the default rather than the
 # real function, so no test reaches the socket by omission. The two tests that
-# deliberately exercise the real dispatch call _REAL_DISPATCH by name.
+# deliberately exercise the real dispatch call _REAL_DISPATCH by name. Note the
+# asymmetry: _REAL_DISPATCH has four opt-in call sites, while _REAL_PING has
+# NONE - no test in this file calls farm._ping() directly. It exists purely so
+# the pin below has something to compare against; it is not an exercised hatch.
 _REAL_PING = farm._ping
 _REAL_DISPATCH = farm.dispatch_to_runner
 
@@ -56,6 +59,15 @@ def _default_ping(url, token):
 
 
 def _default_dispatch(runner, payload):
+    # A real dispatch_to_runner releases, in its finally (_farm.py:302), the
+    # slot that pick_runner took at :257. A stub that returned without
+    # releasing would STRAND that slot, and the runner would then read as busy
+    # to the next pick_runner (:245/:255). Releasing here is what makes this
+    # stub behaviour-identical to a FAILED dispatch rather than merely
+    # None-returning - which is the property the whole change rests on.
+    rid = (runner or {}).get("id")
+    if rid is not None:
+        farm._release(rid)
     return None
 
 
