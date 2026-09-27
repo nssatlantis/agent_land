@@ -234,6 +234,41 @@ def main():
     # and nothing covered the wiring.  This asserts the wiring.
     import inspect
 
+    import ast
+    import textwrap
+
+    def _conn_with(fn):
+        """True if fn's body contains a `with db._conn(...)` block."""
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.With, ast.AsyncWith)):
+                src = ast.dump(node)
+                if "_conn" in src:
+                    return True
+        return False
+
+    def _awaited(fn, name):
+        """A Call to `name` whose nearest enclosing statement is an Await."""
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        stack = []
+        found = []
+
+        class V(ast.NodeVisitor):
+            def visit(self, node):
+                stack.append(node)
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == name
+                ):
+                    parent = stack[-2] if len(stack) > 1 else None
+                    found.append(isinstance(parent, ast.Await))
+                self.generic_visit(node)
+                stack.pop()
+
+        V().visit(tree)
+        return found
+
     for _fn in (
         "finding_add",
         "finding_object",
@@ -241,11 +276,19 @@ def main():
         "finding_dispute",
         "finding_verify",
     ):
-        _src = inspect.getsource(getattr(ftools, _fn))
-        assert "_refresh_mirror(" in _src, f"{_fn} does not call _refresh_mirror"
+        _f = getattr(ftools, _fn)
+        _hits = _awaited(_f, "_refresh_mirror")
+        assert _hits, f"{_fn} does not call _refresh_mirror"
+        assert all(_hits), f"{_fn} calls _refresh_mirror without await"
+        assert not _conn_with(_f), f"{_fn} refreshes inside a db._conn() block"
     # The deliberate non-trigger must not grow a call by accident.
-    _src = inspect.getsource(ftools.finding_corroborate)
-    assert "_refresh_mirror(" not in _src, "finding_corroborate is not a trigger"
+    assert not _awaited(ftools.finding_corroborate, "_refresh_mirror"), (
+        "finding_corroborate is not a trigger"
+    )
+    # The staling family is a trigger: it writes the rendered `state`.
+    assert _awaited(ftools._stale_and_refresh, "_refresh_mirror"), (
+        "staling must re-project; it writes the rendered state"
+    )
 
     # --- the write-path trigger never fails a write (#776 D2) ------------
     def _dead(number):
