@@ -628,6 +628,7 @@ def _group_failures_by_file(failures: list[dict]) -> list[dict]:
     current_file: str | None = None
     inferred: set[str] = set()
     for f in failures:
+        has_path_key = "path" in f
         path = " ".join((f.get("path") or "").split()).strip() or None
         msg = (f.get("message") or "").strip()
         if not msg:
@@ -644,6 +645,8 @@ def _group_failures_by_file(failures: list[dict]) -> list[dict]:
                     inferred.add(file)
                 groups.setdefault(file, []).append(msg)
                 current_file = file
+            elif has_path_key and current_file:
+                groups.setdefault("(unknown)", []).append(msg)
             elif current_file:
                 groups.setdefault(current_file, []).append(msg)
             else:
