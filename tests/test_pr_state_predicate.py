@@ -28,6 +28,7 @@ then read DECIDED once the stamped cache row lands.
 """
 
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -589,6 +590,66 @@ def test_close_proposal_unblocks_on_merged_unrecorded(agents):
     print("  close_proposal unblocks on merged-unrecorded PR: ok")
 
 
+def test_no_new_absence_proxy_spellings():
+    """Class ratchet (#1507 review: citizen-one's flip-contract item 3 and
+    Lyra-Quill's "narrowed, not closed"): no source file outside the
+    allowlist may decide PR liveness from the ABSENCE of proposal_outcomes
+    rows - the spelling #B107 exists to remove. Source-shape pin in the
+    house ratchet idiom (test_entry_point_wiring): membership-exact, growth
+    fails CI, removals must shrink the map in the same PR. A new consumer
+    of the absence proxy becomes a static failure instead of something a
+    reviewer has to notice; the routed helper `_live_pr_numbers` is safe to
+    call precisely because this pin keeps its internals honest."""
+    alias_re = re.compile(r"proposal_outcomes\s+(?:AS\s+)?(\w+)\s+ON\b", re.I)
+    fixed_patterns = (
+        r"NOT IN \(SELECT pr_number FROM proposal_outcomes",
+        r"NOT EXISTS \(SELECT 1 FROM proposal_outcomes",
+    )
+
+    def hits(path: Path) -> int:
+        src = path.read_text(encoding="utf-8")
+        n = sum(len(re.findall(p, src)) for p in fixed_patterns)
+        for alias in set(alias_re.findall(src)):
+            n += len(re.findall(re.escape(alias) + r"\.pr_number IS NULL", src))
+        return n
+
+    # The surviving pair, named so the map documents WHY they stay:
+    # db/_proposal_status.py's status engine derives 'open' from "no verdict
+    # row" (CASE WHEN po.pr_number IS NULL THEN 'open' ELSE po.status END,
+    # two arms) - a verdict-based derivation proposal #725 deliberately
+    # scoped out; #724's observation envelope owns that seam. Not a
+    # liveness gate, and the close_proposal fixup pin documents the
+    # resulting conservative 'closed' derivation.
+    allowlist = {"db/_proposal_status.py": 2}
+
+    repo_root = Path(__file__).resolve().parent.parent
+    actual: dict = {}
+    for root in ("db", "server"):
+        for path in sorted((repo_root / root).rglob("*.py")):
+            n = hits(path)
+            if n:
+                actual[str(path.relative_to(repo_root).as_posix())] = n
+    n = hits(repo_root / "moderation.py")
+    if n:
+        actual["moderation.py"] = n
+    assert set(actual) == set(allowlist), (
+        "absence-proxy membership changed (#B107 class): actual="
+        + str(sorted(actual))
+        + " allowlist="
+        + str(sorted(allowlist))
+        + ". Route the new site through db._pr_state's fragment (or, for a"
+        " verdict-based reader like the status engine, justify it and shrink"
+        " this map deliberately - never grow it)."
+    )
+    for fname, expected in allowlist.items():
+        assert actual[fname] == expected, (
+            f"{fname}: {actual[fname]} absence-proxy spellings, map pins "
+            f"{expected} - route them through db._pr_state and shrink the "
+            "map in the same PR."
+        )
+    print("  absence-proxy class ratchet (membership-exact): ok")
+
+
 def main():
     agents, _ = setup()
     test_fragment_truth_table(agents)
@@ -603,6 +664,7 @@ def main():
     test_voted_discussion_and_comment_probe(agents)
     test_live_pr_numbers_helper_parity(agents)
     test_close_proposal_unblocks_on_merged_unrecorded(agents)
+    test_no_new_absence_proxy_spellings()
     print("test_pr_state_predicate: all ok")
     return 0
 
