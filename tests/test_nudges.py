@@ -614,6 +614,144 @@ def main():
         "is neither silenced nor shouted over"
     )
 
+    # --- budget/store, hold-state and bar-distance nudges (#792) ---------
+    import db._nudges as _nudges_mod
+    from db._nudges import _bar_close_nudge as _n_bar
+    from db._nudges import _held_pr_nudge as _n_hold
+    from db._nudges import _store_nudge as _n_store
+    from events import EVT_PR_HOLD_APPLIED, EVT_PR_HOLD_RELEASED, log_event
+
+    def _max_pr(c):
+        return c.execute(
+            "SELECT COALESCE(MAX(pr_number), 0) FROM proposal_links"
+        ).fetchone()[0]
+
+    _sn = db.register_agent("store-nudge")
+    with db._conn() as _sc:
+        from db._credits import grant as _grant
+
+        _grant(_sn["agent_id"], 2000, "nudge test seed", conn=_sc)
+    with db._conn() as _sc:
+        _u73 = {"comments": {"used": 11, "cap": 15, "remaining": 4}}
+        assert _n_store(_sc, _sn["agent_id"], _u73) == {}
+        _u80 = {"comments": {"used": 12, "cap": 15, "remaining": 3}}
+        _hit = _n_store(_sc, _sn["agent_id"], _u80)
+        assert "store_note" in _hit and "comment_burst" in _hit["store_note"]
+        assert "buy_store_item" in _hit["store_note"]
+        _u100 = {"comments": {"used": 15, "cap": 15, "remaining": 0}}
+        assert "store_note" in _n_store(_sc, _sn["agent_id"], _u100)
+        _poor = db.register_agent("store-poor")
+        _res = _n_store(_sc, _poor["agent_id"], _u100)
+        assert _res == {}
+    # Wiring: check_in surfaces the note with the threshold forced to 0,
+    # so no comment-burning is needed (burn loops race the auto-combine
+    # rule, and counting is pre-existing machinery, not this change).
+    # The harness zeroes caps (tests/_setup.py), so arm them explicitly
+    # here - the same env-knob idiom test_community.py uses.
+    _cap_keys = ("FORUM_COMMENT_DAILY_CAP", "FORUM_VOTE_DAILY_CAP")
+    _saved_caps = {k: os.environ.get(k) for k in _cap_keys}
+    os.environ["FORUM_COMMENT_DAILY_CAP"] = "20"
+    os.environ["FORUM_VOTE_DAILY_CAP"] = "30"
+    _old_pct = _nudges_mod._STORE_NUDGE_PCT
+    _nudges_mod._STORE_NUDGE_PCT = 0
+    try:
+        _ci_store = db.check_in(_sn["token"])
+        _acts = [a for a in _ci_store["suggested_actions"] if "buy_store_item" in a]
+        assert _acts, "check_in surfaces the store note"
+    finally:
+        _nudges_mod._STORE_NUDGE_PCT = _old_pct
+        for k in _cap_keys:
+            if _saved_caps[k] is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = _saved_caps[k]
+    # Today's burst already active stays quiet.
+    db.buy_store_item(_sn["token"], "comment_burst")
+    with db._conn() as _scb:
+        _res = _n_store(_scb, _sn["agent_id"], _u100)
+        assert _res == {}, "already riding today's pass stays quiet"
+    with db._conn(immediate=True) as _sc2:
+        _sc2.execute(
+            "UPDATE agents SET suspended_until = '2099-01-01T00:00:00.000Z'"
+            " WHERE id = ?",
+            (_sn["agent_id"],),
+        )
+    try:
+        with db._conn() as _sc3:
+            _res = _n_store(_sc3, _sn["agent_id"], _u100)
+            assert _res == {}
+    finally:
+        with db._conn(immediate=True) as _sc4:
+            _sc4.execute(
+                "UPDATE agents SET suspended_until = NULL WHERE id = ?",
+                (_sn["agent_id"],),
+            )
+    _hp = db.create_post(_sn["token"], "Hold nudge target", "body")
+    _hp = _hp["post_id"]
+    with db._conn(immediate=True) as _hc:
+        _hbase = _max_pr(_hc)
+        _hold_n = _hbase + 1
+        _hc.execute(
+            "INSERT INTO proposal_links"
+            " (pr_number, post_id, opened_by_agent_id) VALUES (?, ?, ?)",
+            (_hold_n, _hp, _sn["agent_id"]),
+        )
+    with db._conn() as _hc2:
+        assert _n_hold(_hc2, _sn["agent_id"]) == {}
+    log_event(EVT_PR_HOLD_APPLIED, target_type="pr", target_id=_hold_n)
+    with db._conn() as _hc3:
+        _hh = _n_hold(_hc3, _sn["agent_id"])
+    assert "held_pr_note" in _hh and f"#{_hold_n}" in _hh["held_pr_note"]
+    assert "maintainer" in _hh["held_pr_note"]
+    log_event(EVT_PR_HOLD_RELEASED, target_type="pr", target_id=_hold_n)
+    with db._conn() as _hc4:
+        assert _n_hold(_hc4, _sn["agent_id"]) == {}
+    from db._pr_vote import pr_vote_threshold as _bar_fn
+
+    _bv = []
+    _vn = 0
+    with db._conn() as _bc0:
+        while len(_bv) < _bar_fn(_bc0):
+            _bv.append(db.register_agent(f"nudges-bar-v{_vn}"))
+            _vn += 1
+    with db._conn() as _bc1:
+        _bar = _bar_fn(_bc1)
+    _bpost = db.create_post(_sn["token"], "Bar nudge target", "body")
+    _bpost = _bpost["post_id"]
+    with db._conn(immediate=True) as _bc2:
+        _bbase = _max_pr(_bc2)
+        _n1, _n2, _n3 = _bbase + 1, _bbase + 2, _bbase + 3
+        _bc2.execute(
+            "INSERT INTO proposal_links"
+            " (pr_number, post_id, opened_by_agent_id) VALUES (?, ?, ?)",
+            (_n1, _bpost, _sn["agent_id"]),
+        )
+        _bc2.execute(
+            "INSERT INTO proposal_links"
+            " (pr_number, post_id, opened_by_agent_id) VALUES (?, ?, ?)",
+            (_n2, _bpost, _sn["agent_id"]),
+        )
+        _bc2.execute(
+            "INSERT INTO proposal_links"
+            " (pr_number, post_id, opened_by_agent_id) VALUES (?, ?, ?)",
+            (_n3, _bpost, _sn["agent_id"]),
+        )
+        for _i in range(_bar - 1):
+            _bc2.execute(
+                "INSERT INTO pr_votes (pr_number, voter_id, value) VALUES (?, ?, 1)",
+                (_n1, _bv[_i]["agent_id"]),
+            )
+        for _i in range(_bar):
+            _bc2.execute(
+                "INSERT INTO pr_votes (pr_number, voter_id, value) VALUES (?, ?, 1)",
+                (_n3, _bv[_i]["agent_id"]),
+            )
+    with db._conn() as _bc3:
+        _bb = _n_bar(_bc3, _sn["agent_id"])
+    assert "bar_close_note" in _bb and f"#{_n1}" in _bb["bar_close_note"]
+    assert "needs 1 more" in _bb["bar_close_note"]
+    assert f"#{_n2}" not in _bb["bar_close_note"]
+    assert f"#{_n3}" not in _bb["bar_close_note"]
     print("test_nudges: all assertions passed")
     import shutil
 
