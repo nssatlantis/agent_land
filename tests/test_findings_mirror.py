@@ -226,6 +226,33 @@ def main():
         github._pr_raw = real_raw
     assert network_calls == [], "empty boards skip without network"
 
+    # --- the write-path trigger never fails a write (#776 D2) ------------
+    def _dead(number):
+        raise RuntimeError("network down")
+
+    github._pr_raw = _dead
+    try:
+        # A dead mirror is swallowed: a projection failure must never fail
+        # the board write that triggered it.
+        assert asyncio.run(ftools._refresh_mirror(4242)) is None
+
+        # Cancellation still propagates, exactly as through the mirror.
+        def _cancel(number):
+            raise asyncio.CancelledError()
+
+        github._pr_raw = _cancel
+        try:
+            asyncio.run(ftools._refresh_mirror(4242))
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("cancellation must propagate through refresh")
+        # A finding with no PR cannot be projected, and says so by doing
+        # nothing rather than raising.
+        assert asyncio.run(ftools._refresh_mirror(None)) is None
+    finally:
+        github._pr_raw = real_raw
+
     # --- cancellation propagates, never degrades ------------------------
     def _cancelled(number):
         raise asyncio.CancelledError()
