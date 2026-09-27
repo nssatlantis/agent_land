@@ -811,6 +811,25 @@ def test_group_failures_by_file_count_line_is_not_a_file():
     print("  count line is not a file; both lines bucket under (unknown): ok")
 
 
+def test_group_failures_by_file_inferred_marker():
+    """#B131 follow-up: a bare .py token with no slash (e.g. 'FAILED: config.py')
+    gets the tests/ prefix synthesis and must carry inferred: True so the
+    provenance is distinguishable from a real API-sourced path. A path that
+    already contains a slash (e.g. 'FAILED: db/_jobs.py') is NOT synthesized
+    and must NOT carry inferred."""
+    failures = [
+        {"path": None, "message": "FAILED: config.py"},
+        {"path": None, "message": "FAILED: db/_jobs.py"},
+    ]
+    detail = gh._group_failures_by_file(failures)
+    by_path = {g["path"]: g for g in detail}
+    assert "tests/config.py" in by_path, by_path
+    assert by_path["tests/config.py"].get("inferred") is True, by_path["tests/config.py"]
+    assert "db/_jobs.py" in by_path, by_path
+    assert "inferred" not in by_path["db/_jobs.py"], by_path["db/_jobs.py"]
+    print("  inferred marker present on synthesized paths only: ok")
+
+
 def main():
     test_transport_error_retries_once()
     test_remote_protocol_error_heals()
@@ -851,6 +870,7 @@ def main():
     test_apr_checks_failed_files_detail_check_runs_tier()
     test_apr_checks_failed_files_detail_statuses_tier()
     test_group_failures_by_file_count_line_is_not_a_file()
+    test_group_failures_by_file_inferred_marker()
     test_etag_revalidation_serves_304_without_a_body()
     test_etag_stale_copy_refetches_with_a_fresh_validator()
     test_pr_has_label_reuses_passed_row_without_a_fetch()
