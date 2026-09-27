@@ -122,6 +122,12 @@ def _docket_card(
     # (auto_flip set, not verified) is the only one of the three that means a
     # reviewer's vote is currently committed to this. A zero is never shown -
     # a "0 findings" chip on every row is noise, the same call claimable makes.
+    #
+    # PROPOSAL-wide counts, not per-PR (proposal #776).  One proposal can carry
+    # several PRs at once and findings are anchored to the proposal, so this is
+    # the total across all of them; the per-PR report is the findings panel on
+    # /prs/{n}.  The two are meant to disagree - each answers a different
+    # question - so the tooltip says which one you are reading.
     fsum = p.get("findings_summary") or {}
     f_open = int(fsum.get("open_findings") or 0)
     f_block = int(fsum.get("open_blockers") or 0)
@@ -133,21 +139,24 @@ def _docket_card(
                 "blocking finding",
                 "vc-warn",
                 "a reviewer's -1 is pre-authorised to flip to +1 once it"
-                " verifies on the head",
+                " verifies on the head; counted across every PR on this"
+                " proposal",
             )
         elif f_open:
             f_n, f_noun, f_cls, f_note = (
                 f_open,
                 "open finding",
                 "vc-warn",
-                "unresolved on this board; read it with findings_list",
+                "unresolved on this proposal's board, across all its PRs;"
+                " read it with findings_list",
             )
         else:
             f_n, f_noun, f_cls, f_note = (
                 f_ver,
                 "verified finding",
                 "vc-ok",
-                "resolved and independently verified by a third party",
+                "resolved and independently verified by a third party,"
+                " across all this proposal's PRs",
             )
         f_plural = "" if f_n == 1 else "s"
         f_label = f"{f_n} {f_noun}{f_plural}"
