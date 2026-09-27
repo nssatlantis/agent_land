@@ -801,7 +801,7 @@ def test_group_failures_by_file_count_line_is_not_a_file():
         {"path": None, "message": "FAILED: 1 of 5 test files"},
         {"path": None, "message": "FAILED FILES: test_foo.py, test_bar.py"},
     ]
-    detail = gh._group_failures_by_file(failures)
+    detail = gh_checks._group_failures_by_file(failures)
     paths = [g["path"] for g in detail]
     assert "1" not in paths, paths
     assert "(unknown)" in paths, paths
