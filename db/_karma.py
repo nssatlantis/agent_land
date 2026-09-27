@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import nullcontext
 
@@ -9,6 +10,7 @@ import config
 import logutil
 from db._collaborative import list_proposal_collaborators
 from db._core import ForumError, _conn, _require_active_agent
+from db._pr_state import pr_live_sql
 from notifications import _notify
 
 
@@ -521,9 +523,8 @@ def link_pr_to_proposal(
                     require_claim_for_todo(c, post_id, agent_id)
                 open_count = c.execute(
                     "SELECT COUNT(*) FROM proposal_links pl"
-                    " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
                     " WHERE pl.post_id = ? AND pl.opened_by_agent_id = ?"
-                    " AND po.pr_number IS NULL",
+                    f" AND {pr_live_sql('pl.pr_number')}",
                     (post_id, agent_id),
                 ).fetchone()[0]
                 max_prs = max(config.MAX_PRS_PER_COLLABORATOR, 1)
@@ -539,6 +540,16 @@ def link_pr_to_proposal(
             "VALUES (?, ?, ?)",
             (pr_number, post_id, agent_id),
         )
+        # Repair pass (proposal #725 item 4): a link landing on an
+        # already-decided PR writes the verdict row in the same
+        # transaction, instead of waiting for a transition the outcome
+        # poller may never observe again (the #B107 stranding). Evidence
+        # is local-only; live GitHub attestation stays
+        # attach_pr_to_proposal's job.
+        try:
+            _repair_missing_outcome(c, pr_number, post_id)
+        except Exception:  # domain: degrade-silently - repair is enrichment;
+            pass  # the fragment de-queues the PR even without the row
         # Bug-claim auto-link (proposal #498): a PR opening on a proposal
         # with live bug claims bound to it stamps those bugs' fix_pr.
         try:
@@ -584,6 +595,68 @@ def link_pr_to_proposal(
             Exception
         ):  # domain:degrade-silently - run binding is optional enrichment
             pass
+
+
+def _repair_missing_outcome(
+    c: sqlite3.Connection, pr_number: int, post_id: int
+) -> None:
+    """Link-time repair (proposal #725 item 4): when a link is recorded
+    for a PR that local evidence already says is decided, write the
+    outcome row in the same transaction.
+
+    Evidence order is verdict-grade first: pr_merges and pr_record are
+    the system's own recorded observations (exact status and timestamp);
+    the stamped pr_rows cache row is last and classifies through
+    db._pr_rows._outcome, the db-layer mirror of github's classifier -
+    no new vocabulary, and unstamped rows (verified_at IS NULL) are
+    excluded exactly as the shared fragment excludes them. A PR with no
+    local evidence of decidedness is left alone: the outcome poller and
+    the autolink sweep remain its writers, and the shared fragment
+    (db._pr_state) de-queues it for readers in the meantime.
+    record_proposal_outcome is idempotent, never demotes a recorded
+    'merged', guards a body-stamped post id against the FK crash
+    (#B78), and fans out verdict mail only - lifecycle, never minting.
+    """
+    if c.execute(
+        "SELECT 1 FROM proposal_outcomes WHERE pr_number = ?", (pr_number,)
+    ).fetchone():
+        return
+    status: str | None = None
+    happened_at = ""
+    m = c.execute(
+        "SELECT merged_at FROM pr_merges WHERE pr_number = ?", (pr_number,)
+    ).fetchone()
+    if m is not None:
+        status, happened_at = "merged", m["merged_at"]
+    else:
+        r = c.execute(
+            "SELECT status, closed_at FROM pr_record WHERE pr_number = ?",
+            (pr_number,),
+        ).fetchone()
+        if r is not None:
+            status, happened_at = r["status"], r["closed_at"]
+        else:
+            w = c.execute(
+                "SELECT state, merged_at, closed_at, labels_json"
+                " FROM pr_rows WHERE pr_number = ? AND verified_at IS NOT NULL",
+                (pr_number,),
+            ).fetchone()
+            if w is not None:
+                from db._pr_rows import _outcome
+
+                outcome = _outcome(
+                    w["state"],
+                    w["merged_at"],
+                    json.loads(w["labels_json"] or "[]"),
+                )
+                if outcome != "open":
+                    status = outcome
+                    happened_at = w["merged_at"] or w["closed_at"] or ""
+    if status is None or not happened_at:
+        # No verdict-grade local evidence (or a stamped row with no
+        # usable timestamp): the poller keeps ownership of this verdict.
+        return
+    record_proposal_outcome(pr_number, post_id, status, happened_at, conn=c)
 
 
 def attach_pr_to_proposal(

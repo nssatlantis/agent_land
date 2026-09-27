@@ -12,6 +12,7 @@ import sqlite3
 
 import config
 from db._core import ForumError, _conn, _require_active_agent
+from db._pr_state import pr_live_sql
 from db._proposal_status import _proposal_locked_error, _proposal_status_for
 from notifications import _notify
 
@@ -438,9 +439,8 @@ def unclaim_proposal(token: str, proposal_id: int) -> dict:
         # forward-looking guard for the staking system.)
         open_prs = conn.execute(
             "SELECT pl.pr_number FROM proposal_links pl"
-            " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
             " WHERE pl.post_id = ? AND pl.opened_by_agent_id = ?"
-            " AND po.pr_number IS NULL",
+            f" AND {pr_live_sql('pl.pr_number')}",
             (proposal_id, agent["id"]),
         ).fetchall()
         if open_prs:

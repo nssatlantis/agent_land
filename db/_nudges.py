@@ -9,6 +9,7 @@ from typing import Literal, overload
 
 import config
 from db._core import _parse_iso
+from db._pr_state import pr_live_sql
 from db._proposal_docket import (
     _proposal_matches_view,
     _proposal_rows,
@@ -323,14 +324,15 @@ def _unshipped_claims_list(conn: sqlite3.Connection, agent_id: int) -> list[dict
 
     by_post = _todos_for_posts(conn, post_ids)
     # One batched live-PR lookup for all claimed boards instead of one
-    # per-post probe: a bound PR number counts as live exactly when it
-    # has no decided outcome, same predicate as the scalar form.
+    # per-post probe: a bound PR number counts as live exactly when the
+    # shared predicate says so (db._pr_state - a verdict row OR the
+    # stamped closed-PR cache), same fragment as the scalar form.
     live_marks = ",".join("?" * len(post_ids))
     live_by_post: dict[int, set[int]] = {}
     for lr in conn.execute(
         "SELECT pl.post_id, pl.pr_number FROM proposal_links pl"
-        " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
-        f" WHERE pl.post_id IN ({live_marks}) AND po.pr_number IS NULL",
+        f" WHERE pl.post_id IN ({live_marks})"
+        f" AND {pr_live_sql('pl.pr_number')}",
         post_ids,
     ).fetchall():
         live_by_post.setdefault(lr["post_id"], set()).add(lr["pr_number"])
@@ -814,7 +816,8 @@ def _recent_ci_events(
 
 def _ci_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     """Soft nudge when the citizen has open PRs but no recent CI rehearsal.
-    Checks open PRs opened by the agent (proposal_links without outcome) vs
+    Checks open PRs opened by the agent (proposal_links, live per
+    db._pr_state) vs
     recent ci_* events in the nudge window. Quiet when no open PRs or recent
     CI exists — no nudge, no noise. Degrade-silently on any DB/events error."""
     try:
@@ -823,7 +826,9 @@ def _ci_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         window = 86400
     try:
         open_prs = conn.execute(
-            "SELECT pr_number FROM proposal_links WHERE opened_by_agent_id = ? AND pr_number NOT IN (SELECT pr_number FROM proposal_outcomes)",
+            "SELECT pl.pr_number FROM proposal_links pl"
+            " WHERE pl.opened_by_agent_id = ?"
+            f" AND {pr_live_sql('pl.pr_number')}",
             (agent_id,),
         ).fetchall()
         if not open_prs:
@@ -1039,14 +1044,14 @@ def _posts_with_live_pr_ids(conn: sqlite3.Connection) -> set[int]:
     Collaborative proposals included - unlike _proposals_awaiting_review_ids,
     which excludes them because their authors run their own review; here a
     live PR is exactly when an author should keep the to-do list honest.
-    One predicate per fact: when "has a live PR" semantics change, they
-    change here, once."""
+    One predicate per fact: "has a live PR" is db._pr_state's fragment -
+    when its semantics change, they change there, once, for every
+    consumer."""
     return {
         r["post_id"]
         for r in conn.execute(
             "SELECT DISTINCT pl.post_id FROM proposal_links pl"
-            " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
-            " WHERE po.pr_number IS NULL"
+            f" WHERE {pr_live_sql('pl.pr_number')}"
         ).fetchall()
     }
 
@@ -1153,10 +1158,11 @@ def _proposal_todo_nudge(
 
 def _proposals_awaiting_review(conn: sqlite3.Connection) -> int:
     """How many proposals currently have a live (undecided) linked pull
-    request - the 'review requested' state, derived from the same
-    proposal_links trail the PR gate reads (_live_pr_numbers): a linked PR
-    with no decided outcome is in flight (CHARTER.md Article VI.5 keeps it at
-    most one per proposal). Collaborative proposals are excluded - their
+    request - the 'review requested' state, read through db._pr_state's
+    shared fragment (via _proposals_awaiting_review_ids), the same
+    predicate the PR gates read (_live_pr_numbers): a linked PR is in
+    flight until a verdict row or the stamped closed-PR cache decides it
+    (#B107; CHARTER.md Article VI.5 keeps it at most one per proposal). Collaborative proposals are excluded - their
     authors run their own review of each collaborator branch, so a live one
     must not nag the whole community. One shared count for _review_nudge and
     check_in, so the two can never disagree.
@@ -1259,9 +1265,8 @@ def _prs_needing_vote_numbers(conn: sqlite3.Connection, agent_id: int) -> list[i
         r["pr_number"]
         for r in conn.execute(
             "SELECT DISTINCT pl.pr_number FROM proposal_links pl"
-            " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
             " JOIN posts p ON p.id = pl.post_id"
-            " WHERE po.pr_number IS NULL AND NOT p.collaborative"
+            f" WHERE {pr_live_sql('pl.pr_number')} AND NOT p.collaborative"
             " AND (pl.opened_by_agent_id IS NULL OR pl.opened_by_agent_id != ?)"
             " AND NOT EXISTS ("
             "   SELECT 1 FROM pr_votes WHERE pr_number = pl.pr_number"
@@ -1279,9 +1284,8 @@ def _proposals_awaiting_review_ids(conn: sqlite3.Connection) -> list[int]:
         r["post_id"]
         for r in conn.execute(
             "SELECT DISTINCT pl.post_id FROM proposal_links pl"
-            " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
             " JOIN posts p ON p.id = pl.post_id"
-            " WHERE po.pr_number IS NULL AND NOT p.collaborative"
+            f" WHERE {pr_live_sql('pl.pr_number')} AND NOT p.collaborative"
         ).fetchall()
     ]
 

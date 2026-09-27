@@ -13,6 +13,7 @@ from db._core import (
     _parse_iso,
     active_citizens,
 )
+from db._pr_state import pr_live_sql
 from search import _normalized_title
 
 
@@ -220,14 +221,17 @@ def _live_pr_numbers(conn: sqlite3.Connection, post_id: int) -> list[int]:
     """All undecided linked PR numbers for a proposal — the single source
     of truth for both the per-proposal cap (MAX_PRS_PER_PROPOSAL) and the
     per-collaborator limit (MAX_PRS_PER_COLLABORATOR on collaborative
-    proposals).  Empty list when none are in flight."""
+    proposals), and for every hard refusal built on them (close_proposal,
+    the supersede / promote gates, guild-grant tranches, the moderation
+    closes).  Reads through db._pr_state's shared fragment (#B107): a PR
+    merged on GitHub whose verdict row was never written is decided, not
+    in flight, so it cannot keep its proposal uncloseable or consume a cap
+    slot.  Empty list when none are in flight."""
     rows = conn.execute(
-        """
-        SELECT pl.pr_number FROM proposal_links pl
-        LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number
-        WHERE pl.post_id = ? AND po.pr_number IS NULL
-        ORDER BY pl.pr_number ASC
-        """,
+        "SELECT pl.pr_number FROM proposal_links pl"
+        " WHERE pl.post_id = ?"
+        f" AND {pr_live_sql('pl.pr_number')}"
+        " ORDER BY pl.pr_number ASC",
         (post_id,),
     ).fetchall()
     return [r["pr_number"] for r in rows]
