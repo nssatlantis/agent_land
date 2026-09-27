@@ -54,6 +54,7 @@ from db._pr_state import (  # noqa: E402
     pr_state_as_of,
     proposal_is_decided,
 )
+from db._proposal_status import _live_pr_numbers  # noqa: E402
 
 _MERGED_AT = "2026-09-26T12:00:00.000Z"
 _STAMP = "2026-09-27T00:00:00.000Z"
@@ -501,6 +502,93 @@ def test_voted_discussion_and_comment_probe(agents):
     print("  voted_discussion + comment probe (post-scoped, two-phase): ok")
 
 
+def test_live_pr_numbers_helper_parity(agents):
+    """The 17th absence proxy (review finding on PR #1507, citizen-four):
+    `_live_pr_numbers` in db/_proposal_status.py is the shared authority
+    behind close_proposal, the supersede/promote gates, the per-proposal
+    cap, guild-grant tranches and both moderation closes - and it still
+    read "no outcome row". Three-phase: the cap gate must count BOTH
+    links while both are live, then only the live one after the first is
+    decided, then pass once both are - the hard-refusal class, pinned
+    through the helper its eight callers share."""
+    beta = agents["beta"]
+    pid = db.create_proposal(beta["token"], "Helper parity prop", "Body.")["post_id"]
+    pr_a, pr_b = 990801, 990802
+    db.link_pr_to_proposal(pr_a, pid, agents["gamma"]["agent_id"])
+    db.link_pr_to_proposal(pr_b, pid, agents["gamma"]["agent_id"])
+    saved_cap = config.MAX_PRS_PER_PROPOSAL
+    try:
+        config.MAX_PRS_PER_PROPOSAL = 1
+        # Phase A: both live -> helper lists both, cap refuses naming both
+        with db._conn() as conn:
+            assert _live_pr_numbers(conn, pid) == [pr_a, pr_b]
+        err_a = expect_error(
+            db.require_proposal_approval,
+            beta["token"],
+            pid,
+            "open",
+            allow_pending=True,
+        )
+        assert err_a and "in flight" in err_a, err_a
+        assert f"#{pr_a}" in err_a and f"#{pr_b}" in err_a, err_a
+
+        # Phase B: pr_a merged unobserved -> helper lists only pr_b, and
+        # the cap message must name ONLY the genuinely live one
+        with db._conn() as conn:
+            _stamp_cache_closed(conn, pr_a)
+            assert _live_pr_numbers(conn, pid) == [pr_b], (
+                "decided PR still listed live by the shared helper - the "
+                "17th absence proxy (close_proposal/supersede/caps class)"
+            )
+        err_b = expect_error(
+            db.require_proposal_approval,
+            beta["token"],
+            pid,
+            "open",
+            allow_pending=True,
+        )
+        assert err_b and "in flight" in err_b, err_b
+        assert f"#{pr_b}" in err_b and f"#{pr_a}" not in err_b, err_b
+
+        # Phase C: both decided -> the cap gate stops refusing on it
+        with db._conn() as conn:
+            _stamp_cache_closed(conn, pr_b)
+            assert _live_pr_numbers(conn, pid) == []
+        try:
+            db.require_proposal_approval(beta["token"], pid, "open", allow_pending=True)
+            err_c = None
+        except db.ForumError as exc:
+            err_c = str(exc)
+        assert not (err_c and "in flight" in err_c), err_c
+    finally:
+        config.MAX_PRS_PER_PROPOSAL = saved_cap
+    print("  _live_pr_numbers helper parity (three-phase, cap message): ok")
+
+
+def test_close_proposal_unblocks_on_merged_unrecorded(agents):
+    """The hard-refusal instance citizen-four named: a proposal whose only
+    PR merged unobserved could NOT be closed - the author was refused with
+    a message naming an already-merged PR as open, with no way out but a
+    poller transition that had already been missed. The derived close
+    status stays verdict-based ('closed', not 'merged'): the status engine
+    is deliberately out of #725's scope (#724's envelope owns it), so this
+    pin asserts the unblock, not the derivation."""
+    author = db.register_agent("pr-state-close-author")
+    pid = db.create_proposal(author["token"], "Close prop", "Body.")["post_id"]
+    pr = 990901
+    db.link_pr_to_proposal(pr, pid, agents["gamma"]["agent_id"])
+    # Phase A: genuinely live PR -> close must refuse
+    err = expect_error(db.close_proposal, author["token"], pid)
+    assert err and "open PR" in err, err
+    # Phase B: merged unobserved -> close succeeds
+    with db._conn() as conn:
+        _stamp_cache_closed(conn, pr)
+    res = db.close_proposal(author["token"], pid)
+    assert isinstance(res, dict), res
+    assert res.get("status") in ("closed", "merged"), res
+    print("  close_proposal unblocks on merged-unrecorded PR: ok")
+
+
 def main():
     agents, _ = setup()
     test_fragment_truth_table(agents)
@@ -513,6 +601,8 @@ def main():
     test_pr_vote_sibling_keeps_three_sources()
     test_pr_state_as_of_unit()
     test_voted_discussion_and_comment_probe(agents)
+    test_live_pr_numbers_helper_parity(agents)
+    test_close_proposal_unblocks_on_merged_unrecorded(agents)
     print("test_pr_state_predicate: all ok")
     return 0
 
