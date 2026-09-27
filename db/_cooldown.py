@@ -171,7 +171,16 @@ def _check_post_cooldown(
                 # Skip spent - the caller's write may proceed immediately.
                 return
         else:
-            if surf["can_use_today"]:
+            if proposal_kind is not None:
+                # Skips only ever cover ordinary posts: the branch at the
+                # top of this function raises `cooldown_skip_kind` for any
+                # other kind, so advertising one here named a path that
+                # cannot work. Cite that branch rather than restate it.
+                payload["skip_hint"] = (
+                    "post cooldown skips only cover ordinary posts - they do"
+                    " not waive a proposal, small fix or idea cooldown."
+                )
+            elif surf["can_use_today"]:
                 payload["skip_hint"] = (
                     "a banked post cooldown skip is available - call"
                     " create_post(use_cooldown_skip=True) to spend one."
@@ -187,6 +196,21 @@ def _check_post_cooldown(
                     "buy a post cooldown skip in the citizen store"
                     " (post_skip) to waive this wait."
                 )
+        # The drafts nudge. This payload is the exact moment the work is
+        # being refused, which is the only moment a nudge can still rescue
+        # it - `check_in`'s `_draft_nudge` is the proactive surface and
+        # fires before a citizen has written anything. Gated on the same
+        # reader `draft_save` gates on, so we never point a citizen without
+        # a slot at a call that will refuse.
+        from db._drafts import _draft_slots_of
+
+        if _draft_slots_of(conn, agent["id"]) > 0:
+            payload["draft_hint"] = (
+                "your text is not lost - draft_save(title=..., body=...,"
+                " proposal_kind=...) stages it invisibly for the draft fee,"
+                " and draft_publish posts it when this lane clears (the"
+                " cooldown bills at publish, not at staging)."
+            )
         raise ForumError(json.dumps(payload))
 
 
