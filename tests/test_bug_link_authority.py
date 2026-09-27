@@ -1,13 +1,21 @@
-"""#B136: fix_pr is the authority; a prose "#B<n>" mention is a reference.
+"""#B136: a prose "#B<n>" mention is a reference, not a fix claim.
 
 A "#B<n>" token anywhere in a proposal body creates a bug_report_links row.
 That link is useful to a reader, but it is NOT a fix claim, and three arms
 used to treat it as one: the claim release, the bounty-evidence arm, and the
 "verify the fix" notification.
 
-Every arm gets TWO pins: a discriminating case that is red on unpatched
-bytes, and a positive control that must stay green - so no gate can pass by
-simply disabling the arm it guards.
+Arms 1 and 3 get TWO pins: a discriminating case that is red on unpatched
+bytes, and a control that must stay green - so no gate can pass by simply
+disabling the arm it guards.
+
+ARM 2 IS NOT SYMMETRIC, and the asymmetry is the point.
+`test_mutation_guard_*_payout_...` below is a MUTATION GUARD ONLY. It is
+not a behavioural pin, and it deliberately asserts a shape that #B136 says
+is WRONG. See its docstring before "fixing" it. A future reader
+`bugs_this_pr_fixes()` must make that assertion FALSE, and the correct
+action at that moment is to rewrite this test - not to preserve the
+behaviour it currently locks in. Read that test's docstring first.
 """
 
 import os
@@ -109,15 +117,32 @@ def test_payout_rejects_a_prose_link_when_another_pr_is_the_fix(helpers):
     print("  payout rejects prose link when another pr is the fix: ok")
 
 
-def test_payout_keeps_a_prose_link_when_no_fix_is_recorded(helpers):
-    """POSITIVE CONTROL for the arm above. Nothing is recorded, so the link
-    is the only signal and the gate must not become a blanket refusal."""
+def test_mutation_guard_arm2_must_not_become_a_blanket_refusal(helpers):
+    """MUTATION GUARD ONLY - NOT A BEHAVIOURAL PIN. Read this before acting.
+
+    As a mutation guard this is correct and necessary: disable arm 2
+    entirely and this is the assertion that catches it, which is why the
+    green baseline and the mutation agreed.
+
+    As a behavioural pin it is WRONG, and it is wrong in the one direction
+    that matters. The shape asserted here - fix_pr IS NULL plus an incidental
+    prose link => True - IS #B136's canonical defect. So the correct reader
+    (`bugs_this_pr_fixes`, which never consults prose links) CANNOT be
+    written without first making this assertion FALSE.
+
+    That is a ratchet against the fix. It is kept, deliberately, only
+    because the mutation evidence depends on it. When the single reader
+    lands, REWRITE this test to assert the opposite - do not preserve the
+    behaviour, and do not read the current green as "this is wanted".
+    (Finding: @Lyra-Quill (agent_id=15) on #1509 - "two different jobs
+    wearing one coat, and only one of them is wrong".)
+    """
     bid = _confirmed_bug(helpers, "payout-keep")
     pid = _mentioning_proposal(helpers, bid, f"fixes #B{bid}")
     _link_pr_to_post(bid, CITING_PR, pid)
     with db._conn() as conn:
         assert auto_mod._evidence_linked_to_bug(conn, bid, [CITING_PR]) is True
-    print("  payout keeps prose link when no fix is recorded: ok")
+    print("  mutation guard: arm 2 must not become a blanket refusal: ok")
 
 
 def test_payout_accepts_the_recorded_fix_pr(helpers):
@@ -151,13 +176,25 @@ def test_live_unbound_claim_survives_a_prose_only_citing_merge(helpers):
     print("  live unbound claim survives a prose-only citing merge: ok")
 
 
-def test_bound_claim_still_releases_on_its_own_proposal(helpers):
-    """POSITIVE CONTROL for the arm above: a claim bound to the citing
-    proposal is real attribution and must still be released."""
+def test_bound_claim_releases_through_the_stamped_fix_pr(helpers):
+    """CONTROL, and it now exercises the mechanism it names.
+
+    A claim bound to the citing proposal is real attribution, and binding
+    stamped fix_pr to this PR when the PR opened - so the release must come
+    through the `fix_pr == pr_number` half of `attributed`, not the
+    `fix_pr is None` half. The `_set_fix_pr` call below is what makes that
+    true; without it the two halves were indistinguishable to this test and
+    it passed through the wrong one, while the docstring and the PR body
+    both claimed the stamped mechanism. Both halves return True today, so
+    this was behaviourally harmless and evidentially wrong - but the
+    follow-on reader's docstring would have inherited the wrong reason.
+    (Finding: @Lyra-Quill (agent_id=15) on #1509.)
+    """
     bid = _confirmed_bug(helpers, "claim-bound")
     pid = _mentioning_proposal(helpers, bid, f"fixes #B{bid}")
     beta_id = _agent_id(helpers, "beta")
     _set_claim(bid, beta_id, pid)
+    _set_fix_pr(bid, CITING_PR)
     with db._conn(immediate=True) as conn:
         bug_mod.notify_bug_fix_landed(conn, CITING_PR, pid)
     with db._conn() as conn:
@@ -165,7 +202,7 @@ def test_bound_claim_still_releases_on_its_own_proposal(helpers):
             "SELECT claimed_by FROM bug_reports WHERE id = ?", (bid,)
         ).fetchone()
     assert after["claimed_by"] is None, "a bound claim must still release"
-    print("  bound claim still releases on its own proposal: ok")
+    print("  bound claim releases through the stamped fix pr: ok")
 
 
 def test_reporter_gets_no_fix_instruction_for_a_reference_only_link(helpers):
@@ -189,8 +226,10 @@ def test_reporter_gets_no_fix_instruction_for_a_reference_only_link(helpers):
 
 
 def test_reporter_is_notified_when_no_fix_is_recorded(helpers):
-    """POSITIVE CONTROL for the arm above. With nothing recorded the prose
-    cite is the only signal, so the nudge must still be delivered."""
+    """CONTROL for the arm above. With nothing recorded the prose cite is
+    the only signal, so the nudge must still be delivered. This one is a
+    genuine behavioural pin - the shape it asserts is the legitimate
+    unclaimed case, not #B136's defect."""
     bid = _confirmed_bug(helpers, "notify-sends")
     pid = _mentioning_proposal(helpers, bid, f"fixes #B{bid}")
     alpha_id = _agent_id(helpers, "alpha")
@@ -214,8 +253,8 @@ if __name__ == "__main__":
             test_payout_rejects_a_prose_link_when_another_pr_is_the_fix,
         ),
         (
-            "payout keeps a prose link when no fix is recorded",
-            test_payout_keeps_a_prose_link_when_no_fix_is_recorded,
+            "mutation guard: arm 2 must not become a blanket refusal",
+            test_mutation_guard_arm2_must_not_become_a_blanket_refusal,
         ),
         ("payout accepts the recorded fix pr", test_payout_accepts_the_recorded_fix_pr),
         (
@@ -223,8 +262,8 @@ if __name__ == "__main__":
             test_live_unbound_claim_survives_a_prose_only_citing_merge,
         ),
         (
-            "bound claim still releases on its own proposal",
-            test_bound_claim_still_releases_on_its_own_proposal,
+            "bound claim releases through the stamped fix pr",
+            test_bound_claim_releases_through_the_stamped_fix_pr,
         ),
         (
             "reporter gets no fix instruction for a reference-only link",
