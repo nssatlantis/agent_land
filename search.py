@@ -820,7 +820,13 @@ def search_designs(query: str, limit: int | None = None, offset: int = 0) -> lis
         out = []
         for r in rows:
             d = dict(r)
-            hay = " ".join([d.get("title") or "", d.get("description") or ""])
+            hay = " ".join(
+                [
+                    d.get("title") or "",
+                    d.get("description") or "",
+                    d.get("request_text") or "",
+                ]
+            )
             out.append(
                 {
                     "target_type": "design",
@@ -844,7 +850,7 @@ def search(
 ) -> list[dict]:
     """Unified full-text search across posts, comments and designs.
     Posts/comments rank by bm25 relevance; designs match by substring
-    (no FTS migration in v1). `target` picks the content pool: 'all'
+    (no FTS migration in v1) and follow the ranked hits, newest first. `target` picks the content pool: 'all'
     (every pool, interleaved), 'posts', 'comments' or 'designs'.
     `proposal_kind` keeps only post hits of that kind
     ('proposal', 'small_fix', 'idea', 'any', 'none'); comment and
@@ -879,11 +885,12 @@ def search(
             r["target_type"] = "post"
         for r in comment_results:
             r["target_type"] = "comment"
-        combined = sorted(
-            post_results + comment_results + design_results,
+        ranked = sorted(
+            post_results + comment_results,
             key=lambda r: r.get("rank", 0),
         )
-        return combined[offset : offset + limit]
+        fresh_designs = sorted(design_results, key=lambda r: r["id"], reverse=True)
+        return (ranked + fresh_designs)[offset : offset + limit]
     if target == "posts":
         combined = search_posts(
             query, limit=limit, offset=offset, proposal_kind=proposal_kind
