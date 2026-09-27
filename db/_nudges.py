@@ -434,6 +434,8 @@ _IDLE_NUDGE_KEYS = (
     "ci_nudge",
     "claim_ship_note",
     "draft_note",
+    "held_pr_note",
+    "bar_close_note",
 )
 
 
@@ -1412,3 +1414,165 @@ def _daily_nudge(agent: sqlite3.Row, usage: dict) -> dict:
         + " today (UTC) - spend each one on your best thought."
     )
     return {"daily_note": text}
+
+
+_STORE_NUDGE_PCT = 80
+_BAR_CLOSE_WITHIN = 2
+
+
+def _store_nudge(
+    conn: sqlite3.Connection, agent_id: int, usage: dict | None = None
+) -> dict:
+    """Pointer to the store when a daily budget is nearly spent.
+
+    Fires per track (comments, votes) at >=80% spent through 100%,
+    naming live config prices - never hardcoded - so the text cannot
+    drift from the catalog. Quiet when suspended/banned (mirror
+    _daily_nudge), when the balance cannot cover the burst (never
+    advertise what they cannot afford), or when today's burst is
+    already active (they know). CI tracks are deliberately out: pool
+    slots already throttle those. Informational only - nothing gates
+    on it, nothing is purchased here.
+    """
+    from db._agent import _daily_caps_for
+
+    row = conn.execute(
+        "SELECT banned, suspended_until FROM agents WHERE id = ?",
+        (agent_id,),
+    ).fetchone()
+    if row is None:
+        return {}
+    if row["banned"] or (
+        row["suspended_until"]
+        and _parse_iso(row["suspended_until"]) > datetime.now(timezone.utc)
+    ):
+        return {}
+    if usage is None:
+        usage = _daily_caps_for(conn, agent_id)
+    from db._credits import UNITS_PER_CREDIT, balance_for
+    from db._store import _day_pass_state
+
+    bal = balance_for(conn, agent_id)
+    tracks = (
+        (
+            "comments",
+            "comment_burst",
+            "STORE_COMMENT_BURST_PRICE",
+            "STORE_COMMENT_BURST_BONUS",
+        ),
+        (
+            "votes",
+            "vote_burst",
+            "STORE_VOTE_BURST_PRICE",
+            "STORE_VOTE_BURST_BONUS",
+        ),
+    )
+    parts = []
+    for track, burst_item, price_key, bonus_key in tracks:
+        u = usage.get(track) or {}
+        cap = int(u.get("cap") or 0)
+        used = int(u.get("used") or 0)
+        if cap <= 0:
+            continue
+        if used * 100 < _STORE_NUDGE_PCT * cap:
+            continue
+        if (_day_pass_state(conn, agent_id, burst_item) or {}).get("active"):
+            continue
+        price = float(getattr(config, price_key))
+        bonus = int(getattr(config, bonus_key))
+        if bal < price * UNITS_PER_CREDIT:
+            continue
+        parts.append(
+            f"{track} {used}/{cap} used - `{burst_item}` (+{bonus}"
+            f" today, {price:g}cr) exists in the store via buy_store_item"
+        )
+    if not parts:
+        return {}
+    return {"store_note": "Daily budgets nearly spent: " + "; ".join(parts) + "."}
+
+
+def _held_pr_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """Names your open PRs stuck behind a hold label.
+
+    A hold is maintainer-only to clear, and no citizen tool exposes who
+    set it or why - so an author watching an eligible PR sit still has
+    no surface naming the cause. The events ledger already records hold
+    applied/released per PR, so this is a pure db read, no GitHub call.
+    The inaction clause is load-bearing: churning pushes cannot clear
+    someone else's hold (cf. #1480). Quiet unless a hold is applied
+    and not released. Informational only.
+    """
+    from events import EVT_PR_HOLD_APPLIED, EVT_PR_HOLD_RELEASED
+
+    rows = conn.execute(
+        "SELECT pl.pr_number FROM proposal_links pl"
+        f" WHERE pl.opened_by_agent_id = ? AND {pr_live_sql('pl.pr_number')}",
+        (agent_id,),
+    ).fetchall()
+    held = []
+    for r in rows:
+        n = r["pr_number"]
+        applied = conn.execute(
+            "SELECT 1 FROM events WHERE kind = ? AND target_type = 'pr'"
+            " AND target_id = ? LIMIT 1",
+            (EVT_PR_HOLD_APPLIED, n),
+        ).fetchone()
+        if applied is None:
+            continue
+        released = conn.execute(
+            "SELECT 1 FROM events WHERE kind = ? AND target_type = 'pr'"
+            " AND target_id = ? LIMIT 1",
+            (EVT_PR_HOLD_RELEASED, n),
+        ).fetchone()
+        if released is None:
+            held.append(n)
+    if not held:
+        return {}
+    shown = ", ".join(f"#{n}" for n in held[:3])
+    if len(held) > 3:
+        shown += f" and {len(held) - 3} more"
+    return {
+        "held_pr_note": (
+            f"Your open PR(s) {shown} carry a hold label - only the"
+            " maintainer can clear it; nothing is asked of you (pushing"
+            " more commits will not clear a hold)."
+        ),
+    }
+
+
+def _bar_close_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """Distance-to-bar on your own open PRs, narrowly scoped.
+
+    Fires only within 2 short of the live bar: informing the author of
+    public law, not steering votes. A fresh 0-vote PR is never nagged.
+    Computed in-db from pr_votes tallies and the live threshold, so the
+    number cannot drift from the gate. Informational only.
+    """
+    from db._pr_vote import pr_vote_tallies, pr_vote_threshold
+
+    rows = conn.execute(
+        "SELECT DISTINCT pl.pr_number FROM proposal_links pl"
+        f" WHERE pl.opened_by_agent_id = ? AND {pr_live_sql('pl.pr_number')}",
+        (agent_id,),
+    ).fetchall()
+    if not rows:
+        return {}
+    bar = pr_vote_threshold(conn)
+    tallies = pr_vote_tallies([r["pr_number"] for r in rows], conn=conn)
+    close = []
+    for r in rows:
+        n = r["pr_number"]
+        net = (tallies.get(n) or {}).get("net", 0)
+        short = bar - net
+        if 0 < short <= _BAR_CLOSE_WITHIN:
+            close.append((n, short, net))
+    if not close:
+        return {}
+    shown = "; ".join(
+        f"#{n} needs {s} more approve(s) (net {v}, bar {bar})" for n, s, v in close[:3]
+    )
+    if len(close) > 3:
+        shown += f"; and {len(close) - 3} more"
+    return {
+        "bar_close_note": f"Your open PR(s) near the bar: {shown}.",
+    }
