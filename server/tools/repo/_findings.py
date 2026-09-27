@@ -369,14 +369,41 @@ def upsert_findings_mirror_body(existing_body: str | None, section: str) -> str:
     return body + "\n" + section + "\n"
 
 
+async def _stale_and_refresh(pr_number: int) -> None:
+    """Stale this PR's attestations on a new head, THEN re-project it.
+
+    Staling writes `state`, which is the field the mirror renders, so a
+    push does change what the projection shows - a row that read `verified`
+    reads `stale` the moment this lands. Splitting the two calls is how the
+    mirror kept painting verified rows the ledger had just staled, so they
+    are bound here (proposal #776).
+
+    NOT a trigger, deliberately: the poller's reconcile_boards_for_heads
+    sweeps many PRs per pass, and projecting from inside it would put GitHub
+    round-trips on the merge-poller hot path. That path is a known gap, not
+    an oversight - the next push on the PR closes it.
+    """
+    try:
+        await stale_findings_on_push(pr_number)
+    except Exception:
+        pass  # domain: degrade-silently - staling is advisory
+    await _refresh_mirror(pr_number)
+
+
 async def _refresh_mirror(pr_number: int | None) -> None:
     """Fire the read-only body mirror after a board write (proposal #776).
 
-    The mirror projects the BOARD, so a board write is the trigger and a
-    push is not - a push-time refresh is a no-op whenever the board has
-    not changed since, which is why wiring the push paths would have bought
-    almost nothing.  The triggers are exactly the writes that change what
-    render_findings_mirror renders: finding state and objections.
+    The mirror projects the BOARD, so a BOARD WRITE is the trigger.  The
+    trigger set is the writes that change what render_findings_mirror
+    renders - finding state and objections - plus the staling family, which
+    writes state (see _stale_and_refresh).
+
+    An earlier version of this docstring claimed a push is not a trigger.
+    That was false: finding_stale_on_push sets state='stale', which the
+    renderer reads, so a push does move the projection.  What is true is
+    narrower and worth stating - on a push with no staling to do, the
+    refresh is a no-op, which is why the push PATHS alone would have bought
+    almost nothing and the board writes are what matter.
     finding_corroborate and finding_fund/_unfund are deliberately NOT
     triggers, because the renderer reads neither corroboration counts nor
     bounties today.  That is a statement about the current renderer, not a
