@@ -382,6 +382,7 @@ async def _aopen_pulls_page(per_page: int, page: int) -> list:
 def _paginated_open_pulls(per_page: int) -> list:
     """Every page of the open pulls listing, newest by created, stopping
     at the first short page. Mirrors _paginated_closed_pulls."""
+    per_page = min(per_page, _GITHUB_MAX_PER_PAGE)
     out: list = []
     page = 1
     while True:
@@ -394,6 +395,7 @@ def _paginated_open_pulls(per_page: int) -> list:
 
 async def _apaginated_open_pulls(per_page: int) -> list:
     """Native-await twin of _paginated_open_pulls."""
+    per_page = min(per_page, _GITHUB_MAX_PER_PAGE)
     out: list = []
     page = 1
     while True:
