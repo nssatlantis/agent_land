@@ -1853,11 +1853,15 @@ def sweep_auto_confirm(conn: sqlite3.Connection) -> int:
 
 def notify_bug_fix_landed(conn, pr_number, proposal_post_id):
     """Poller hook, called once per newly-recorded merged PR outcome: if the
-    proposal body references #B bug reports, tell each still-open/confirmed
-    bug's reporter a fix may have landed (verify it? resolve it?). Idempotent
-    per (bug, PR) via the notification text itself. Returns how many
-    reporters were told. Best-effort by contract - the caller guards it so a
-    notify failure can never break merge recording."""
+    proposal body references #B bug reports AND this merge is the bug's
+    recorded fix, tell each still-open/confirmed bug's reporter a fix may
+    have landed (verify it? resolve it?). A prose mention whose bug already
+    carries a different fix_pr is a cross-reference, not a fix (#B136): the
+    link row is still recorded for readers, but no claim is released and no
+    "verify the fix" instruction is sent, because fix_pr is the attribution.
+    Idempotent per (bug, PR) via the notification text itself. Returns how
+    many reporters were told. Best-effort by contract - the caller guards it
+    so a notify failure can never break merge recording."""
     post = conn.execute(
         "SELECT body FROM posts WHERE id = ?", (proposal_post_id,)
     ).fetchone()
@@ -1868,7 +1872,7 @@ def notify_bug_fix_landed(conn, pr_number, proposal_post_id):
     for bid in bug_ids:
         row = conn.execute(
             "SELECT id, status, agent_id, title, claimed_by, claimed_at,"
-            " claimed_proposal_id FROM bug_reports WHERE id = ?",
+            " claimed_proposal_id, fix_pr FROM bug_reports WHERE id = ?",
             (bid,),
         ).fetchone()
         if row is None or row["status"] not in ("open", "confirmed"):
@@ -1877,9 +1881,15 @@ def notify_bug_fix_landed(conn, pr_number, proposal_post_id):
         # scoping-claims release on any citing fix, bound ones wait for
         # their own proposal's PR. Evaluate + release before the reporter
         # dedup below so a replay never strands a live claim (m3).
+        # #B136: a "#B<n>" in a proposal body is a *reference*; fix_pr is the
+        # attribution. Attributed = nothing recorded yet (so this prose cite is
+        # the only signal) or this PR IS the recorded fix. A bound claim is
+        # unaffected: binding stamped fix_pr to this PR when the PR opened.
+        attributed = row["fix_pr"] is None or row["fix_pr"] == pr_number
         bound = row["claimed_proposal_id"]
-        scoped = _bug_claim_live(row["claimed_by"], row["claimed_at"]) and (
-            bound is None or bound == proposal_post_id
+        claim_live = _bug_claim_live(row["claimed_by"], row["claimed_at"])
+        scoped = (
+            claim_live and attributed and (bound is None or bound == proposal_post_id)
         )
         claimer_id = row["claimed_by"]
         if scoped:
@@ -1895,6 +1905,11 @@ def notify_bug_fix_landed(conn, pr_number, proposal_post_id):
                     f" merged on proposal #{proposal_post_id}. Verify it -"
                     " resolve the bug if it is gone.",
                 )
+        if not attributed:
+            # Reference-only (#B136). The link row is the reader-facing part
+            # and is already recorded; "Verify the fix - resolve the bug" is
+            # the part that is only sound for a fix, so it is not sent here.
+            continue
         already = conn.execute(
             "SELECT 1 FROM notifications WHERE agent_id = ? AND kind = 'moderation'"
             " AND ref_type = 'bug_report' AND ref_id = ? AND body LIKE ?",
