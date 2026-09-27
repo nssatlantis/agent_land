@@ -17,6 +17,7 @@ from typing import Any
 import config
 import db
 import github
+import logutil
 from viewer._utils import (
     _human_ts,
     esc,
@@ -211,29 +212,73 @@ def _objection_badge(row: dict) -> str:
     return f" <span style='color:var(--muted)'>· {n} {word}</span>"
 
 
+def _findings_panel_degraded(pr_number: int, reason: str) -> str:
+    """Visible 'board could not be read' panel.
+
+    A panel that fails open and renders nothing is indistinguishable from
+    a clean board - the fail-silent class in #B134, on a safety surface.
+    This keeps a failed read and an empty board apart on the page itself;
+    the matching log tag is emitted by the caller.
+    """
+    note = (
+        f"Board unavailable for PR #{pr_number} ({esc(reason)}). Findings may "
+        "exist; this is a read failure, not a clean board. Read the board "
+        f"directly with findings_list(post_id=..., pr_number={pr_number})."
+    )
+    return (
+        '<div class="panel"><h2>Review findings</h2>'
+        '<p style="color:var(--warn);font-size:13px;margin:4px 0">'
+        f"{esc(note)}</p></div>"
+    )
+
+
 def _pr_findings_panel(pr_number: int) -> str:
     """Review findings board panel for a single PR: open bugs/issues and
     improvements with state, plus the derived verdict counts.  Read-only -
     the board is written through the findings MCP tools.  Used by the
-    /prs/{number} detail page; degrades to empty when the proposal has
-    no board yet."""
+    /prs/{number} detail page.
+
+    This is the PER-PR report, not the proposal's whole board (proposal
+    #776).  A finding is anchored to the proposal but reported against the
+    PR it was found on, and one proposal routinely carries several PRs at
+    once, so there are two real levels: the rows filed against THIS PR
+    (here) and the proposal-wide total (the docket chip in
+    viewer/_proposals.py).  They are meant to disagree - each answers a
+    different question - so do not "fix" one to match the other.  What
+    blocks a merge is per PR as well (db.reviewer_blockers filters on
+    pr_number), so a sibling PR's rows neither block nor show up here.
+    """
     try:
         pid = db.proposal_for_pr(pr_number)
-    except Exception:  # domain: degrade-silently - panel is ornament, diff renders
-        return ""
+    except Exception as exc:  # domain: degrade-silently - ornament, diff renders
+        logutil.log(
+            "pr_findings_panel_lookup_failed",
+            pr_number=pr_number,
+            error=str(exc),
+        )
+        return _findings_panel_degraded(pr_number, "proposal lookup failed")
     if pid is None:
         return ""
     try:
         with db._conn() as conn:
-            # PR-scoped: every finding anchors to its PR, so the panel
-            # renders exactly this PR's rows with the same predicate the
-            # ledger uses for blockers (an older PR's rows can never leak
-            # in, and a stale row never paints green).
+            # Per-PR report.  Two questions, two scopes, on purpose: WHAT
+            # WAS REPORTED against this PR (here), and what is outstanding
+            # across the whole proposal (the docket chip, which is
+            # post-wide).  The query that actually gates a flip is itself
+            # PR-scoped (db.reviewer_blockers), so per-PR is also the safe
+            # direction for a display: it can under-report, never
+            # over-report.  Only resolved-plus-verified counts as done, so a
+            # stale row never paints green.
             rows = db.findings_list(conn, pid, pr_number, "all")
             verdict = db.finding_verdict(conn, pid, pr_number)
             bounties = db.finding_bounty_map(conn, pr_number)
-    except Exception:  # domain: degrade-silently - diff still renders
-        return ""
+    except Exception as exc:  # domain: degrade-silently - diff still renders
+        logutil.log(
+            "pr_findings_panel_read_failed",
+            pr_number=pr_number,
+            error=str(exc),
+        )
+        return _findings_panel_degraded(pr_number, "board read failed")
     if not rows:
         return ""
     # Same predicate as the ledger (reviewer_blockers / findings_list
@@ -273,13 +318,13 @@ def _pr_findings_panel(pr_number: int) -> str:
             f"{bounty_badge}{_objection_badge(r)}</li>"
         )
     blockers = verdict.get("open_auto_flip_by_voter") or []
-    verdict_line = f"{len(open_rows)} open / {len(done_rows)} verified" + (
+    verdict_line = f"{len(open_rows)} open / {len(done_rows)} verified on this PR" + (
         f" - {sum(b['n'] for b in blockers)} open auto-flip findings"
         if blockers
         else ""
     )
     return (
-        f'<div class="panel"><h2>Review findings</h2>'
+        f'<div class="panel"><h2>Review findings on this PR</h2>'
         f'<p style="color:var(--muted);font-size:13px;margin:4px 0">'
         f"{esc(verdict_line)}</p>"
         f"<ul>{lines}</ul></div>"
