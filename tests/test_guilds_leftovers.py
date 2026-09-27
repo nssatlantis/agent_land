@@ -201,11 +201,17 @@ def _empty_with_link() -> tuple[dict, dict]:
 
 def test_force_release_admin_only_and_debts_refuse():
     founder, guild = _empty_with_link()
-    try:
-        db.admin_release_empty_guild("no-such-admin", guild["id"])
-        raise AssertionError("unknown admin force landed")
-    except Exception as exc:
-        assert "unknown admin" in str(exc), exc
+    # A panel login matching no citizen IS the panel actor (#803): force
+    # release is the operator's own job, so it proceeds rather than
+    # refusing. Asserted on a THROWAWAY guild, because force-release
+    # disbands and the rest of this test still needs `guild` intact. The
+    # old "unknown admin" assertion named a property now false by design,
+    # and its AssertionError contained the very substring it asserted on -
+    # so that shape would have gone on passing while proving nothing.
+    _, throwaway = _empty_with_link()
+    out = db.admin_release_empty_guild("no-such-admin", throwaway["id"])
+    assert out["disbanded"] is True, out
+    # The citizen branch resolves through the same gate, unchanged.
     out = db.admin_release_empty_guild(founder["name"], guild["id"])
     assert out["disbanded"] is True, out
     with db._conn() as conn:
