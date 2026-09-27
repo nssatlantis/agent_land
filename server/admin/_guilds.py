@@ -95,20 +95,33 @@ def _guild_chat_row_html(m: dict, csrf_field: str) -> str:
     )
 
 
-def _guild_grant_rows(guild_id: int) -> list[dict]:
-    """This guild's grant requests, newest first. Degrades to empty so a
-    failed read renders no panel rather than a broken one (#782). The queue
-    is bounded and tiny by construction - one open request per guild, two
-    lifetime grants - so filtering the whole list beats a second query."""
+def _guild_grant_rows(guild_id: int) -> tuple[list[dict], bool]:
+    """This guild's grant requests, newest first, plus whether the read was
+    truncated at the window (#782).
+
+    The queue is NOT bounded by the two-lifetime-grant cap. That cap counts
+    PAID rows only (`_paid_grant_count`), and a guild can be declined and
+    re-file indefinitely - `_open_grant_request` enforces one OPEN at a
+    time, and the CHECK on `instance` lets a re-file reuse 1 forever. So
+    `guild_grant_requests` grows without bound, the reader is
+    `ORDER BY id DESC LIMIT ?`, and filtering after the window can miss a
+    row. The boolean is returned so the panel can say so instead of
+    rendering "None." and implying the guild never asked.
+
+    The int() casts are inside the try on purpose: a non-integer
+    guild_id would otherwise raise out of the caller and 500 the page,
+    which is the opposite of degrading.
+    """
     try:
         rows = db.list_guild_grant_requests(limit=200)
+        mine = [
+            r
+            for r in rows
+            if isinstance(r, dict) and int(r.get("guild_id") or 0) == int(guild_id)
+        ]
+        return mine, len(rows) >= 200
     except Exception:  # domain: degrade-silently - read failed, no panel
-        return []
-    return [
-        r
-        for r in rows
-        if isinstance(r, dict) and int(r.get("guild_id") or 0) == int(guild_id)
-    ]
+        return [], False
 
 
 def _guild_grants_html(guild_id: int, csrf_field: str) -> str:
@@ -120,9 +133,17 @@ def _guild_grants_html(guild_id: int, csrf_field: str) -> str:
     the guild grant route, which resolves the admin principal and reuses
     the same decision engine the MCP path uses.
     """
-    rows = _guild_grant_rows(guild_id)
+    rows, truncated = _guild_grant_rows(guild_id)
+    trunc_note = (
+        " - the queue hit its window, so older rows are not shown"
+        if truncated
+        else ""
+    )
     if not rows:
-        return "<h3>Grant requests</h3><p style='color:var(--muted)'>None.</p>"
+        return (
+            "<h3>Grant requests</h3><p style='color:var(--muted)'>None"
+            f"{trunc_note}.</p>"
+        )
     out = []
     for r in rows:
         rid = int(r.get("id") or 0)
@@ -136,18 +157,28 @@ def _guild_grants_html(guild_id: int, csrf_field: str) -> str:
             else ""
         )
         if status == "requested":
-            confirm_attr = (
-                f"onsubmit=\"return confirm('Approve grant #{rid} for {amount} units?"
-                " This pays the guild from the Treasury now.');\""
-            )
-            action = (
+            # One form per decision, so the confirm rides the form that PAYS
+            # and not the one that does not. `submit` is dispatched at the
+            # form and does not bubble, so an onsubmit on the button renders
+            # and never fires - which is what a first cut here did, and a
+            # presence-only pin passed it. Same shape as disband below.
+            decline = (
                 f"<form method='post' action='/admin/guilds/{guild_id}/grant'>"
                 f"{csrf_field}"
                 f"<input type='hidden' name='request' value='{rid}'/>"
                 "<button type='submit' name='decision' value='decline'>decline</button>"
-                f"<button type='submit' name='decision' value='approve'{confirm_attr}>"
-                "approve</button></form>"
+                "</form>"
             )
+            approve = (
+                f"<form method='post' action='/admin/guilds/{guild_id}/grant'"
+                f" onsubmit=\"return confirm('Approve grant #{rid} for {amount}"
+                " units? This pays the guild from the Treasury now.');\">"
+                f"{csrf_field}"
+                f"<input type='hidden' name='request' value='{rid}'/>"
+                "<button type='submit' name='decision' value='approve'>approve</button>"
+                "</form>"
+            )
+            action = f"{decline} {approve}"
         else:
             action = f"<span style='color:var(--muted)'>{esc(status)}</span>"
         out.append(
@@ -156,7 +187,8 @@ def _guild_grants_html(guild_id: int, csrf_field: str) -> str:
         )
     return (
         "<h3>Grant requests</h3><p class='meta'>approve pays the guild from the"
-        " Treasury now; decline ends the request and moves nothing.</p>"
+        " Treasury now; decline ends the request and moves nothing."
+        f"{trunc_note}.</p>"
         "<table><tr><th>request</th><th>amount</th><th>status</th><th>asked</th>"
         f"<th>decision</th></tr>{''.join(out)}</table>"
     )
@@ -319,6 +351,11 @@ async def guild_grant_decide(request):
             rid = int(form.get("request") or 0)
         except (TypeError, ValueError):
             raise db.ForumError("no grant request id in the form.") from None
+        # `decision` is fail-CLOSED to decline: a missing, misspelled or
+        # hostile value ends the request rather than paying it. Decline moves
+        # no money and is CSRF-gated, so the failure direction is the safe
+        # one - but it IS a state change on a malformed POST, so it is named
+        # here rather than left to be discovered.
         out = db.admin_decide_guild_grant(
             admin, rid, (form.get("decision") or "") == "approve", gid
         )

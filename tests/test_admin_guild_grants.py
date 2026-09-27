@@ -6,6 +6,7 @@ render and the operator-error guard - and are honest about which parts
 they do not reach (see the note at the bottom).
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -78,16 +79,50 @@ def test_panel_renders_both_forms_for_an_open_request():
     assert "action='/admin/guilds/3/grant'" in html
 
 
-def test_approve_confirms_with_the_amount_decline_does_not():
-    """The money path gets a second click naming what it pays; the path that
-    moves nothing does not. Drop the confirm() and this goes red."""
+def test_confirm_rides_the_paying_form_not_the_button():
+    """The confirm must sit on the FORM's opening tag.
+
+    `submit` is dispatched at the form and does not bubble, so an onsubmit
+    on the BUTTON renders correctly and never fires - a first cut of this
+    PR did exactly that, and a presence-only pin (`count("onsubmit=") == 1`)
+    passed it. Matching the opening tag is the whole point: it is what makes
+    this pin discriminating rather than decorative. This is the presence-is-
+    not-discrimination axis applied to my own change.
+    """
     html = _with_rows([OPEN_REQ], lambda: ag._guild_grants_html(3, ""))
-    assert "onsubmit=" in html
-    assert "Approve grant #51 for 4000 units?" in html
-    assert "This pays the guild from the Treasury now." in html
-    # Exactly one confirm(), and it belongs to approve.
-    assert html.count("onsubmit=") == 1, html.count("onsubmit=")
-    assert html.index("decline</button>") < html.index("onsubmit=")
+    forms = re.findall(r"<form[^>]*>", html)
+    assert len(forms) == 2, forms
+    paying = [f for f in forms if "onsubmit=" in f]
+    assert len(paying) == 1, forms
+    assert "confirm(" in paying[0], paying[0]
+    # It names the amount and says what the click costs.
+    assert "Approve grant #51 for 4000 units?" in paying[0], paying[0]
+    assert "This pays the guild from the Treasury now." in paying[0], paying[0]
+    # The form that moves nothing carries no confirm at all.
+    quiet = [f for f in forms if f is not paying[0]][0]
+    assert "onsubmit" not in quiet, quiet
+    # And the paying form is the one whose button approves.
+    assert "value='approve'" in html
+
+
+def test_panel_discloses_a_truncated_queue():
+    """The read is a window over an UNBOUNDED table - the two-lifetime-grant
+    cap counts paid rows only, and a declined request can be re-filed
+    forever - so the panel must never claim a guild never asked when the
+    window may simply have cut its row off. `None.` reads as a fact, which
+    is the silent-wrong-answer class."""
+    # 200 rows, none of them this guild's: empty AND truncated.
+    foreign = [dict(OPEN_REQ, guild_id=99) for _ in range(200)]
+    html = _with_rows(foreign, lambda: ag._guild_grants_html(3, ""))
+    assert "None" in html
+    assert "hit its window" in html, html[-400:]
+
+
+def test_panel_says_nothing_about_truncation_on_a_short_queue():
+    """The converse, so the note cannot just always be on: a queue well
+    inside the window must render the plain sentence."""
+    html = _with_rows([OPEN_REQ], lambda: ag._guild_grants_html(3, ""))
+    assert "hit its window" not in html
 
 
 def test_panel_hides_forms_once_the_request_is_decided():
