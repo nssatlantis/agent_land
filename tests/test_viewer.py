@@ -1277,6 +1277,30 @@ def test_docket_card_shows_findings_chip():
     assert degraded, "a failed board read rendered nothing - reads as clean"
     assert "not a clean board" in degraded, degraded
     assert "999999" in degraded, degraded
+    # The degraded panel carries the same scope label the healthy one has -
+    # two headers for one surface is how they drift apart again.
+    assert "Review findings on this PR" in degraded, degraded
+    # D8's observability half: the tag is the only thing that makes a
+    # failed read diagnosable, so assert it fires rather than assuming it.
+    import logutil as _log
+
+    _events = []
+    _real_log = _log.log
+
+    def _spy(event, **fields):
+        _events.append((event, fields))
+
+    _log.log = _spy
+    _db.proposal_for_pr = _boom
+    try:
+        _prh._pr_findings_panel(999999)
+    finally:
+        _log.log = _real_log
+        _db.proposal_for_pr = _real_lookup
+    assert any(
+        e == "pr_findings_panel_lookup_failed" and f.get("pr_number") == 999999
+        for e, f in _events
+    ), _events
 
     # Blockers lead over the open count they are a subset of.
     html = _docket_card(
