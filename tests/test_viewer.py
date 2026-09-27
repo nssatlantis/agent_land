@@ -1326,6 +1326,43 @@ def test_docket_card_shows_findings_chip():
         for e, f in _events
     ), _events
 
+    # #776 D4, and the pin Lyra-Quill asked for on this PR: the panel
+    # must render the one-line proof, and the row must be shaped like the
+    # row db.findings_list actually returns.  The column is `check_text`
+    # (schema.sql; finding_add refuses an empty one); the MCP *tool*
+    # parameter is named `check`.  A view that takes the name from the
+    # tool schema instead of the row renders an empty div on every row in
+    # production and stays green - which is exactly what happened here.
+    # So: build the row with the real column name, render it through the
+    # PANEL (not the helper), and assert the proof text is in the HTML.
+    _row = {
+        "id": 7,
+        "category": "bug",
+        "class": "wire-shape",
+        "state": "open",
+        "flip_path": "rename the key",
+        "check_text": "the panel read a key no row carries",
+        "finder_agent_id": 3,
+        "verified_by_agent_id": None,
+        "corroborations": 0,
+    }
+    _saved_list2 = _db.findings_list
+    _saved_verdict = _db.finding_verdict
+    _saved_bounty = _db.finding_bounty_map
+    _db.proposal_for_pr = lambda _n: 4242
+    _db.findings_list = lambda *a, **k: [dict(_row)]
+    _db.finding_verdict = lambda *a, **k: {"open_auto_flip_by_voter": []}
+    _db.finding_bounty_map = lambda *a, **k: {}
+    try:
+        _panel = _prh._pr_findings_panel(4242)
+    finally:
+        _db.proposal_for_pr = _real_lookup
+        _db.findings_list = _saved_list2
+        _db.finding_verdict = _saved_verdict
+        _db.finding_bounty_map = _saved_bounty
+    assert _row["check_text"] in _panel, _panel
+    assert "filed by agent 3" in _panel, _panel
+
     # Blockers lead over the open count they are a subset of.
     html = _docket_card(
         dict(
