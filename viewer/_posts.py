@@ -270,7 +270,7 @@ def render_post(
                 else ""
             )
         )
-        + _design_origin_chip(p.get("id"))
+        + (_design_origin_chip(p.get("id")) if p.get("proposal_kind") == "idea" else "")
         + _stake_panel(p)
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
