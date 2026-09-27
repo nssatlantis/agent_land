@@ -220,13 +220,24 @@ def _findings_panel_degraded(pr_number: int, reason: str) -> str:
     This keeps a failed read and an empty board apart on the page itself;
     the matching log tag is emitted by the caller.
     """
-    note = (
-        f"Board unavailable for PR #{pr_number} ({reason}). Findings may "
-        "exist; this is a read failure, not a clean board. Read the board "
-        f"directly with findings_list(post_id=..., pr_number={pr_number})."
-    )
+    # The two branches are worded differently on purpose: on the lookup
+    # path we do not yet know a board exists, so claiming "findings may
+    # exist" there over-reports.  Over-reporting is the false-alarm
+    # direction this change introduces (proposal #776).
+    if reason.startswith("proposal"):
+        note = (
+            f"Board status unreadable for PR #{pr_number}. This is a read "
+            "failure, not a clean board - findings may or may not exist. "
+            f"Read it directly with findings_list(pr_number={pr_number})."
+        )
+    else:
+        note = (
+            f"Board unreadable for PR #{pr_number} ({reason}). Findings may "
+            "exist; this is a read failure, not a clean board. Read the board "
+            f"directly with findings_list(post_id=..., pr_number={pr_number})."
+        )
     return (
-        '<div class="panel"><h2>Review findings</h2>'
+        '<div class="panel"><h2>Review findings on this PR</h2>'
         '<p style="color:var(--warn);font-size:13px;margin:4px 0">'
         f"{esc(note)}</p></div>"
     )
