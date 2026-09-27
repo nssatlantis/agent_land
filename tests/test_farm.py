@@ -25,39 +25,69 @@ import events  # noqa: E402
 import server.ci_runner._farm as farm  # noqa: E402
 
 # The module docstring above promises "HTTP is mocked - no network". Until now
-# that was a claim rather than a fact: this file registers 24 runners but only
-# 17 tests stub _ping, so the rest reach _farm.py:247 -> _ping -> urlopen with
-# config.CI_FARM_HTTP_TIMEOUT (8s default) against a bogus "http://x" host. On a
-# network-off host that fails in microseconds, which is why every local
-# rehearsal was green; on a network-ON runner each unstubbed ping costs up to
-# 8s and the file overran run_all.py's 120s cap in GitHub CI four times
-# (120.11 / 120.12 / 120.13 / 120.13 - the same wall every time, which is a sum
-# of fixed timeouts crossing a hard cap, not variance). Default _ping to the
-# value a failed ping already returns, so an unstubbed ping is instant AND
-# behaviour-preserving; a test needing a specific value assigns over this, and
-# its existing `finally: farm._ping = orig_ping` then restores this default
-# rather than the real function - so no test reaches the socket by omission.
+# that was a claim rather than a fact, and the farm module has exactly TWO
+# external network surfaces, both reachable from tests in this file:
+#
+#   _ping                -> urlopen(timeout=CI_FARM_HTTP_TIMEOUT = 8s)
+#   dispatch_to_runner   -> urlopen(timeout=CI_FARM_DISPATCH_TIMEOUT)
+#
+# The second timeout is DERIVED (config.py:1652/1667) and this file's own
+# test_dispatch_timeout_derives_from_run_timeout pins the derived value at
+# 1230 seconds - 20.5 minutes, more than 10x run_all.py's hard-coded 120s
+# per-file cap. One unstubbed dispatch therefore blocks until the harness
+# kills the file, which is the observed signature: FAILED: test_farm.py at
+# 120.11 / 120.12 / 120.13 / 120.13s - the same wall every time with no
+# variance, which is what ONE blocking call against a hard cap looks like and
+# is not what a sum of many small timeouts looks like.
+#
+# Both defaults return the value a FAILED call already returns: _ping returns
+# None, and dispatch_to_runner returns None through its own `except Exception`
+# (_farm.py:300-303). So the stubs are behaviour-preserving, not merely quiet.
+# A test needing a specific value assigns over these, and its existing
+# `finally: farm._ping = orig_ping` then restores the default rather than the
+# real function, so no test reaches the socket by omission. The two tests that
+# deliberately exercise the real dispatch call _REAL_DISPATCH by name. Note the
+# asymmetry: _REAL_DISPATCH has four opt-in call sites, while _REAL_PING has
+# NONE - no test in this file calls farm._ping() directly. It exists purely so
+# the pin below has something to compare against; it is not an exercised hatch.
 _REAL_PING = farm._ping
+_REAL_DISPATCH = farm.dispatch_to_runner
 
 
 def _default_ping(url, token):
-    """Stand-in for _farm._ping. No socket, and the same None a failed ping
-    returns, so nothing downstream changes shape."""
+    return None
+
+
+def _default_dispatch(runner, payload):
+    # A real dispatch_to_runner releases, in its finally (_farm.py:302), the
+    # slot that pick_runner took at :257. A stub that returned without
+    # releasing would STRAND that slot, and the runner would then read as busy
+    # to the next pick_runner (:245/:255). Releasing here is what makes this
+    # stub behaviour-identical to a FAILED dispatch rather than merely
+    # None-returning - which is the property the whole change rests on.
+    rid = (runner or {}).get("id")
+    if rid is not None:
+        farm._release(rid)
     return None
 
 
 farm._ping = _default_ping
+farm.dispatch_to_runner = _default_dispatch
 
 
 def test_suite_cannot_reach_the_network():
     """Turns the docstring's promise into a checked fact. Only the safety-
-    critical half is asserted: the real urlopen-backed _ping must not be
-    reachable while this suite runs. Asserting it is *exactly* _default_ping
+    critical half is asserted: neither real urlopen-backed function may be
+    reachable while this suite runs. Asserting they are *exactly* the defaults
     would also fail on harmless stub leakage between tests, which is tidiness
     rather than the hazard."""
     assert farm._ping is not _REAL_PING, (
         "farm._ping is the real network function - this suite reached the "
         "socket. Restore the file-wide _default_ping stub."
+    )
+    assert farm.dispatch_to_runner is not _REAL_DISPATCH, (
+        "farm.dispatch_to_runner is the real network function - this suite "
+        "reached the socket. Restore the file-wide _default_dispatch stub."
     )
 
 
@@ -897,7 +927,7 @@ def test_dispatch_accounting_releases():
         urllib.request.urlopen = lambda req, timeout=None: _StubResp(  # type: ignore[assignment]
             json.dumps({"ok": True}).encode("utf-8")
         )
-        assert farm.dispatch_to_runner(picked, {"checks": "tests"}) == {"ok": True}
+        assert _REAL_DISPATCH(picked, {"checks": "tests"}) == {"ok": True}
         assert farm._ACTIVE_RUNS.get(row["id"]) is None
         picked = farm.pick_runner()
         assert picked is not None
@@ -906,7 +936,7 @@ def test_dispatch_accounting_releases():
             raise ConnectionError("runner died mid-run")
 
         urllib.request.urlopen = _boom  # type: ignore[assignment]
-        assert farm.dispatch_to_runner(picked, {"checks": "tests"}) is None
+        assert _REAL_DISPATCH(picked, {"checks": "tests"}) is None
         assert farm._ACTIVE_RUNS.get(row["id"]) is None
     finally:
         urllib.request.urlopen = orig_open
@@ -1185,12 +1215,12 @@ def test_dispatch_timeout_reaches_urlopen():
         os.environ.pop("FORUM_CI_FARM_DISPATCH_TIMEOUT", None)
         urllib.request.urlopen = _fake_urlopen  # type: ignore[assignment]
         runner = {"id": 1, "url": "http://x", "token": "t"}
-        farm.dispatch_to_runner(runner, {"checks": "tests", "mode": "main"})
+        _REAL_DISPATCH(runner, {"checks": "tests", "mode": "main"})
         assert captured_timeouts == [1230], captured_timeouts
 
         os.environ["FORUM_CI_FARM_DISPATCH_TIMEOUT"] = "500"
         captured_timeouts.clear()
-        farm.dispatch_to_runner(runner, {"checks": "tests", "mode": "main"})
+        _REAL_DISPATCH(runner, {"checks": "tests", "mode": "main"})
         assert captured_timeouts == [500], captured_timeouts
     finally:
         urllib.request.urlopen = orig_urlopen
