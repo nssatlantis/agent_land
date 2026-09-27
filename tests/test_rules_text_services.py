@@ -9,11 +9,14 @@ contract (rules_text._rules_text) is that every number resolves from config at
 call time, so an .env edit shows up on the next get_rules().
 
 These three pins hold that contract for the services sentence. Pin 3 is the
-deployment-independent one: it asserts the literals are *absent* from the tool
-description, which no override state can excuse.
+deployment-independent one: it asserts the VALUES are *absent* from the tool
+description, which no override state can excuse. It parses the numbers out of
+the prose and compares them numerically, so no rewording of the docstring can
+reintroduce one (bug #B129).
 """
 
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -65,16 +68,53 @@ def test_create_service_docstring_states_no_services_number():
 
     A tool docstring is a plain string literal and cannot interpolate config,
     so the honest shape is a pointer to the surface that does. That makes this
-    an absence assertion rather than a value assertion, and absence holds on
-    every deployment - which is the whole point.
+    an absence assertion - but the property worth asserting is about VALUES, so
+    this parses the numbers out of the docstring and compares them NUMERICALLY.
+
+    The previous version asserted the absence of three byte sequences
+    ("0.1-12.5", "0.1 - 12.5", "At most 4 active listings"). That only ever
+    proved those three spellings were absent: `4 active listings max` - the
+    phrasing the repo's own AGENTS.md:522 already uses - passed it, and so
+    would every future rewording (bug #B129). Numeric comparison has no
+    spelling to miss, and derives from config so it follows the knobs instead
+    of restating them, exactly as test_services_knobs_render_from_live_config
+    does for the rendered sentence.
     """
     src = (_ROOT / "server" / "tools" / "economy.py").read_text(encoding="utf-8")
     start = src.index("def create_service(")
     open_q = src.index('"""', start)
     close_q = src.index('"""', open_q + 3)
-    doc = src[open_q : close_q + 3]
-    for literal in ("0.1-12.5", "0.1 - 12.5", "At most 4 active listings"):
-        assert literal not in doc, f"create_service still states {literal!r}"
+    flat = " ".join(src[open_q : close_q + 3].split())
+
+    # Positive half: the pin must not be satisfiable by deleting the sentence.
+    assert "get_rules()" in flat, "create_service must point at the rendered surface"
+
+    numbers = {float(m.group(0)) for m in re.finditer(r"\d+(?:\.\d+)?", flat)}
+
+    # Price bounds. Numeric equality, so any separator, casing or ordering of
+    # the same two numbers is the same assertion.
+    for knob in ("SERVICE_MIN_PRICE", "SERVICE_MAX_PRICE"):
+        value = float(getattr(config, knob))
+        assert value not in numbers, (
+            f"create_service docstring still states {knob}={value:g} (bug #B129)"
+        )
+
+    # The listing cap is scoped to a window around a listing word, and that
+    # window is load-bearing rather than decorative. This docstring
+    # legitimately states max_open_orders (1-10), ack_visits (default 2, within
+    # 2-7), deliver_days (default 3, within 1-14), <= 255 chars and ack*24h - so
+    # a bare "is the number absent" check would fire on a true sentence the day
+    # the cap is configured to 2 or 10. Scoping keeps the pin honest instead of
+    # trading vacuity for false reds.
+    cap = float(config.SERVICE_MAX_ACTIVE_PER_AGENT)
+    for m in re.finditer(r"\d+", flat):
+        if float(m.group(0)) != cap:
+            continue
+        window = flat[max(0, m.start() - 60) : m.end() + 60]
+        assert "listing" not in window.lower(), (
+            f"create_service docstring states the listing cap {cap:g} beside "
+            f"{window!r} (bug #B129)"
+        )
 
 
 if __name__ == "__main__":
