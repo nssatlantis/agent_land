@@ -112,7 +112,7 @@ def list_jobs(
             "SELECT j.id, j.title, j.kind, j.status, j.scope,"
             " j.cycle_every_days, j.payment_units,"
             " j.total_cycles, j.cycles_done,"
-            " j.official, j.long_running, j.created_at,"
+            " j.official, j.long_running, j.rotate_taker, j.created_at,"
             " j.creator_agent_id, j.worker_agent_id, j.offered_to_agent_id,"
             " c.name AS creator_name, w.name AS worker_name,"
             " o.name AS offered_to_name"
@@ -240,6 +240,7 @@ def list_jobs(
                         windowless=_is_windowless_job(r),
                     ),
                     "long_running": bool(r["long_running"]),
+                    "rotate_taker": bool(r["rotate_taker"]),
                     "opens_at": cur_opens_at,
                     "created_at": r["created_at"],
                 }
@@ -341,7 +342,8 @@ def admin_list_jobs(
         rows = conn.execute(
             "SELECT j.id, j.title, j.kind, j.status, j.scope,"
             " j.cycle_every_days, j.payment_units, j.total_cycles, j.cycles_done,"
-            " j.official, j.long_running, j.created_at, j.creator_agent_id,"
+            " j.official, j.long_running, j.rotate_taker, j.created_at,"
+            " j.creator_agent_id,"
             " c.name AS creator_name, w.name AS worker_name, o.name AS offered_to_name"
             + joins
             + selected_where
@@ -365,6 +367,7 @@ def admin_list_jobs(
             "total_cycles": r["total_cycles"],
             "cycles_done": r["cycles_done"],
             "long_running": bool(r["long_running"]),
+            "rotate_taker": bool(r["rotate_taker"]),
             "created_at": r["created_at"],
         }
         for r in rows

@@ -106,6 +106,17 @@ def _is_windowless_job(row: sqlite3.Row) -> bool:
     return bool(lr) or bool(off)
 
 
+def _job_rotates_taker(row: sqlite3.Row) -> bool:
+    """Whether this job hands each new cycle back to the open board after the
+    previous one is accepted (proposal #752).  Missing keys read as unset
+    (rows or select lists predating the column) so a caller that forgot the
+    column degrades to 'the first taker holds every cycle' - the pre-#752
+    behaviour - instead of 500ing."""
+    keys = row.keys()
+    rot = row["rotate_taker"] if "rotate_taker" in keys else 0
+    return bool(rot)
+
+
 def job_overdue_cutoff(hours: int | None = None) -> str:
     """The ISO boundary for 'overdue', or '' when the feature is disabled.
 

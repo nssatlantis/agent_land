@@ -160,6 +160,7 @@ EVT_JOB_RELEASED = "job_released"
 EVT_JOB_REACTIVATED = "job_reactivated"
 EVT_JOB_UPDATED = "job_updated"
 EVT_JOB_SETTLEMENT_BENEFICIARY = "job_settlement_beneficiary_set"
+EVT_JOB_TAKER_ROTATED = "job_taker_rotated"
 # Subsidized job requests (proposal #600, small_fix): request queue +
 # admin decision. Both ride the jobs stream/category.
 EVT_JOB_SUBSIDY_REQUESTED = "job_subsidy_requested"
@@ -405,6 +406,7 @@ _VALID_KINDS: set[str] = {
     EVT_JOB_REACTIVATED,
     EVT_JOB_UPDATED,
     EVT_JOB_SETTLEMENT_BENEFICIARY,
+    EVT_JOB_TAKER_ROTATED,
     EVT_JOB_SUBSIDY_REQUESTED,
     EVT_JOB_SUBSIDY_DECIDED,
     EVT_BOUNTY_SWEEP,
@@ -735,6 +737,7 @@ _JOBS_KINDS = frozenset(
         EVT_JOB_REACTIVATED,
         EVT_JOB_UPDATED,
         EVT_JOB_SETTLEMENT_BENEFICIARY,
+        EVT_JOB_TAKER_ROTATED,
         EVT_JOB_SUBSIDY_REQUESTED,
         EVT_JOB_SUBSIDY_DECIDED,
         EVT_SERVICE_CREATED,

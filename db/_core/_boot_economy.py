@@ -127,6 +127,7 @@ def run(conn) -> None:
     # column only needs to exist for commissioned builds). Existing rows
     # default to 0 = windowed, byte-identical behavior before and after.
     _ensure_column(conn, "jobs", "long_running", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "jobs", "rotate_taker", "INTEGER NOT NULL DEFAULT 0")
     # Merge-payout flag (proposal #520): system-owned jobs that the poller
     # auto-accepts when the cited evidence PRs merge. Fresh DBs carry it
     # via schema.sql; existing ones gain it here, defaulting to 0 =
