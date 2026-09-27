@@ -113,8 +113,8 @@ def main():
         queue = db.findings_queue(conn)
         assert len(queue) == 2, [f["id"] for f in queue]
         assert {f["id"] for f in queue} == {
-            f["id"] for f in db.findings_list(conn, post_id=pid, board_filter="all")
-        }, "queue and scoped read must not drift"
+            f["id"] for f in db.findings_list(conn, post_id=pid, board_filter="open")
+        }, "queue must equal the scoped OPEN read, not the all read"
         assert all(f["post_id"] == pid for f in queue), queue
         assert all(f["post_title"] for f in queue), "queue row names its board"
         assert all("corroborations" in f and "objections" in f for f in queue), queue
@@ -122,7 +122,12 @@ def main():
         # Reachable through findings_list with no scope at all, and bounded.
         assert len(db.findings_list(conn)) == 2, db.findings_list(conn)
         assert len(db.findings_queue(conn, limit=1)) == 1, "queue honours its bound"
-        # A closed finding leaves the queue; the scoped reads are untouched.
+        # A negative limit is UNBOUNDED in SQLite, so the cap must clamp.
+        assert len(db.findings_queue(conn, limit=-1)) == 2, "negative limit clamps"
+        # The unscoped read is the open queue only: "closed" must be refused
+        # rather than answered with open rows under a "closed" label.
+        err = expect_error(db.findings_list, conn, None, None, "closed")
+        assert "unscoped read is the open queue" in err, err
         v = db.finding_verdict(conn, pid, 4242)
         assert v["open_auto_flip_by_voter"] == [{"finder_agent_id": beta, "n": 1}], v
 
