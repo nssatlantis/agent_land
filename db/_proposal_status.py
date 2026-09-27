@@ -13,7 +13,7 @@ from db._core import (
     _parse_iso,
     active_citizens,
 )
-from db._pr_state import pr_live_sql
+from db._pr_state import pr_decided_sql, pr_live_sql
 from search import _normalized_title
 
 
@@ -101,22 +101,48 @@ def _proposal_opener_sql(alias: str, name: bool = False) -> str:
 
 def _proposal_pr_history(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     """Every pull request ever attached to a proposal, oldest to newest:
-    [{pr_number, status ('open' until that PR is decided), opened_by_agent_id,
-    opened_by_name, happened_at}] where happened_at is the PR's outcome
-    timestamp, or when it was linked while still live. Includes PRs that have
-    an outcome but no stored link (a poller-recording window) - those carry
-    None for the opener. The full trail is kept on the record after a proposal
-    is declined or closed, so a retry stays traceable to its earlier PRs
+    [{pr_number, status, opened_by_agent_id, opened_by_name, happened_at}]
+    where status is read from the shared four-source verdict of
+    db._pr_state.pr_decided_sql - 'open' exactly while no source has
+    decided this PR, otherwise the direction of the deciding arm
+    (outcome row, pr_merges, pr_record, or the stamped closed cache), so
+    this reader and the close gate can never disagree (#B141);
+    happened_at is the PR's outcome timestamp, or when it was linked
+    while still live. Includes PRs that have an outcome but no stored
+    link (a poller-recording window) - those carry None for the opener.
+    The full trail is kept on the record after a proposal is declined or
+    closed, so a retry stays traceable to its earlier PRs
     (CHARTER.md Article VI.5)."""
+    # #B141: status gates on the shared fragment and reads the deciding
+    # arm's direction in arm order (outcome row, pr_merges, pr_record,
+    # stamped cache) - guard and verdict from one predicate. The trailing
+    # 'closed' is an unreachable-today belt (gate-true but no mapped
+    # direction: a NULL outcome status, or a future fragment arm) - the
+    # column stays total with a conservative, never-'open' verdict.
+    decided = pr_decided_sql("x.pr_number")
     rows = conn.execute(
-        """
-        SELECT x.pr_number, COALESCE(po.status, 'open') AS status,
+        f"""
+        SELECT x.pr_number,
+               CASE WHEN {decided}
+                    THEN COALESCE(po.status,
+                         CASE WHEN pm.pr_number IS NOT NULL THEN 'merged' END,
+                         prd.status,
+                         CASE WHEN pw.pr_number IS NOT NULL
+                              THEN CASE WHEN pw.merged_at IS NOT NULL
+                                        THEN 'merged' ELSE 'closed' END
+                              END,
+                         'closed')
+                    ELSE 'open' END AS status,
                pl.opened_by_agent_id, a.name AS opened_by_name,
                se.name_color AS opened_by_name_color,
                COALESCE(po.happened_at, pl.created_at) AS happened_at
         FROM (SELECT pr_number FROM proposal_links WHERE post_id = ?
               UNION SELECT pr_number FROM proposal_outcomes WHERE post_id = ?) x
         LEFT JOIN proposal_outcomes po ON po.pr_number = x.pr_number
+        LEFT JOIN pr_merges pm ON pm.pr_number = x.pr_number
+        LEFT JOIN pr_record prd ON prd.pr_number = x.pr_number
+        LEFT JOIN pr_rows pw ON pw.pr_number = x.pr_number
+             AND pw.state = 'closed' AND pw.verified_at IS NOT NULL
         LEFT JOIN proposal_links pl ON pl.pr_number = x.pr_number
         LEFT JOIN agents a ON a.id = pl.opened_by_agent_id
         LEFT JOIN store_entitlements se ON se.agent_id = a.id
