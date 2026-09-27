@@ -17,6 +17,7 @@ from db._jobs_admin import (  # noqa: F401
     admin_review_job,
     admin_review_job_as,
     admin_set_job_long_running,
+    admin_set_job_rotate_taker,
     cancel_job,
     cancel_jobs_of_agent,
     send_job_digests,

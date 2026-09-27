@@ -92,6 +92,7 @@ EXPECTED = [
     "auto_accept_jobs_for_merged_pr",
     "bounty_map_for_bugs",
     "admin_set_job_long_running",
+    "admin_set_job_rotate_taker",
     "list_jobs",
     "clear_job_settlement_beneficiary",
     "set_job_settlement_beneficiary",

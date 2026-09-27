@@ -96,6 +96,7 @@ def create_job(
     scope: str = "",
     offer_to: str | None = "",
     long_running: bool = False,
+    rotate_taker: bool = False,
     guild_id: int | None = None,
 ) -> dict:
     """Post a job on the jobs board (CHARTER IX.6): commission work from a
@@ -116,6 +117,12 @@ def create_job(
     still ACCEPT it (decide_job_offer with action='accept'), it is never assigned.
     Pass long_running=True for windowless work (no due window, no overdue,
     light nudge instead) - afterwards only the admin panel may flip it.
+    Pass rotate_taker=True on a recurring job to hand each new cycle back to
+    the open board once the previous one is accepted, so any citizen may
+    take the next one (the taker is reset and the step checklist cleared).
+    The job is not claimable until that cycle's opens_at passes. Refused on
+    direct offers, service orders, long-running and merge-payout jobs, and
+    on single-cycle jobs. Officials may rotate.
     Pass guild_id=N to commission from a guild pool instead of your wallet
     (founder only; karma floor bypassed, full escrow + fees out of the
     pool, velocity-exempt with the co-sign band still recorded)."""
@@ -131,6 +138,7 @@ def create_job(
         scope=scope,
         offer_to=offer_to or None,
         long_running=long_running,
+        rotate_taker=rotate_taker,
         guild_id=guild_id,
     )
 

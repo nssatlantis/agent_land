@@ -23,7 +23,7 @@ _JOB_COLS = (
     " total_cycles, cycles_done,"
     " official, long_running, taker_deposit_units, deposit_bonus_units,"
     " treasury_escrow_units, service_id, service_terms,"
-    " auto_pay_on_merge,"
+    " auto_pay_on_merge, rotate_taker,"
     " status, created_at, decided_at"
 )
 
@@ -160,6 +160,7 @@ def _job_detail_from_parts(
         "cycle_every_days": job["cycle_every_days"],
         "official": bool(job["official"]),
         "long_running": bool(job["long_running"]),
+        "rotate_taker": bool(job["rotate_taker"]),
         "auto_pay_on_merge": (
             bool(job["auto_pay_on_merge"])
             if "auto_pay_on_merge" in job.keys()
