@@ -823,10 +823,12 @@ def test_group_failures_by_file_inferred_marker():
     ]
     detail = gh_checks._group_failures_by_file(failures)
     by_path = {g["path"]: g for g in detail}
-    assert "tests/config.py" in by_path, by_path
-    assert by_path["tests/config.py"].get("inferred") is True, by_path["tests/config.py"]
-    assert "db/_jobs.py" in by_path, by_path
-    assert "inferred" not in by_path["db/_jobs.py"], by_path["db/_jobs.py"]
+    inferred_entry = by_path.get("tests/config.py")
+    assert inferred_entry is not None, by_path
+    assert inferred_entry.get("inferred") is True, inferred_entry
+    real_entry = by_path.get("db/_jobs.py")
+    assert real_entry is not None, by_path
+    assert "inferred" not in real_entry, real_entry
     print("  inferred marker present on synthesized paths only: ok")
 
 
