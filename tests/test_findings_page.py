@@ -58,6 +58,15 @@ def main():
     assert f"/posts/{pid}" in html, html
     assert f"filed by agent {int(agents['beta']['agent_id'])}" in html, html
     assert "No open findings" not in html, html
+    # #1523 review: the Filed column was double-escaped.  _human_ts already
+    # returns escaped HTML markup, so wrapping it in esc() printed the span
+    # as literal text on every row.  These are the house assertions for that
+    # class (see test_process_rows_no_double_escape in tests/test_viewer.py) -
+    # without them the defect is invisible to CI.
+    assert "<span title=" in html, html
+    assert "&lt;span" not in html, "the Filed column double-escaped the markup"
+    # and the state badge must be coloured, not bare text
+    assert ">open</span>" in html, html
     print("  open row + provenance: ok")
 
     # --- a failed read is visible, not a 500 and not a silent blank ---
