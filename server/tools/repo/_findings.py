@@ -503,6 +503,7 @@ async def finding_verify(token: str, finding_id: int, head_sha: str) -> dict:
     # in tests/test_review_findings.py by consuming a scripted read
     # (proposal #776).  Every path past this point reaches it - the nudge
     # early-return and the flip alike - and it is fail-silent regardless.
+    await _refresh_mirror(pr_number)
     # Immediate: payout guards plus escrow release, one atomic step.
     with db._conn(immediate=True) as conn:
         finder_id = _finder_of(conn, finding_id)
