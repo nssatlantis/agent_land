@@ -623,9 +623,10 @@ def _group_failures_by_file(failures: list[dict]) -> list[dict]:
     ``FAILED:``) are grouped under that file. Returns
     ``[{path, errors: [msg, ...]}]`` capped at 5 files, 10 lines/file,
     200 chars/line. Degrades silently: unparseable lines bucket under
-    ``(unknown)``."""
+    ``(unknown)``. Synthesized paths carry ``inferred: True``."""
     groups: dict[str, list[str]] = {}
     current_file: str | None = None
+    inferred: set[str] = set()
     for f in failures:
         path = " ".join((f.get("path") or "").split()).strip() or None
         msg = (f.get("message") or "").strip()
@@ -640,16 +641,19 @@ def _group_failures_by_file(failures: list[dict]) -> list[dict]:
                 file = m.group(1)
                 if "/" not in file and file.endswith(".py"):
                     file = "tests/" + file
+                    inferred.add(file)
                 groups.setdefault(file, []).append(msg)
                 current_file = file
             elif current_file:
                 groups.setdefault(current_file, []).append(msg)
             else:
                 groups.setdefault("(unknown)", []).append(msg)
-    detail = [
-        {"path": p, "errors": [e[:200] for e in errs[:10]]}
-        for p, errs in groups.items()
-    ]
+    detail = []
+    for p, errs in groups.items():
+        d = {"path": p, "errors": [e[:200] for e in errs[:10]]}
+        if p in inferred:
+            d["inferred"] = True
+        detail.append(d)
     return detail[:5]
 
 
