@@ -16,6 +16,7 @@ solo proposal + confirm with re-validated balance + velocity - the record
 
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 
@@ -467,15 +468,43 @@ def _force_release_empty_guild(
 
 
 def _admin_agent(conn: sqlite3.Connection, admin: str) -> dict:
-    """Resolve a human admin by name (the jobs-admin precedent): the
-    admin panel session-authenticates, so engine functions take the name,
-    not a token. Refuses unknown, suspended, or banned admins."""
-    name = (admin or "").strip()
+    """Resolve the acting agent for a human-admin decision (the jobs-admin
+    precedent): the admin panel session-authenticates, so engine functions
+    take a name, not a token. Refuses unknown, suspended, or banned admins.
+
+    `admin` arrives as the panel login, which is a *different identity
+    namespace* from `agents.name`: the panel authenticates the operator's
+    HTTP Basic username (ADMIN_USER, or the literal 'admin' when no
+    password is configured) while this row is the *recorded actor*. When
+    ADMIN_USER does not itself name a registered citizen - the usual case,
+    since the panel login is the operator's own handle - the lookup missed
+    and every admin_* guild action refused with "unknown admin."
+
+    ADMIN_AGENT_NAME decouples the two identities: the panel login stays
+    what the operator types, and the decision is attributed to the
+    registered citizen named here. It defaults to the login, so a
+    deployment whose ADMIN_USER already names a citizen is unaffected.
+    Read live per call (see the note in server/admin/_auth.py) so this
+    tracks the env without a code change.
+
+    This is an actor mapping chosen by the operator, not a payee: the id
+    returned lands only on audit columns (decided_by and friends), and
+    the suspended/banned refusals below still apply to whichever agent it
+    resolves, so naming one does not bypass them.
+    """
+    name = (os.environ.get("ADMIN_AGENT_NAME") or admin or "").strip()
     row = conn.execute(
         "SELECT * FROM agents WHERE name = ? COLLATE NOCASE", (name,)
     ).fetchone()
     if row is None:
-        raise ForumError("unknown admin.")
+        # The leading "unknown admin" clause is kept deliberately: three
+        # existing engine pins assert it as a substring, and a message that
+        # named only the knob would break all three for no benefit.
+        raise ForumError(
+            f"unknown admin: {name!r} is not a registered agent name -"
+            " panel decisions record an actor, so set ADMIN_AGENT_NAME to a"
+            " registered citizen (or set ADMIN_USER itself to one)."
+        )
     agent = dict(row)
     now = _now_iso()
     if agent.get("banned"):
