@@ -24,6 +24,60 @@ import db  # noqa: E402
 import events  # noqa: E402
 import server.ci_runner._farm as farm  # noqa: E402
 
+# The module docstring above promises "HTTP is mocked - no network". Until now
+# that was a claim rather than a fact, and the farm module has exactly TWO
+# external network surfaces, both reachable from tests in this file:
+#
+#   _ping                -> urlopen(timeout=CI_FARM_HTTP_TIMEOUT = 8s)
+#   dispatch_to_runner   -> urlopen(timeout=CI_FARM_DISPATCH_TIMEOUT)
+#
+# The second timeout is DERIVED (config.py:1652/1667) and this file's own
+# test_dispatch_timeout_derives_from_run_timeout pins the derived value at
+# 1230 seconds - 20.5 minutes, more than 10x run_all.py's hard-coded 120s
+# per-file cap. One unstubbed dispatch therefore blocks until the harness
+# kills the file, which is the observed signature: FAILED: test_farm.py at
+# 120.11 / 120.12 / 120.13 / 120.13s - the same wall every time with no
+# variance, which is what ONE blocking call against a hard cap looks like and
+# is not what a sum of many small timeouts looks like.
+#
+# Both defaults return the value a FAILED call already returns: _ping returns
+# None, and dispatch_to_runner returns None through its own `except Exception`
+# (_farm.py:300-303). So the stubs are behaviour-preserving, not merely quiet.
+# A test needing a specific value assigns over these, and its existing
+# `finally: farm._ping = orig_ping` then restores the default rather than the
+# real function, so no test reaches the socket by omission. The two tests that
+# deliberately exercise the real dispatch call _REAL_DISPATCH by name.
+_REAL_PING = farm._ping
+_REAL_DISPATCH = farm.dispatch_to_runner
+
+
+def _default_ping(url, token):
+    return None
+
+
+def _default_dispatch(runner, payload):
+    return None
+
+
+farm._ping = _default_ping
+farm.dispatch_to_runner = _default_dispatch
+
+
+def test_suite_cannot_reach_the_network():
+    """Turns the docstring's promise into a checked fact. Only the safety-
+    critical half is asserted: neither real urlopen-backed function may be
+    reachable while this suite runs. Asserting they are *exactly* the defaults
+    would also fail on harmless stub leakage between tests, which is tidiness
+    rather than the hazard."""
+    assert farm._ping is not _REAL_PING, (
+        "farm._ping is the real network function - this suite reached the "
+        "socket. Restore the file-wide _default_ping stub."
+    )
+    assert farm.dispatch_to_runner is not _REAL_DISPATCH, (
+        "farm.dispatch_to_runner is the real network function - this suite "
+        "reached the socket. Restore the file-wide _default_dispatch stub."
+    )
+
 
 def setup_module():
     db.init_db()
@@ -861,7 +915,7 @@ def test_dispatch_accounting_releases():
         urllib.request.urlopen = lambda req, timeout=None: _StubResp(  # type: ignore[assignment]
             json.dumps({"ok": True}).encode("utf-8")
         )
-        assert farm.dispatch_to_runner(picked, {"checks": "tests"}) == {"ok": True}
+        assert _REAL_DISPATCH(picked, {"checks": "tests"}) == {"ok": True}
         assert farm._ACTIVE_RUNS.get(row["id"]) is None
         picked = farm.pick_runner()
         assert picked is not None
@@ -870,7 +924,7 @@ def test_dispatch_accounting_releases():
             raise ConnectionError("runner died mid-run")
 
         urllib.request.urlopen = _boom  # type: ignore[assignment]
-        assert farm.dispatch_to_runner(picked, {"checks": "tests"}) is None
+        assert _REAL_DISPATCH(picked, {"checks": "tests"}) is None
         assert farm._ACTIVE_RUNS.get(row["id"]) is None
     finally:
         urllib.request.urlopen = orig_open
@@ -939,6 +993,7 @@ def main():
     test_native_test_dispatch_remote_first()
     test_dispatch_timeout_derives_from_run_timeout()
     test_dropped_dispatch_is_ledgered()
+    test_suite_cannot_reach_the_network()
     print("All CI farm tests passed.")
 
 
@@ -1147,12 +1202,12 @@ def test_dispatch_timeout_reaches_urlopen():
         os.environ.pop("FORUM_CI_FARM_DISPATCH_TIMEOUT", None)
         urllib.request.urlopen = _fake_urlopen  # type: ignore[assignment]
         runner = {"id": 1, "url": "http://x", "token": "t"}
-        farm.dispatch_to_runner(runner, {"checks": "tests", "mode": "main"})
+        _REAL_DISPATCH(runner, {"checks": "tests", "mode": "main"})
         assert captured_timeouts == [1230], captured_timeouts
 
         os.environ["FORUM_CI_FARM_DISPATCH_TIMEOUT"] = "500"
         captured_timeouts.clear()
-        farm.dispatch_to_runner(runner, {"checks": "tests", "mode": "main"})
+        _REAL_DISPATCH(runner, {"checks": "tests", "mode": "main"})
         assert captured_timeouts == [500], captured_timeouts
     finally:
         urllib.request.urlopen = orig_urlopen
