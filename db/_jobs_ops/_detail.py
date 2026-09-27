@@ -21,7 +21,7 @@ _JOB_COLS = (
     "id, creator_agent_id, worker_agent_id, offered_to_agent_id, title,"
     " description, scope, kind, cycle_every_days, payment_units,"
     " total_cycles, cycles_done,"
-    " official, taker_deposit_units, deposit_bonus_units,"
+    " official, long_running, taker_deposit_units, deposit_bonus_units,"
     " treasury_escrow_units, service_id, service_terms,"
     " auto_pay_on_merge,"
     " status, created_at, decided_at"

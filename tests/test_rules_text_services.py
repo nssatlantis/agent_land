@@ -8,12 +8,20 @@ deployment override would falsify them with no test failing. The module's own
 contract (rules_text._rules_text) is that every number resolves from config at
 call time, so an .env edit shows up on the next get_rules().
 
-These three pins hold that contract for the services sentence. Pin 3 is the
-deployment-independent one: it asserts the literals are *absent* from the tool
-description, which no override state can excuse.
+These three pins hold that contract for the services sentence.
+
+On pin 3, note what it does and does not claim. It asserts the VALUES are
+absent from the tool description, comparing parsed numbers numerically so no
+rewording can reintroduce one (bug #B129). It is *not* deployment-independent,
+and the earlier "no override state can excuse" wording was wrong: the forbidden
+values are config-derived, so under an override the pin can false-fire on a
+legitimate number and can excuse a stale literal whose knob has moved. What it
+does guarantee is the property that matters at the shipped defaults, which is
+where CI runs - see the per-branch comments for the exact boundary.
 """
 
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -33,6 +41,16 @@ _KNOBS = (
     "SERVICE_MAX_PRICE",
     "SERVICE_MAX_ACTIVE_PER_AGENT",
 )
+
+# Nearest-keyword distance, in whitespace-collapsed characters, from the
+# numbers the live docstring legitimately states to a listing word:
+#   10 -> 39 ("max_open_orders (1-10) caps ... on the listing.")
+#    1 -> 42 (the same 1-10)
+# and a reintroduced "4 active listings" puts "listing" 9 characters after the
+# 4. A +/-20 window therefore clears both legitimate collisions (39, 42) while
+# still catching a reintroduction, with margin on each side. Measured, not
+# guessed - see the PR body.
+_LISTING_WINDOW = 20
 
 
 def test_services_knobs_render_from_live_config():
@@ -65,16 +83,66 @@ def test_create_service_docstring_states_no_services_number():
 
     A tool docstring is a plain string literal and cannot interpolate config,
     so the honest shape is a pointer to the surface that does. That makes this
-    an absence assertion rather than a value assertion, and absence holds on
-    every deployment - which is the whole point.
+    an absence assertion - but the property worth asserting is about VALUES, so
+    this parses the numbers out of the docstring and compares them NUMERICALLY.
+
+    The previous version asserted the absence of three byte sequences
+    ("0.1-12.5", "0.1 - 12.5", "At most 4 active listings"). That only ever
+    proved those three spellings were absent: `4 active listings max` - the
+    phrasing the repo's own AGENTS.md:522 already uses - passed it, and so
+    would every future rewording (bug #B129). Numeric comparison has no
+    spelling to miss.
     """
     src = (_ROOT / "server" / "tools" / "economy.py").read_text(encoding="utf-8")
     start = src.index("def create_service(")
     open_q = src.index('"""', start)
     close_q = src.index('"""', open_q + 3)
-    doc = src[open_q : close_q + 3]
-    for literal in ("0.1-12.5", "0.1 - 12.5", "At most 4 active listings"):
-        assert literal not in doc, f"create_service still states {literal!r}"
+    flat = " ".join(src[open_q : close_q + 3].split())
+
+    # Positive half: the pin must not be satisfiable by deleting the sentence.
+    assert "get_rules()" in flat, "create_service must point at the rendered surface"
+
+    numbers = {float(m.group(0)) for m in re.finditer(r"\d+(?:\.\d+)?", flat)}
+
+    # Price bounds. Numeric equality, so any separator, casing or ordering of
+    # the same two numbers is one assertion.
+    #
+    # KNOWN LIMITATION, stated rather than papered over: this branch is
+    # unscoped, so a deployment that configures a price knob to one of the
+    # docstring's other numbers false-fires on a true sentence - 255 sits 9
+    # characters from "price_credits", 24 from nothing price-shaped but 255 is
+    # the sharp case. A price-keyword proximity window was considered and
+    # measured against the live bytes: it CANNOT fix this, because the
+    # legitimate "255 chars). price_credits" is 9 chars from its keyword while
+    # a reintroduced "12.5 credits" is only 8. No window width separates them.
+    # The alternative - allowlisting the other numbers - is a literal list that
+    # needs re-auditing on every reword, which is the bug this pin exists to
+    # kill. Accepted deliberately: CI runs the defaults, where this branch has
+    # full power, and the limitation is visible here rather than implied.
+    for knob in ("SERVICE_MIN_PRICE", "SERVICE_MAX_PRICE"):
+        value = float(getattr(config, knob))
+        assert value not in numbers, (
+            f"create_service docstring still states {knob}={value:g} (bug #B129)"
+        )
+
+    # The listing cap is scoped to a window around a listing word, because the
+    # docstring legitimately states max_open_orders (1-10), ack_visits
+    # (default 2, within 2-7), deliver_days (default 3, within 1-14),
+    # <= 255 chars and ack*24h. The window is a proximity heuristic, not a
+    # guarantee, and its width is measured against the live bytes rather than
+    # guessed - see _LISTING_WINDOW above. A wider window would NOT be safe:
+    # at +/-60 the "10" (39) and "1" (42) of "max_open_orders (1-10) caps
+    # simultaneous open orders on the listing." both fall inside it, so a cap
+    # configured to 10 or 1 fired on a true sentence.
+    cap = float(config.SERVICE_MAX_ACTIVE_PER_AGENT)
+    for m in re.finditer(r"\d+", flat):
+        if float(m.group(0)) != cap:
+            continue
+        window = flat[max(0, m.start() - _LISTING_WINDOW) : m.end() + _LISTING_WINDOW]
+        assert "listing" not in window.lower(), (
+            f"create_service docstring states the listing cap {cap:g} beside "
+            f"{window!r} (bug #B129)"
+        )
 
 
 if __name__ == "__main__":
