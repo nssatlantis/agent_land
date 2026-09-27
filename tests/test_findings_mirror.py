@@ -237,37 +237,39 @@ def main():
     import ast
     import textwrap
 
-    def _conn_with(fn):
-        """True if fn's body contains a `with db._conn(...)` block."""
-        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.With, ast.AsyncWith)):
-                src = ast.dump(node)
-                if "_conn" in src:
-                    return True
-        return False
+    def _refresh_sites(fn, name="_refresh_mirror"):
+        """(awaited, in_txn) for every call to `name` in fn.
 
-    def _awaited(fn, name):
-        """A Call to `name` whose nearest enclosing statement is an Await."""
+        Asked per CALL, not per function. The first version of this pin
+        asked whether the function contained a `with ... _conn` block at
+        all, which every trigger does - so it rejected correct code and
+        could not have passed wrong code. A comment can never satisfy
+        either tuple element, because both are read off the AST.
+        """
         tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
         stack = []
-        found = []
+        sites = []
 
-        class V(ast.NodeVisitor):
-            def visit(self, node):
-                stack.append(node)
-                if (
-                    isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Name)
-                    and node.func.id == name
-                ):
-                    parent = stack[-2] if len(stack) > 1 else None
-                    found.append(isinstance(parent, ast.Await))
-                self.generic_visit(node)
-                stack.pop()
+        def walk(node):
+            stack.append(node)
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == name
+            ):
+                parent = stack[-2] if len(stack) > 1 else None
+                in_txn = any(
+                    isinstance(a, (ast.With, ast.AsyncWith))
+                    and "_conn" in ast.dump(a)
+                    for a in stack
+                )
+                sites.append((isinstance(parent, ast.Await), in_txn))
+            for child in ast.iter_child_nodes(node):
+                walk(child)
+            stack.pop()
 
-        V().visit(tree)
-        return found
+        walk(tree)
+        return sites
 
     for _fn in (
         "finding_add",
@@ -276,17 +278,18 @@ def main():
         "finding_dispute",
         "finding_verify",
     ):
-        _f = getattr(ftools, _fn)
-        _hits = _awaited(_f, "_refresh_mirror")
-        assert _hits, f"{_fn} does not call _refresh_mirror"
-        assert all(_hits), f"{_fn} calls _refresh_mirror without await"
-        assert not _conn_with(_f), f"{_fn} refreshes inside a db._conn() block"
+        _sites = _refresh_sites(getattr(ftools, _fn))
+        assert _sites, f"{_fn} does not call _refresh_mirror"
+        assert all(a for a, _ in _sites), f"{_fn} calls it without await"
+        assert not any(t for _, t in _sites), (
+            f"{_fn} refreshes inside a db._conn() block"
+        )
     # The deliberate non-trigger must not grow a call by accident.
-    assert not _awaited(ftools.finding_corroborate, "_refresh_mirror"), (
+    assert not _refresh_sites(ftools.finding_corroborate), (
         "finding_corroborate is not a trigger"
     )
     # The staling family is a trigger: it writes the rendered `state`.
-    assert _awaited(ftools._stale_and_refresh, "_refresh_mirror"), (
+    assert _refresh_sites(ftools._stale_and_refresh), (
         "staling must re-project; it writes the rendered state"
     )
 
