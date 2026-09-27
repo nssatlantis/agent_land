@@ -1510,6 +1510,7 @@ def _held_pr_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         (agent_id,),
     ).fetchall()
     held = []
+    approved_for: dict = {}
     for r in rows:
         n = r["pr_number"]
         applied = conn.execute(
