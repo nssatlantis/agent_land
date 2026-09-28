@@ -699,6 +699,7 @@ from db._review_findings import (  # noqa: F401,E402
     finding_object,
     finding_stale_all,
     finding_stale_on_push,
+    finding_thread,
     finding_unfund,
     finding_verdict,
     finding_verify,
