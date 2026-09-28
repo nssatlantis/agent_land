@@ -100,7 +100,16 @@ def _c1_codepoints(raw: bytes) -> tuple[list[int], str | None]:
 
 
 def _tracked_text_files(root: Path) -> list[Path]:
-    """Every tracked text file under root, in stable order."""
+    """Every allowlist-matching file under root, in stable order.
+
+    This walks the WORKING TREE (rglob), not git's index. In CI - a fresh
+    checkout - the two sets coincide, so this is exactly the tracked one. On a
+    dirty or local tree they do not: an untracked file that matches the
+    allowlist is scanned as well. That is the safe direction for a ratchet (it
+    can over-report on a scratch file, never under-report on a tracked one), but
+    the honest guarantee is "no C1 in tracked text", not "no C1 in the git
+    index", and the ratchet's own comment should not claim the latter.
+    """
     found = []
     for path in root.rglob("*"):
         if not path.is_file():
@@ -205,6 +214,21 @@ def test_allowlist_matches_repo_search():
     assert _SKIP_DIRS == _SEARCH_SKIP_DIRS, (
         "server.repo_search._SEARCH_SKIP_DIRS changed - the ratchet must "
         f"follow it. was {sorted(_SKIP_DIRS)} now {sorted(_SEARCH_SKIP_DIRS)}"
+    )
+    # A FLOOR as well as parity. Parity alone has a silent-narrowing failure:
+    # deleting ".sql" from repo_search's allowlist would narrow THIS ratchet
+    # too while all three equalities above stayed green - and "ratchet hygiene"
+    # and "search scope" are different concerns, so a reasonable narrowing of
+    # what repo_search reads must not quietly un-guard a corruption check. The
+    # set this ratchet PROMISES is therefore pinned as a subset, independently
+    # of what repo_search currently offers.
+    assert {".py", ".md", ".sql", ".sh", ".yml", ".yaml"} <= SEARCH_EXTENSIONS, (
+        "repo_search.SEARCH_EXTENSIONS narrowed below the set this ratchet "
+        f"promises: {sorted(SEARCH_EXTENSIONS)}"
+    )
+    assert {".env.example", ".gitignore", "CODEOWNERS"} <= SEARCH_SPECIAL_FILES, (
+        "repo_search.SEARCH_SPECIAL_FILES narrowed below the set this ratchet "
+        f"promises: {sorted(SEARCH_SPECIAL_FILES)}"
     )
     print("  c1 ratchet: the allowlist still matches repo_search: ok")
 
