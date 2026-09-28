@@ -506,7 +506,13 @@ def test_sweep_burst_collapses_to_one_wake():
 
 
 def test_sweep_skips_resolved_during_debounce():
-    """A finding that is resolved while the debounce runs must not wake."""
+    """A finding resolved while the debounce was running must not wake.
+
+    The resolution has to happen AFTER the candidate scan picked the row
+    up - `_candidates` filters `state='open'`, so resolving beforehand
+    simply drops the row and this branch is never reached (the previous
+    version of this test did exactly that, and passed vacuously).
+    """
     agents = AGENTS
     alpha = agents["alpha"]["agent_id"]
     restore = _wake_cfg()
@@ -515,17 +521,70 @@ def test_sweep_skips_resolved_during_debounce():
         _link(conn, pid, 5002, alpha)
         _register(conn, alpha, "dir")
         fid = _finding(conn, pid, agents["beta"]["agent_id"], 5002)
-        conn.execute(
-            "UPDATE review_findings SET state = 'resolved' WHERE id = ?", (fid,)
-        )
-    real, calls = _stub({})
+
+    # Resolve it from inside gate_free - which sits exactly between the
+    # candidate read and the wake-time re-read, so this exercises the
+    # branch the assertion is about. Resolving it before the sweep drops
+    # the row from `_candidates` (which filters state='open') and the
+    # branch is never reached, which is how the earlier version of this
+    # test passed vacuously.
+    real_gate = wake.gate_free
+
+    def _resolve_then_gate(candidate, **kw):
+        reason = real_gate(candidate, **kw)
+        if reason is None:
+            with db._conn(immediate=True) as conn:
+                conn.execute(
+                    "UPDATE review_findings SET state = 'resolved' WHERE id = ?",
+                    (fid,),
+                )
+        return reason
+
+    sent = []
+    real, _ = _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        {
+                            "id": "ses_root",
+                            "parentID": None,
+                            "agent": "plan",
+                            "time": {"updated": int(time.time() * 1000)},
+                            "model": {"id": "m", "providerID": "opencode"},
+                        }
+                    ]
+                }
+            ),
+            "/api/model": json.dumps(
+                {
+                    "data": [
+                        {
+                            "id": "m",
+                            "providerID": "opencode",
+                            "limit": {"context": 262144},
+                        }
+                    ]
+                }
+            ),
+            "/session/status": json.dumps({"data": {}}),
+            "/message": json.dumps(
+                [{"info": {"role": "assistant", "tokens": {"total": 1000}}}]
+            ),
+        }
+    )
+    wake.gate_free = _resolve_then_gate
+    real_send = wake.send_wake
+    wake.send_wake = lambda e, s, t: (sent.append(t), True)[1]
     try:
         out = wake.wake_sweep()
     finally:
+        wake.send_wake = real_send
+        wake.gate_free = real_gate
         _restore(real)
         restore()
-    assert calls == [], "a resolved finding makes no network call"
-    assert all(o["pr_number"] != 5002 for o in out), out
+    assert sent == [], f"a resolved finding must not be prompted: {out}"
+    assert any(o["outcome"] == "resolved-during-debounce" for o in out), out
 
 
 def test_daily_budget_is_a_hard_ceiling():
@@ -710,10 +769,10 @@ def test_state_tables_survive_a_row_round_trip():
         row = conn.execute(
             "SELECT * FROM agent_wake_state WHERE finding_id = 999001"
         ).fetchone()
-        seen = wake._seen(conn, 999001)
+        seen = wake._delivered(conn, 999001)
     assert row["pr_number"] == 4242
     assert row["notified_at"] is None
-    assert seen is True, "a stored finding reads as already seen"
+    assert seen is False, "a stored-but-undelivered finding is not delivered"
 
 
 def test_mark_seen_is_idempotent_on_repeat():
@@ -796,6 +855,294 @@ def test_compaction_declines_without_a_nameable_model():
     finally:
         _restore(real)
     assert calls == [], "an un-nameable model must not open a socket"
+
+
+def test_deferred_wake_is_retried_on_the_next_tick():
+    """REGRESSION (found in review). A deferred wake must not be lost.
+
+    The seen-set used to be pure row-existence while `notified_at` was
+    written and never read, so one `busy` tick consumed the finding
+    permanently: ticks 2+ returned no outcome at all and no prompt was
+    ever sent. `_delivered` now keys on the `notified_at` receipt, and a
+    non-sent outcome clears it.
+    """
+    agents = AGENTS
+    alpha = agents["alpha"]["agent_id"]
+    restore = _wake_cfg()
+    pid = _proposal(agents, "alpha", "retry")
+    with db._conn(immediate=True) as conn:
+        _link(conn, pid, 5030, alpha)
+        _register(conn, alpha, "dir")
+        _finding(conn, pid, agents["beta"]["agent_id"], 5030)
+
+    sent = []
+    real, _ = _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        {
+                            "id": "ses_root",
+                            "parentID": None,
+                            "agent": "plan",
+                            "time": {"updated": int(time.time() * 1000)},
+                            "model": {"id": "m", "providerID": "opencode"},
+                        }
+                    ]
+                }
+            ),
+            "/api/model": json.dumps(
+                {
+                    "data": [
+                        {
+                            "id": "m",
+                            "providerID": "opencode",
+                            "limit": {"context": 262144},
+                        }
+                    ]
+                }
+            ),
+            # BUSY on the first attempt, idle thereafter.
+            "/session/status": json.dumps({"data": {"ses_root": {"type": "busy"}}}),
+            "/message": json.dumps(
+                [{"info": {"role": "assistant", "tokens": {"total": 1000}}}]
+            ),
+        }
+    )
+    real_send = wake.send_wake
+    wake.send_wake = lambda e, s, t: (sent.append(t), True)[1]
+    real_status = wake.session_busy
+    state = {"first": True}
+
+    def _busy_once(endpoint, session_id):
+        if state["first"]:
+            state["first"] = False
+            return True
+        return False
+
+    wake.session_busy = _busy_once
+    try:
+        first = wake.wake_sweep()
+        second = wake.wake_sweep()
+    finally:
+        wake.session_busy = real_status
+        wake.send_wake = real_send
+        _restore(real)
+        restore()
+    assert any(o["outcome"] == "busy" for o in first), first
+    assert len(sent) == 1, f"the deferred wake must be retried: {second}"
+    assert any(o["outcome"] == "sent" for o in second), second
+
+
+def test_quiet_hours_does_not_consume_the_burst():
+    """REGRESSION (found in review). A quiet-hours deferral must not mark
+    the siblings delivered.
+
+    The watermark used to be stamped by every candidate, including ones
+    rejected for being quiet-hours-suppressed, so a burst that arrived
+    inside the default 23:00-08:00 window was absorbed by the rejection
+    itself and 0 of 6 findings were ever delivered.
+    """
+    agents = AGENTS
+    alpha = agents["alpha"]["agent_id"]
+    restore = _wake_cfg()
+    config.AGENT_WAKE_QUIET_START_HOUR = 23
+    config.AGENT_WAKE_QUIET_END_HOUR = 8
+    pid = _proposal(agents, "alpha", "quiet")
+    with db._conn(immediate=True) as conn:
+        _link(conn, pid, 5031, alpha)
+        _register(conn, alpha, "dir")
+        for _ in range(3):
+            _finding(conn, pid, agents["beta"]["agent_id"], 5031)
+
+    sent = []
+    real, calls = _stub({})
+    real_send = wake.send_wake
+    wake.send_wake = lambda e, s, t: (sent.append(t), True)[1]
+    try:
+        wake.wake_sweep()
+    finally:
+        wake.send_wake = real_send
+        _restore(real)
+        restore()
+    assert sent == [], "quiet hours must not send"
+    assert calls == [], "quiet hours is a local gate - it must cost no HTTP"
+    with db._conn() as conn:
+        delivered = conn.execute(
+            "SELECT COUNT(*) FROM agent_wake_state WHERE pr_number = 5031"
+            " AND notified_at IS NOT NULL"
+        ).fetchone()[0]
+    assert delivered == 0, f"nothing may be marked delivered: {delivered}"
+
+    # Outside quiet hours the burst is still there and delivers once.
+    restore2 = _wake_cfg()
+    real, _ = _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        {
+                            "id": "ses_root",
+                            "parentID": None,
+                            "agent": "plan",
+                            "time": {"updated": int(time.time() * 1000)},
+                            "model": {"id": "m", "providerID": "opencode"},
+                        }
+                    ]
+                }
+            ),
+            "/api/model": json.dumps(
+                {
+                    "data": [
+                        {
+                            "id": "m",
+                            "providerID": "opencode",
+                            "limit": {"context": 262144},
+                        }
+                    ]
+                }
+            ),
+            "/session/status": json.dumps({"data": {}}),
+            "/message": json.dumps(
+                [{"info": {"role": "assistant", "tokens": {"total": 1000}}}]
+            ),
+        }
+    )
+    wake.send_wake = lambda e, s, t: (sent.append(t), True)[1]
+    try:
+        out = wake.wake_sweep()
+    finally:
+        wake.send_wake = real_send
+        _restore(real)
+        restore2()
+    assert len(sent) == 1, f"the deferred burst must still deliver: {out}"
+
+
+def test_self_filed_finding_does_not_arm_the_debounce():
+    """REGRESSION (found in review). A finding that is not wake-worthy must
+    not suppress the genuine bug finding that follows it.
+
+    The watermark was keyed on a *sighting*, so an author's own triage
+    finding stamped it and the reviewer's real finding one second later was
+    debounced away. It is now keyed on a *delivery*.
+    """
+    agents = AGENTS
+    alpha = agents["alpha"]["agent_id"]
+    restore = _wake_cfg()
+    pid = _proposal(agents, "alpha", "selffiled")
+    with db._conn(immediate=True) as conn:
+        _link(conn, pid, 5032, alpha)
+        _register(conn, alpha, "dir")
+        # The author triages their own PR...
+        _finding(
+            conn,
+            pid,
+            alpha,
+            5032,
+            category="improvement",
+            finding_class="improvement",
+            auto_flip=False,
+        )
+        # ...and a reviewer files a real blocker immediately after.
+        _finding(conn, pid, agents["beta"]["agent_id"], 5032)
+
+    sent = []
+    real, _ = _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        {
+                            "id": "ses_root",
+                            "parentID": None,
+                            "agent": "plan",
+                            "time": {"updated": int(time.time() * 1000)},
+                            "model": {"id": "m", "providerID": "opencode"},
+                        }
+                    ]
+                }
+            ),
+            "/api/model": json.dumps(
+                {
+                    "data": [
+                        {
+                            "id": "m",
+                            "providerID": "opencode",
+                            "limit": {"context": 262144},
+                        }
+                    ]
+                }
+            ),
+            "/session/status": json.dumps({"data": {}}),
+            "/message": json.dumps(
+                [{"info": {"role": "assistant", "tokens": {"total": 1000}}}]
+            ),
+        }
+    )
+    real_send = wake.send_wake
+    wake.send_wake = lambda e, s, t: (sent.append(t), True)[1]
+    try:
+        out = wake.wake_sweep()
+    finally:
+        wake.send_wake = real_send
+        _restore(real)
+        restore()
+    assert len(sent) == 1, f"the real blocker must not be suppressed: {out}"
+    assert any(o["outcome"] == "sent" for o in out), out
+
+
+def test_quiet_hours_and_budget_cost_no_http():
+    """REGRESSION (found in review). The two local gates must run BEFORE
+    any network call - `select_session` can CREATE a session on the
+    operator's server, so paying for it before the budget says no was a
+    real side effect, not just wasted latency."""
+    agents = AGENTS
+    alpha = agents["alpha"]["agent_id"]
+    restore = _wake_cfg()
+    config.AGENT_WAKE_QUIET_START_HOUR = 23
+    config.AGENT_WAKE_QUIET_END_HOUR = 8
+    pid = _proposal(agents, "alpha", "free")
+    with db._conn(immediate=True) as conn:
+        _link(conn, pid, 5033, alpha)
+        _register(conn, alpha, "dir")
+        _finding(conn, pid, agents["beta"]["agent_id"], 5033)
+
+    real, calls = _stub({})
+    try:
+        # Inside the quiet window: rejects locally, opens no socket.
+        assert (
+            wake._wake_one(
+                {"id": 1, "agent_id": alpha, "directory": "dir", "url": "http://oc"},
+                alpha,
+                5033,
+            )
+            == "quiet-hours"
+        )
+        # Outside it but out of budget: also rejects locally.
+        config.AGENT_WAKE_QUIET_START_HOUR = 0
+        config.AGENT_WAKE_QUIET_END_HOUR = 0
+        real_budget = wake._budget_left
+        wake._budget_left = lambda e: 0
+        try:
+            assert (
+                wake._wake_one(
+                    {
+                        "id": 1,
+                        "agent_id": alpha,
+                        "directory": "dir",
+                        "url": "http://oc",
+                    },
+                    alpha,
+                    5033,
+                )
+                == "budget-exhausted"
+            )
+        finally:
+            wake._budget_left = real_budget
+    finally:
+        _restore(real)
+        restore()
+    assert calls == [], f"a local gate must open no socket: {calls}"
 
 
 def test_compaction_failure_does_not_brick_the_wake():
@@ -956,6 +1303,10 @@ def main():
         test_compaction_uses_summarize_with_the_session_model,
         test_compaction_declines_without_a_nameable_model,
         test_compaction_failure_does_not_brick_the_wake,
+        test_deferred_wake_is_retried_on_the_next_tick,
+        test_quiet_hours_does_not_consume_the_burst,
+        test_self_filed_finding_does_not_arm_the_debounce,
+        test_quiet_hours_and_budget_cost_no_http,
         test_wake_defers_when_context_is_genuinely_full,
     ]
     failed = []

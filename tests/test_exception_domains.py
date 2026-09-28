@@ -131,6 +131,7 @@ FILE_LIST = (
     "server/poller/_autolink.py",
     "server/poller/_batches.py",
     "server/poller/_vote.py",
+    "server/poller/_wake.py",
     "server/ci_runner/__init__.py",
     "server/ci_runner/_slots.py",
     "server/ci_runner/_trees.py",

@@ -138,11 +138,13 @@ def _json_call(
         # caller's own audit row records why.
         return None
     if not raw.strip():
-        # 204 No Content (compact) is a success with no body.
+        # 200 `true` (summarize) or 204 No Content is a success with no body.
         return {}
     try:
         return json.loads(raw)
     except Exception:
+        # domain: degrade-silently - an unparseable body reads as "no
+        # answer", the same failure domain as the transport error above
         return None
 
 
@@ -412,12 +414,56 @@ def _candidates(conn: sqlite3.Connection, agent_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def _seen(conn: sqlite3.Connection, finding_id: int) -> bool:
+def _delivered(conn: sqlite3.Connection, finding_id: int) -> bool:
+    """True only if this finding was actually delivered in a wake.
+
+    The seen-set is NOT "row exists" - that is what made a deferred wake
+    (busy / quiet hours / budget / no-session) permanently lost: the row
+    existed, so the finding never became a candidate again. `notified_at`
+    is the delivery receipt, and it is what the filter keys on.
+    """
     row = conn.execute(
-        "SELECT 1 FROM agent_wake_state WHERE finding_id = ?",
+        "SELECT notified_at FROM agent_wake_state WHERE finding_id = ?",
         (finding_id,),
     ).fetchone()
-    return row is not None
+    return row is not None and row["notified_at"] is not None
+
+
+def _discard(conn: sqlite3.Connection, finding_id: int) -> None:
+    """Retire a finding that is permanently not wake-worthy.
+
+    A rejection at the free gates (self-filed, an improvement, not an
+    auto-flip blocker, resolved mid-debounce) will never change, so
+    stamping it delivered stops it re-entering the candidate scan every
+    tick forever. `notified_at` carries an ISO timestamp rather than NULL
+    so the row is distinguishable from a deferred one, which is exactly
+    the distinction `_delivered` and `_last_delivered_at` now read.
+    """
+    conn.execute(
+        "UPDATE agent_wake_state SET notified_at = ? WHERE finding_id = ?",
+        (
+            datetime.now(timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z"),
+            finding_id,
+        ),
+    )
+
+
+def _last_delivered_at(conn: sqlite3.Connection, pr_number: int) -> str | None:
+    """When this PR was last actually woken about - the debounce watermark.
+
+    Keyed on `notified_at` (a DELIVERY), never on `last_finding_at` (a
+    sighting). Using sightings meant a self-filed finding, an improvement
+    or a quiet-hours rejection stamped the watermark and suppressed the
+    genuine bug finding that followed it, and it meant the whole burst was
+    absorbed by the rejection itself.
+    """
+    row = conn.execute(
+        "SELECT MAX(notified_at) FROM agent_wake_state WHERE pr_number = ?",
+        (pr_number,),
+    ).fetchone()
+    return row[0] if row and row[0] else None
 
 
 def _mark_seen(
@@ -447,14 +493,6 @@ def _mark_seen(
             .replace("+00:00", "Z"),
         ),
     )
-
-
-def _pr_last_finding_at(conn: sqlite3.Connection, pr_number: int) -> str | None:
-    row = conn.execute(
-        "SELECT MAX(last_finding_at) FROM agent_wake_state WHERE pr_number = ?",
-        (pr_number,),
-    ).fetchone()
-    return row[0] if row and row[0] else None
 
 
 # --- free gates (1-7) -----------------------------------------------------
@@ -549,7 +587,18 @@ def _record(event_kind: str, endpoint: dict, detail: dict) -> None:
 
 
 def _wake_one(endpoint: dict, agent_id: int, pr_number: int) -> str:
-    """Attempt one wake. Returns a short outcome string for the log."""
+    """Attempt one wake. Returns a short outcome string for the log.
+
+    Order matters and is cheapest-first: the two local gates run BEFORE
+    any network call, so a budget-exhausted agent or one inside quiet
+    hours costs zero HTTP round trips - and, critically, does not reach
+    `select_session`, which can CREATE a session on the operator's server.
+    """
+    if _quiet_hours():
+        return "quiet-hours"
+    if _budget_left(endpoint) <= 0:
+        return "budget-exhausted"
+
     session = select_session(endpoint, endpoint["directory"])
     if not session or not session.get("id"):
         _record(
@@ -562,10 +611,6 @@ def _wake_one(endpoint: dict, agent_id: int, pr_number: int) -> str:
     session_id = str(session["id"])
     if session_busy(endpoint, session_id):
         return "busy"
-    if _quiet_hours():
-        return "quiet-hours"
-    if _budget_left(endpoint) <= 0:
-        return "budget-exhausted"
 
     limit = resolve_context_limit(endpoint, session.get("model"), endpoint["directory"])
     occupancy = context_occupancy(endpoint, session_id)
@@ -669,9 +714,9 @@ def wake_sweep() -> list[dict]:
             agent_id = int(endpoint["agent_id"])
             for candidate in _candidates(conn, agent_id):
                 finding_id = int(candidate["finding_id"])
-                if _seen(conn, finding_id):
+                if _delivered(conn, finding_id):
                     continue
-                candidate["_last_finding_at"] = _pr_last_finding_at(
+                candidate["_last_finding_at"] = _last_delivered_at(
                     conn, int(candidate["pr_number"])
                 )
                 reason = gate_free(
@@ -693,23 +738,32 @@ def wake_sweep() -> list[dict]:
                         or not int(fresh["auto_flip"] or 0)
                     ):
                         reason = "resolved-during-debounce"
+                pr_number = int(candidate["pr_number"])
                 _mark_seen(
                     conn,
                     finding_id,
-                    int(candidate["pr_number"]),
+                    pr_number,
                     notified=reason is None,
                 )
                 if reason is not None:
+                    # A rejection is TERMINAL for this finding (it is not
+                    # wake-worthy, or it is no longer blocking), so stamp
+                    # it delivered-or-not and move on. Only the gates that
+                    # DEFER (busy / quiet hours / budget / no-session /
+                    # send-failed) must stay retryable, and those are all
+                    # decided inside _wake_one below.
+                    _discard(conn, finding_id)
                     outcomes.append(
                         {
                             "agent_id": agent_id,
                             "finding_id": finding_id,
-                            "pr_number": int(candidate["pr_number"]),
+                            "pr_number": pr_number,
                             "outcome": reason,
                         }
                     )
+                    logutil.log("agent_wake_decision", **outcomes[-1])
+                    conn.commit()
                     continue
-                pr_number = int(candidate["pr_number"])
                 conn.commit()
                 result = _wake_one(endpoint, agent_id, pr_number)
                 outcomes.append(
@@ -721,8 +775,12 @@ def wake_sweep() -> list[dict]:
                     }
                 )
                 logutil.log("agent_wake_decision", **outcomes[-1])
+                conn.commit()
                 if result != "sent":
-                    # A deferred wake must stay retryable next tick.
+                    # A DEFERRED wake must stay retryable next tick, and
+                    # _delivered() keys on notified_at, so clearing it is
+                    # what makes the retry happen. Without this a single
+                    # busy tick lost the finding permanently.
                     with db._conn(immediate=True) as w:
                         w.execute(
                             "UPDATE agent_wake_state SET notified_at = NULL "
