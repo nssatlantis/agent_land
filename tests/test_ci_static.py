@@ -232,6 +232,44 @@ def test_gate_predicate_matrix():
     odd = detail(static="fail")
     assert _ci_event_covers(odd, "lint") is True
     assert _ci_event_covers(odd, "test") is True
+    # A subset lane: checks="format" runs ruff format only, so it reports
+    # result "pass" with compileall/bash_n "skip" and -1 for the two
+    # counters, and it exits 0 legitimately, because ruff format passing
+    # IS the job it was asked to do - so the exit-code contract the odd
+    # case above leans on cannot catch it, and neither can the aggregate
+    # label. The lint guard refuses it as defence in depth. NOTE this
+    # fixture carries `checks` and the event's own summary keys, because a
+    # reader who sees the lane named can also see that the kind filter
+    # upstream means this shape never actually reaches the gate; that is
+    # documented in db/_workflow.py's auto_tick_ci_steps, not pinned here.
+    subset = detail()
+    subset["checks"] = "format"
+    subset["summary"]["static"].update(
+        {
+            "compileall": "skip",
+            "mypy_errors": -1,
+            "ruff_check_errors": -1,
+            "ruff_format_files": 0,
+            "bash_n": "skip",
+        }
+    )
+    subset["summary"]["tests_run"] = False
+    subset["summary"]["e2e_run"] = False
+    assert _ci_event_covers(subset, "lint") is False
+    assert _ci_event_covers(subset, "test") is False
+    # Each sentinel on its own, so a guard consulting only one arm cannot
+    # satisfy this file. Both producers always emit the pair together
+    # today, which is exactly why the two-arm shape needs saying.
+    for arm in ("mypy_errors", "ruff_check_errors"):
+        one = detail()
+        one["summary"]["static"].update({"mypy_errors": 0, "ruff_check_errors": 0})
+        one["summary"]["static"][arm] = -1
+        assert _ci_event_covers(one, "lint") is False, arm
+    # Inverse, so the guard cannot be met by refusing everything: put the
+    # counters back and the very same run is a lint again.
+    subset["summary"]["static"]["mypy_errors"] = 0
+    subset["summary"]["static"]["ruff_check_errors"] = 0
+    assert _ci_event_covers(subset, "lint") is True
 
 
 def test_bash_missing_is_incomplete_not_pass():
