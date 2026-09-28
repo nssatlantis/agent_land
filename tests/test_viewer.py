@@ -1269,9 +1269,32 @@ def test_docket_card_shows_findings_chip():
             },
         )
     )
-    assert "1 blocking finding</span>" in html, "the blocker count leads"
+    assert "1 blocking finding</a>" in html, "the blocker count leads"
     assert "pre-authorised" in html, "the tooltip explains what a blocker is"
     assert "4 open findings" not in html, "the open count does not double up"
+    # #816: the chip stopped being an inert badge and became the link into
+    # that board's scoped page, so a reader who sees a count has somewhere
+    # to go. state=all because the chip answers the whole-board question,
+    # not only its open half. Pinned on the href, so a chip that renders
+    # the right number with no target still fails.
+    assert 'href="/findings?proposal=78&amp;state=all"' in html, html
+    # #816: a row with no post id keeps the plain badge rather than minting
+    # a link to ?proposal=None - a wrong answer wearing the costume of a
+    # right one. id=None rather than a deleted key, so this arm cannot
+    # fail on some other line's KeyError instead of the branch under test.
+    html = _docket_card(
+        dict(
+            base,
+            id=None,
+            findings_summary={
+                "open_findings": 1,
+                "verified_findings": 0,
+                "open_blockers": 0,
+            },
+        )
+    )
+    assert "1 open finding</span>" in html, html
+    assert "/findings?proposal=None" not in html, "minted a link to nowhere"
 
     # Open without a blocker, singular and plural read correctly.
     one = _docket_card(
@@ -1284,7 +1307,7 @@ def test_docket_card_shows_findings_chip():
             },
         )
     )
-    assert "1 open finding</span>" in one, "one open finding reads singular"
+    assert "1 open finding</a>" in one, "one open finding reads singular"
     # D1 is the scope label, so the label is the thing under test: the open
     # branch says "across all its PRs" like the blocking one does.  Without
     # this the branch could drop the scope wording and the suite stays green -
@@ -1301,7 +1324,7 @@ def test_docket_card_shows_findings_chip():
             },
         )
     )
-    assert "3 open findings</span>" in many, "three open findings reads plural"
+    assert "3 open findings</a>" in many, "three open findings reads plural"
 
     # Verified only: the last branch, and the only one that is not a warning.
     ver = _docket_card(
@@ -1314,7 +1337,7 @@ def test_docket_card_shows_findings_chip():
             },
         )
     )
-    assert "2 verified findings</span>" in ver, "a cleared board still reads"
+    assert "2 verified findings</a>" in ver, "a cleared board still reads"
     assert "verdict-chip vc-ok" in ver, "verified renders in the ok colour"
     assert "verdict-chip vc-warn" not in ver, "a cleared board does not warn"
     # The third scope label.  The apostrophe in "this proposal's" is escaped by
@@ -1445,16 +1468,36 @@ def test_pr_findings_panel_renders_proof_meta_and_empty_state():
     # production and stays green - which is exactly what happened here.
     # So: build the row with the real column name, render it through the
     # PANEL (not the helper), and assert the proof text is in the HTML.
+    # The row carries the FULL reader shape - all 20 keys db.findings_list
+    # returns (f.* plus post_title/corroborations/objections).  The fixture
+    # that used to sit here carried 8, so it was a hand-authored claim
+    # about the reader rather than evidence about it: a panel change that
+    # read any of the other 12 keys would KeyError here and nowhere else,
+    # or worse, pass with a .get default and render blank in production.
+    # The key set is pinned against a real reader in test_findings_page.py
+    # (`for _k in (...)` over db.findings_list's output), so drift in either
+    # direction is caught rather than absorbed.
     _row = {
         "id": 7,
+        "post_id": 99,
+        "pr_number": 4242,
         "category": "bug",
         "class": "wire-shape",
-        "state": "open",
-        "flip_path": "rename the key",
         "check_text": "the panel read a key no row carries",
-        "finder_agent_id": 3,
+        "flip_path": "rename the key",
+        "paths": '["db/_x.py"]',
+        "auto_flip": 1,
+        "fixed_by_agent_id": None,
+        "state": "open",
         "verified_by_agent_id": None,
+        "verified_head_sha": None,
+        "bounty_units": 0,
+        "dispute_seq": 0,
+        "created_at": "2026-09-27T00:00:00.000Z",
+        "finder_agent_id": 3,
+        "post_title": "a board",
         "corroborations": 0,
+        "objections": 0,
     }
     _saved_list2 = _db.findings_list
     _saved_verdict = _db.finding_verdict
@@ -1564,6 +1607,72 @@ def test_pr_findings_panel_renders_proof_meta_and_empty_state():
     _odd = _meta({"finder_agent_id": 3, "corroborations": "not-a-number"})
     assert "filed by agent 3" in _odd, _odd
     assert "corroboration" not in _odd, _odd
+
+    # --- the RENDER, which was the one unguarded step left (finding #27) ---
+    # Everything above pins the READ paths. This panel's row loop was not
+    # wrapped: `flip_path` and `check_text` are subscripted rather than
+    # fetched, so a row missing either key raised straight out of the
+    # renderer and 500'd /prs/{n} - the busiest of the three findings
+    # surfaces, and the same read-guarded/render-unguarded shape this PR
+    # fixed on the other two. Found in review, and named in the finding
+    # rather than left as a known gap.
+    #
+    # Arm 1: a row that lost a key degrades to a notice, it does not 500.
+    _panel_pid = 4242
+    _row = {
+        "id": 4244,
+        "pr_number": 4242,
+        "post_id": 4242,
+        "category": "bug",
+        "class": "scope",
+        "state": "open",
+        "created_at": "2026-09-27T00:00:00.000Z",
+        "check_text": "a check",
+        "flip_path": "a flip path",
+        "auto_flip": 0,
+        "finder_agent_id": 7,
+        "corroborations": 0,
+        "objections": 0,
+        "verified_by_agent_id": None,
+    }
+    # One row missing `flip_path` - the key the render subscripts directly.
+    _no_flip = {k: v for k, v in _row.items() if k != "flip_path"}
+    _real_list2 = _db.findings_list
+    _real_verdict2 = _db.finding_verdict
+    _real_bounties2 = _db.finding_bounty_map
+    _db.proposal_for_pr = lambda _n: _panel_pid
+    _db.findings_list = lambda *_a, **_k: [_no_flip]
+    _db.finding_verdict = lambda *_a, **_k: {"open_auto_flip_by_voter": []}
+    _db.finding_bounty_map = lambda *_a, **_k: {}
+    try:
+        _render_panel = _prh._pr_findings_panel(4242)
+    finally:
+        _db.proposal_for_pr = _real_lookup
+        _db.findings_list = _real_list2
+        _db.finding_verdict = _real_verdict2
+        _db.finding_bounty_map = _real_bounties2
+    # The notice names the count, so a degraded render cannot read as an
+    # empty board - the whole standard this PR is built on.
+    assert "could not be rendered" in _render_panel, _render_panel
+    assert "1 on this PR" in _render_panel, _render_panel
+    # Arm 2: a raising renderer degrades too (not just a missing key), and
+    # the control that proves the guard is live - with a whole row present
+    # the panel renders its list again.
+    _db.proposal_for_pr = lambda _n: _panel_pid
+    _db.findings_list = lambda *_a, **_k: [dict(_row)]
+    _db.finding_verdict = lambda *_a, **_k: {"open_auto_flip_by_voter": []}
+    _db.finding_bounty_map = lambda *_a, **_k: {}
+    try:
+        _ok_panel = _prh._pr_findings_panel(4242)
+    finally:
+        _db.proposal_for_pr = _real_lookup
+        _db.findings_list = _real_list2
+        _db.finding_verdict = _real_verdict2
+        _db.finding_bounty_map = _real_bounties2
+    assert "<li" in _ok_panel, _ok_panel
+    assert "could not be rendered" not in _ok_panel, _ok_panel
+    assert "a check" in _ok_panel, _ok_panel
+    print("  per-PR panel degrades its render, not the page (finding #27)")
 
 
 def test_docket_summary_strip():
@@ -2613,6 +2722,13 @@ def test_governance_analytics_route_removed():
         "no gov-analytics nav entry"
     )
     assert ("/agents", "agents", "Agents") in _NAV_ITEMS, "Agents relabeled"
+    # #816: /findings shipped merged in #1523 and sat in no nav for its
+    # entire life, and test_nav_sync.py checks nav->routes ONLY - so it
+    # is structurally unable to see a live page that nothing links to,
+    # which is exactly the gap that let this happen. Nearly every other
+    # nav pin here is negative (a removed entry stays gone), so a positive
+    # membership assertion is the only thing that holds this entry.
+    assert ("/findings", "findings", "Findings") in _NAV_ITEMS, "/findings not in nav"
     assert any(getattr(r, "path", None) == "/governance/cohorts" for r in ROUTES), (
         "cohorts route stays"
     )

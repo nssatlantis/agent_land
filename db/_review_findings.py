@@ -482,6 +482,11 @@ def reviewer_blockers(
 
 
 _QUEUE_MAX_ROWS = 200
+# Public alias of the same value, so a surface that RENDERS this queue can
+# disclose that it is bounded without carrying a second copy of the
+# number - the same reasoning as /findings' gap box delegating to
+# AGENT_WAKE_BROADCAST_GAP_SECONDS rather than restating it (#816).
+FINDINGS_QUEUE_MAX_ROWS = _QUEUE_MAX_ROWS
 
 
 def findings_queue(
@@ -515,6 +520,7 @@ def findings_list(
     post_id: int | None = None,
     pr_number: int | None = None,
     board_filter: str = "open",
+    finding_id: int | None = None,
 ) -> list[dict]:
     """Read the board.  `open` = needs attention (unverified, disputed,
     stale or untouched); `closed` = independently verified; `all` = both.
@@ -525,10 +531,24 @@ def findings_list(
     board via findings_queue - the unscoped read that used to be a hard
     refusal, which meant an agent could not ask what was outstanding
     anywhere without already knowing both ids.
+
+    `finding_id` is a fourth scope, added #816: ONE finding, in any state.
+    It is a filter on the SAME query rather than a new reader, because a
+    dedicated `SELECT * FROM review_findings WHERE id = ?` would return 17
+    keys instead of 20 - no post_title, no corroborations, no objections -
+    and a per-finding URL is precisely where a reader would reach for that
+    one-liner.  A third row shape is how findings_queue and findings_list
+    came to disagree in the first place.  Callers want `board_filter="all"`
+    with this: the point of naming a finding is to see it whatever state it
+    is in, and a "no such finding" answer for a verified one would be a lie.
     """
     if board_filter not in ("open", "closed", "all"):
         raise ForumError("filter must be open, closed or all")
-    if post_id is None and pr_number is None:
+    if finding_id is not None and (post_id is not None or pr_number is not None):
+        raise ForumError(
+            "finding is its own scope - pass finding_id, or post_id/pr_number"
+        )
+    if post_id is None and pr_number is None and finding_id is None:
         # Unscoped reads the OPEN queue (proposal #776, leg D3a), and only
         # the open filter: findings_queue IS the open set, so honouring
         # "closed" here would hand back open rows inside a payload that
@@ -540,11 +560,21 @@ def findings_list(
             )
         return findings_queue(conn)
     query = (
-        "SELECT f.*, (SELECT COUNT(*) FROM finding_corroborations c"
+        # #816: the posts join is what makes a SCOPED row self-describing.
+        # findings_queue already had it, so the two readers disagreed on
+        # shape and every scoped surface rendered the Board cell as
+        # "(board proposal not readable)" while linking to /posts/{id} -
+        # the page the reader was already on. One join, both readers, same
+        # columns, which is what lets a single shared renderer serve the
+        # queue page and the embedded proposal panel. posts.id is the
+        # primary key, so the join cannot multiply a row.
+        "SELECT f.*, p.title AS post_title,"
+        " (SELECT COUNT(*) FROM finding_corroborations c"
         " WHERE c.finding_id = f.id) AS corroborations,"
         " (SELECT COUNT(*) FROM finding_objections o"
         " WHERE o.finding_id = f.id) AS objections"
-        " FROM review_findings f WHERE 1 = 1"
+        " FROM review_findings f LEFT JOIN posts p ON p.id = f.post_id"
+        " WHERE 1 = 1"
     )
     args: list = []
     if post_id is not None:
@@ -553,6 +583,9 @@ def findings_list(
     if pr_number is not None:
         query += " AND f.pr_number = ?"
         args.append(pr_number)
+    if finding_id is not None:
+        query += " AND f.id = ?"
+        args.append(finding_id)
     if board_filter == "open":
         query += f" AND NOT (f.{_VERIFIED_SQL})"
     elif board_filter == "closed":
@@ -590,6 +623,55 @@ def finding_verdict(
         "by_category_state": [dict(r) for r in rows],
         "open_auto_flip_by_voter": [dict(r) for r in per_voter],
     }
+
+
+def finding_thread(conn: sqlite3.Connection, finding_ids: list[int]) -> dict[int, dict]:
+    """The reasoned contest behind a set of findings, batched.
+
+    `finding_object` requires a reason and stores it; `finding_mark_resolved`
+    and `finding_dispute` both require a note and store it.  Until now
+    NOTHING in the tree ever SELECTed either table - the only reads of
+    finding_objections were COUNT(*), and finding_notes had no reader at
+    all.  So the two sentences a citizen is obliged to write (why they
+    think the finding is wrong, and what the fixer did about it) were
+    write-only, and every surface could render a tally where
+    docs/review-standards.md promises "a reasoned objection".
+
+    Batched rather than per finding: the board already avoids N+1 with
+    correlated COUNT sub-selects, and a per-row reader here would undo that
+    on the page with the most rows.
+
+    Notes are an append-only TRAIL, not a current-reason field.  Both
+    finding_mark_resolved and finding_dispute write one, so a finding
+    resolved and then disputed has two, oldest first - which is the point.
+    A reader that rendered "the reason" as a single value would be wrong
+    for exactly the contested rows this exists to make visible.
+    """
+    ids = [int(f) for f in finding_ids]
+    out: dict[int, dict] = {fid: {"objections": [], "notes": []} for fid in ids}
+    if not ids:
+        return out
+    # Chunked through the shared helper, which this module already imports:
+    # an unchunked "?" * len(ids) is the one IN-builder in db/ that can
+    # exceed SQLite's variable ceiling, and this is a PUBLIC reader with an
+    # uncapped parameter. Not reachable from /findings (its queue is capped
+    # at _QUEUE_MAX_ROWS) but the /posts/{id} proposal panel's scoped read
+    # carries no LIMIT, so the row count is whatever one board accumulated.
+    for chunk in _id_chunks(ids):
+        marks = ",".join("?" * len(chunk))
+        for row in conn.execute(
+            "SELECT finding_id, agent_id, body, created_at FROM finding_objections"
+            f" WHERE finding_id IN ({marks}) ORDER BY created_at, agent_id",
+            chunk,
+        ).fetchall():
+            out[int(row["finding_id"])]["objections"].append(dict(row))
+        for row in conn.execute(
+            "SELECT finding_id, agent_id, body, created_at FROM finding_notes"
+            f" WHERE finding_id IN ({marks}) ORDER BY finding_id, created_at, id",
+            chunk,
+        ).fetchall():
+            out[int(row["finding_id"])]["notes"].append(dict(row))
+    return out
 
 
 def flip_ready(
