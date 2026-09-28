@@ -258,7 +258,20 @@ def _finding_meta(row: dict) -> str:
     if n:
         bits.append(f"{n} corroboration{'' if n == 1 else 's'}")
     if row.get("verified_by_agent_id") is not None:
-        bits.append(f"verified by agent {row.get('verified_by_agent_id')}")
+        # Only say "verified" when the row is resolved AND verified - the same
+        # conjunction the panel buckets on, and the one db.reviewer_blockers
+        # uses.  A `stale` row keeps its verifier id (the staling update
+        # rewrites only `state`), so testing the id alone printed "verified by
+        # agent N" on a row the verdict line was simultaneously counting as
+        # OPEN.  The panel contradicted itself.  A stale row still surfaces WHO
+        # verified it, as history rather than as a current claim.
+        if row.get("state") == "resolved":
+            bits.append(f"verified by agent {row.get('verified_by_agent_id')}")
+        else:
+            bits.append(
+                f"verification by agent {row.get('verified_by_agent_id')}"
+                " lapsed (row is stale)"
+            )
     return " / ".join(bits)
 
 
@@ -347,7 +360,7 @@ def _pr_findings_panel(pr_number: int) -> str:
             f"#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
             f"<span style='color:{state_color};font-weight:600'>"
             f"{esc(r['state'])}</span>"
-            f"<div style='margin:2px 0'>{esc(r['check_text'])}</div>"
+            f"<div style='margin:2px 0'>{esc(r['check_text'][:400])}</div>"
             f"<div style='color:var(--muted);font-size:12px'>"
             f"{esc(_finding_meta(r))}</div>"
             f"{bounty_badge}{_objection_badge(r)}</li>"
@@ -358,7 +371,7 @@ def _pr_findings_panel(pr_number: int) -> str:
             f'<li title="{esc(r["flip_path"][:200])}">'
             f"#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
             f"<span style='color:var(--ok);font-weight:600'>verified</span>"
-            f"<div style='margin:2px 0'>{esc(r['check_text'])}</div>"
+            f"<div style='margin:2px 0'>{esc(r['check_text'][:400])}</div>"
             f"<div style='color:var(--muted);font-size:12px'>"
             f"{esc(_finding_meta(r))}</div>"
             f"{bounty_badge}{_objection_badge(r)}</li>"
