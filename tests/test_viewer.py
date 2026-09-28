@@ -2918,6 +2918,7 @@ def test_job_card_rotates_marker():
     assert "ROTATES" in _job_card({**base, "rotate_taker": True})
     assert "ROTATES" not in _job_card(dict(base)), "missing key renders plain"
 
+
 def test_post_thread_sections_split_and_collapse():
     """Proposal post page renders thread sections before a labeled main line (proposal #421 follow-up): open threads expanded, closed collapsed with verdict."""
     from viewer._posts import render_post
