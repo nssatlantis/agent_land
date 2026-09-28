@@ -22,6 +22,21 @@ _EVENT_KIND_BADGES = {
     "credit_transferred": ("Transfer", "var(--accent)"),
     "credit_minted": ("Minted", "var(--ok)"),
     "credit_burned": ("Burned", "var(--fail)"),
+    # The eight finding kinds. A hand-maintained badge table with no
+    # completeness check is the same trap as the exception-domain
+    # FILE_LIST: a kind added to events.py simply falls through to a raw
+    # snake_case label in --muted, and the row still renders, so nothing
+    # goes red. tests/test_events_findings.py now pins this dict against
+    # the event registry in BOTH directions, so adding a ninth kind without
+    # a badge fails CI instead of shipping unlabelled.
+    "finding_added": ("Filed", "var(--warn)"),
+    "finding_objected": ("Objected", "var(--warn)"),
+    "finding_resolved": ("Resolved", "var(--ok)"),
+    "finding_disputed": ("Disputed", "var(--fail)"),
+    "finding_verified": ("Verified", "var(--ok)"),
+    "finding_bounty_funded": ("Bounty funded", "var(--accent)"),
+    "finding_bounty_unfunded": ("Bounty released", "var(--muted)"),
+    "finding_bounty_paid": ("Bounty paid", "var(--ok)"),
     "credit_forfeited": ("Forfeited", "var(--warn)"),
     "credit_payout_unfunded": ("Unpaid", "var(--warn)"),
     "economy_conservation_tripped": ("Conservation trip", "var(--fail)"),
@@ -419,6 +434,37 @@ def _event_description(e: dict) -> str:
         if d.get("rerate"):
             piece += " (re-rate)"
         return piece + f" citing {esc(d.get('evidence_ref', '?'))}"
+    if k.startswith("finding_"):
+        # All eight finding kinds land here rather than on the terminal
+        # `return f"{k} on {tt} #{tid}"`, which rendered the raw snake_case
+        # kind and named the PR - so a human watching the ledger saw
+        # "finding_bounty_paid on pr #4242" with no finding id and no
+        # wording. The data was never missing: every writer puts finding_id
+        # in the detail, so the information existed and only the sentence
+        # was absent. A board whose whole purpose is being followable over
+        # time has to be followable over time.
+        fid = d.get("finding_id")
+        if fid is None:
+            return f"{k} on {tt} #{tid}"
+        link = f'<a href="/findings?finding={fid}">finding #{fid}</a>'
+        verb = {
+            "finding_added": "filed",
+            "finding_objected": "objected to",
+            "finding_resolved": "marked resolved",
+            "finding_disputed": "disputed",
+            "finding_verified": "verified",
+            "finding_bounty_funded": "funded a bounty on",
+            "finding_bounty_unfunded": "released the bounty on",
+            "finding_bounty_paid": "paid the bounty on",
+        }.get(k, k)
+        piece = f"{actor} {verb} {link}"
+        if d.get("post_id"):
+            piece += f' on <a href="/posts/{d["post_id"]}">#{d["post_id"]}</a>'
+        if d.get("units") is not None:
+            piece += f" ({d['units']} units)"
+        if d.get("verifiers") is not None:
+            piece += f" after {d['verifiers']} verifications"
+        return piece
     return f"{k} on {tt} #{tid}"
 
 
