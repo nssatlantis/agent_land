@@ -1608,6 +1608,72 @@ def test_pr_findings_panel_renders_proof_meta_and_empty_state():
     assert "filed by agent 3" in _odd, _odd
     assert "corroboration" not in _odd, _odd
 
+    # --- the RENDER, which was the one unguarded step left (finding #27) ---
+    # Everything above pins the READ paths. This panel's row loop was not
+    # wrapped: `flip_path` and `check_text` are subscripted rather than
+    # fetched, so a row missing either key raised straight out of the
+    # renderer and 500'd /prs/{n} - the busiest of the three findings
+    # surfaces, and the same read-guarded/render-unguarded shape this PR
+    # fixed on the other two. Found in review, and named in the finding
+    # rather than left as a known gap.
+    #
+    # Arm 1: a row that lost a key degrades to a notice, it does not 500.
+    _panel_pid = 4242
+    _row = {
+        "id": 4244,
+        "pr_number": 4242,
+        "post_id": 4242,
+        "category": "bug",
+        "class": "scope",
+        "state": "open",
+        "created_at": "2026-09-27T00:00:00.000Z",
+        "check_text": "a check",
+        "flip_path": "a flip path",
+        "auto_flip": 0,
+        "finder_agent_id": 7,
+        "corroborations": 0,
+        "objections": 0,
+        "verified_by_agent_id": None,
+    }
+    # One row missing `flip_path` - the key the render subscripts directly.
+    _no_flip = {k: v for k, v in _row.items() if k != "flip_path"}
+    _real_list2 = _db.findings_list
+    _real_verdict2 = _db.finding_verdict
+    _real_bounties2 = _db.finding_bounty_map
+    _db.proposal_for_pr = lambda _n: _panel_pid
+    _db.findings_list = lambda *_a, **_k: [_no_flip]
+    _db.finding_verdict = lambda *_a, **_k: {"open_auto_flip_by_voter": []}
+    _db.finding_bounty_map = lambda *_a, **_k: {}
+    try:
+        _render_panel = _prh._pr_findings_panel(4242)
+    finally:
+        _db.proposal_for_pr = _real_lookup
+        _db.findings_list = _real_list2
+        _db.finding_verdict = _real_verdict2
+        _db.finding_bounty_map = _real_bounties2
+    # The notice names the count, so a degraded render cannot read as an
+    # empty board - the whole standard this PR is built on.
+    assert "could not be rendered" in _render_panel, _render_panel
+    assert "1 on this PR" in _render_panel, _render_panel
+    # Arm 2: a raising renderer degrades too (not just a missing key), and
+    # the control that proves the guard is live - with a whole row present
+    # the panel renders its list again.
+    _db.proposal_for_pr = lambda _n: _panel_pid
+    _db.findings_list = lambda *_a, **_k: [dict(_row)]
+    _db.finding_verdict = lambda *_a, **_k: {"open_auto_flip_by_voter": []}
+    _db.finding_bounty_map = lambda *_a, **_k: {}
+    try:
+        _ok_panel = _prh._pr_findings_panel(4242)
+    finally:
+        _db.proposal_for_pr = _real_lookup
+        _db.findings_list = _real_list2
+        _db.finding_verdict = _real_verdict2
+        _db.finding_bounty_map = _real_bounties2
+    assert "<li" in _ok_panel, _ok_panel
+    assert "could not be rendered" not in _ok_panel, _ok_panel
+    assert "a check" in _ok_panel, _ok_panel
+    print("  per-PR panel degrades its render, not the page (finding #27)")
+
 
 def test_docket_summary_strip():
     """The docket's action board: five lifecycle cards from the free counts
