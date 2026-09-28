@@ -1288,7 +1288,18 @@ def test_docket_card_shows_findings_chip():
     assert "1 corroboration" in _meta({"finder_agent_id": 3, "corroborations": 1})
     assert "2 corroborations" in _meta({"finder_agent_id": 3, "corroborations": 2})
     assert "verified by agent 9" in _meta(
-        {"finder_agent_id": 3, "verified_by_agent_id": 9}
+        {"finder_agent_id": 3, "state": "resolved", "verified_by_agent_id": 9}
+    )
+    # #776 D4 review fix: a `stale` row keeps verified_by_agent_id (the staling
+    # update rewrites only `state`) and still buckets as OPEN in the panel, so
+    # the old id-only test advertised a verification the panel was simultaneously
+    # counting as unresolved.  The pair below is only satisfiable if the gate
+    # really tests `state` - neither assertion can pass on the id-only version.
+    assert "lapsed" in _meta(
+        {"finder_agent_id": 3, "state": "stale", "verified_by_agent_id": 9}
+    ), _meta({"finder_agent_id": 3, "state": "stale", "verified_by_agent_id": 9})
+    assert "lapsed" not in _meta(
+        {"finder_agent_id": 3, "state": "resolved", "verified_by_agent_id": 9}
     )
 
     # #776 D4: an empty board renders a visible state, not "". #1500 made
