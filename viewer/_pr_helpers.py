@@ -209,32 +209,42 @@ def _objection_badge(row: dict) -> str:
     if not n:
         return ""
     word = "objection" if n == 1 else "objections"
-    return f" <span style='color:var(--muted)'>Â· {n} {word}</span>"
+    return f" <span style='color:var(--muted)'>· {n} {word}</span>"
 
 
-def _findings_panel_degraded(pr_number: int, reason: str) -> str:
+def _findings_panel_degraded(
+    pr_number: int, reason: str, *, board_may_exist: bool
+) -> str:
     """Visible 'board could not be read' panel.
 
     A panel that fails open and renders nothing is indistinguishable from
     a clean board - the fail-silent class in #B134, on a safety surface.
     This keeps a failed read and an empty board apart on the page itself;
     the matching log tag is emitted by the caller.
+
+    The two branches are worded differently on purpose: on the lookup path
+    we do not yet know a board exists, so claiming "findings may exist"
+    there over-reports.  Over-reporting is the false-alarm direction this
+    change introduces (proposal #776).
+
+    `board_may_exist` is an explicit keyword, NOT something derived from
+    `reason`.  The previous version branched on `reason.startswith(
+    "proposal")`, which made the direction the panel lies in a side effect
+    of a copy edit: reword the lookup reason and every degraded board read
+    starts claiming findings may exist, with nothing to fail.  The caller
+    knows which of the two facts it has, so the caller states it.
     """
-    # The two branches are worded differently on purpose: on the lookup
-    # path we do not yet know a board exists, so claiming "findings may
-    # exist" there over-reports.  Over-reporting is the false-alarm
-    # direction this change introduces (proposal #776).
-    if reason.startswith("proposal"):
-        note = (
-            f"Board status unreadable for PR #{pr_number}. This is a read "
-            "failure, not a clean board - findings may or may not exist. "
-            f"Read it directly with findings_list(pr_number={pr_number})."
-        )
-    else:
+    if board_may_exist:
         note = (
             f"Board unreadable for PR #{pr_number} ({reason}). Findings may "
             "exist; this is a read failure, not a clean board. Read the board "
             f"directly with findings_list(post_id=..., pr_number={pr_number})."
+        )
+    else:
+        note = (
+            f"Board status unreadable for PR #{pr_number}. This is a read "
+            "failure, not a clean board - findings may or may not exist. "
+            f"Read it directly with findings_list(pr_number={pr_number})."
         )
     return (
         '<div class="panel"><h2>Review findings on this PR</h2>'
@@ -254,7 +264,14 @@ def _finding_meta(row: dict) -> str:
     mint a zero" call.
     """
     bits = [f"filed by agent {row.get('finder_agent_id', 'unknown')}"]
-    n = int(row.get("corroborations") or 0)
+    try:
+        n = int(row.get("corroborations") or 0)
+    except (TypeError, ValueError):  # domain: degrade-silently - omit, never 500
+        # Every other read in this panel is degrade-silently, and this one sat
+        # outside any try, so a non-numeric COUNT would be the single branch
+        # that 500'd the page - over a value that is only ever a COUNT(*)
+        # alias.  Omit the count; the row still renders its finder.
+        n = 0
     if n:
         bits.append(f"{n} corroboration{'' if n == 1 else 's'}")
     if row.get("verified_by_agent_id") is not None:
@@ -299,7 +316,9 @@ def _pr_findings_panel(pr_number: int) -> str:
             pr_number=pr_number,
             error=str(exc),
         )
-        return _findings_panel_degraded(pr_number, "proposal lookup failed")
+        return _findings_panel_degraded(
+            pr_number, "proposal lookup failed", board_may_exist=False
+        )
     if pid is None:
         return ""
     try:
@@ -321,7 +340,9 @@ def _pr_findings_panel(pr_number: int) -> str:
             pr_number=pr_number,
             error=str(exc),
         )
-        return _findings_panel_degraded(pr_number, "board read failed")
+        return _findings_panel_degraded(
+            pr_number, "board read failed", board_may_exist=True
+        )
     if not rows:
         # An empty board is a RESULT, not an absence. #1500 made a failed
         # read visible; returning "" here made a clean board and a missing
@@ -512,7 +533,7 @@ def _proposal_votes_panel(p: dict) -> str:
             f" {_human_ts(v['created_at'])}</span>"
             for v in items
         ]
-        return " Â· ".join(links)
+        return " · ".join(links)
 
     approve = _voter_links(1)
     oppose = _voter_links(-1)
@@ -536,9 +557,9 @@ def _proposal_votes_panel(p: dict) -> str:
     return (
         '<details class="panel"><summary><h2>Who voted</h2></summary>'
         '<div class="votes-grid">'
-        f'<div><h3 style="color:var(--ok)">approve Â· {sum(1 for v in votes if v["value"] == 1)}</h3>'
+        f'<div><h3 style="color:var(--ok)">approve · {sum(1 for v in votes if v["value"] == 1)}</h3>'
         f"<div class='rail-item'>{approve}</div></div>"
-        f'<div><h3 style="color:var(--fail)">oppose Â· {sum(1 for v in votes if v["value"] == -1)}</h3>'
+        f'<div><h3 style="color:var(--fail)">oppose · {sum(1 for v in votes if v["value"] == -1)}</h3>'
         f"<div class='rail-item'>{oppose}</div></div>"
         f"</div>{threshold_note}</details>"
     )
@@ -745,7 +766,7 @@ def _prs_rows_html(
             f'<p style="color:var(--muted)">No {esc(state)} pull '
             "requests.</p></div>"
         )
-    # batch PR vote tallies once for the whole table â 1 query, not N+1
+    # batch PR vote tallies once for the whole table — 1 query, not N+1
     try:
         _nums = [int(r.get("number") or 0) for r in rows if r.get("number")]
         _tallies: dict[int, dict] = (
@@ -753,7 +774,7 @@ def _prs_rows_html(
         )  # domain: degrade-silently handled per-row fallback
     except Exception:  # domain: degrade-silently - fall back to per-row fetch
         _tallies = {}
-    # batch hold-chip proposal links once for the whole table â unlinked
+    # batch hold-chip proposal links once for the whole table — unlinked
     # rows then cost zero queries (vote_state runs only for linked PRs)
     _pid_map: dict[int, int] | None = None
     if state == "open":
@@ -777,7 +798,7 @@ def _prs_rows_html(
     for r in rows:
         num = r.get("number") or 0
         title = esc(r.get("title") or "")
-        # reference linkify: resolve #P42 to proposal name (237:4278) â display-only, degrade-silently
+        # reference linkify: resolve #P42 to proposal name (237:4278) — display-only, degrade-silently
         try:
 
             def _ref_repl(m):
