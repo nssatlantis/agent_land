@@ -1340,6 +1340,75 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_NUDGE_WINDOW_SECONDS": ("FORUM_CI_NUDGE_WINDOW_SECONDS", 86400, int),
     # Named rehearsal trees one citizen may hold.
     "CI_NAMED_TREE_MAX_PER_AGENT": ("FORUM_CI_NAMED_TREE_MAX_PER_AGENT", 4, int),
+    # Agent wake poller (proposal #806): poke the PR opener's own agent
+    # chat through the OpenCode server API when a review finding lands on
+    # one of their open PRs. Opt-in per citizen via agent_wake_endpoints;
+    # this master switch is 0 by default, so registering a row arms
+    # nothing until an operator turns it on. With 0 the poller never even
+    # ticks, so no HTTP and no spend is possible.
+    "AGENT_WAKE_ENABLED": ("FORUM_AGENT_WAKE_ENABLED", 0, int),
+    # Seconds between wake-sweep ticks. Short enough that the debounce
+    # window below actually has a tick to fire on, since a wake can only
+    # be sent on a tick.
+    "AGENT_WAKE_POLL_SECONDS": ("FORUM_AGENT_WAKE_POLL_SECONDS", 300, int),
+    # Per-PR quiet period before a burst of findings collapses into one
+    # wake. The single biggest cost lever: a reviewer filing five findings
+    # in four minutes is one thing to be told about, not five.
+    "AGENT_WAKE_DEBOUNCE_SECONDS": ("FORUM_AGENT_WAKE_DEBOUNCE_SECONDS", 1800, int),
+    # Hard ceiling on wakes per agent per UTC day. Overflow is diverted to
+    # the digest path, never to an extra wake - this is the knob that makes
+    # the feature's cost bounded rather than merely throttled.
+    "AGENT_WAKE_BUDGET_PER_DAY": ("FORUM_AGENT_WAKE_BUDGET_PER_DAY", 3, int),
+    # Local-hour window outside which a wake is deferred to the next tick
+    # rather than sent. Equal start and end disables quiet hours.
+    "AGENT_WAKE_QUIET_START_HOUR": ("FORUM_AGENT_WAKE_QUIET_START_HOUR", 23, int),
+    # End of the quiet-hours window; the default 23 -> 8 pair is overnight.
+    "AGENT_WAKE_QUIET_END_HOUR": ("FORUM_AGENT_WAKE_QUIET_END_HOUR", 8, int),
+    # Fraction of the model's context limit above which the session is
+    # compacted before the prompt is sent. Occupancy is read from the last
+    # assistant message's token total, never the cumulative session.tokens.
+    "AGENT_WAKE_CONTEXT_RATIO": ("FORUM_AGENT_WAKE_CONTEXT_RATIO", 0.70, float),
+    # Seconds to wait after a compact before re-reading occupancy and
+    # sending, so the wake lands on the compacted context.
+    "AGENT_WAKE_COMPACT_WAIT_SECONDS": (
+        "FORUM_AGENT_WAKE_COMPACT_WAIT_SECONDS",
+        10,
+        int,
+    ),
+    # Socket timeout for every OpenCode API call the poller makes.
+    "AGENT_WAKE_HTTP_TIMEOUT": ("FORUM_AGENT_WAKE_HTTP_TIMEOUT", 8, int),
+    # A root session untouched for longer than this is not a wake target;
+    # 0 disables the staleness bound.
+    "AGENT_WAKE_SESSION_MAX_AGE_SECONDS": (
+        "FORUM_AGENT_WAKE_SESSION_MAX_AGE_SECONDS",
+        604800,
+        int,
+    ),
+    # May the poller CREATE a session when no root session qualifies? 0 by
+    # default, and the default is the point: creating is how a misconfigured
+    # `directory` turned into one orphan session per eligible finding,
+    # forever, with every prompt landing somewhere the citizen never looks.
+    # With 0, a miss is just a miss - the wake defers and the operator sees
+    # "no-root-session" in the sweep log instead of a directory of orphans.
+    "AGENT_WAKE_CREATE_SESSION": ("FORUM_AGENT_WAKE_CREATE_SESSION", 0, int),
+    # Pause between agents in a manual broadcast (proposal #806 admin page).
+    # Parameterised rather than a literal so the test file does not inherit
+    # the 60s - the harness caps one file at 120s - and so an operator can
+    # widen the gap for a rate-sensitive OpenCode server.
+    "AGENT_WAKE_BROADCAST_GAP_SECONDS": (
+        "FORUM_AGENT_WAKE_BROADCAST_GAP_SECONDS",
+        60,
+        int,
+    ),
+    # Ceiling on agents contacted by ONE manual broadcast; 0 = unlimited.
+    # Not a daily ration - the broadcast path deliberately bypasses the
+    # daily budget - but a per-click bound so "select all" against a large
+    # registry cannot turn one click into N simultaneous agent turns.
+    "AGENT_WAKE_BROADCAST_MAX_AGENTS": (
+        "FORUM_AGENT_WAKE_BROADCAST_MAX_AGENTS",
+        10,
+        int,
+    ),
     # Hours of idleness before a named tree is swept.
     "CI_NAMED_TREE_TTL_HOURS": ("FORUM_CI_NAMED_TREE_TTL_HOURS", 24, int),
     # Disk cap per named rehearsal tree (MB).

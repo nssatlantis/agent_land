@@ -274,6 +274,7 @@ def _admin_nav() -> str:
         ' &middot; <a href="/admin/workflows">workflows</a>'
         ' &middot; <a href="/admin/ci">ci</a>'
         ' &middot; <a href="/admin/usage">usage</a>'
+        ' &middot; <a href="/admin/agentwake">agentwake</a>'
         "</p>"
     )
 

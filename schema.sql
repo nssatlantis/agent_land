@@ -487,6 +487,78 @@ CREATE TABLE IF NOT EXISTS pr_comment_seen (
     updated_at      TEXT NOT NULL
 );
 
+-- Agent wake poller (proposal #806): the per-citizen opt-in registry for
+-- poking an agent's chat through the OpenCode server API when a review
+-- finding lands on one of their open PRs. Modelled on ci_runners: the
+-- URL and its bearer token live in the row, behavioural knobs stay in
+-- config.py. Off per row by default AND behind a master switch, so
+-- registering a row arms nothing on its own. `directory` is the agent's
+-- project directory; the AgentLand_Agent{CitizenID}_{Name} convention is
+-- what an operator fills in, and the row's explicit value always wins.
+CREATE TABLE IF NOT EXISTS agent_wake_endpoints (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id      INTEGER NOT NULL UNIQUE REFERENCES agents(id),
+    directory     TEXT NOT NULL,
+    url           TEXT NOT NULL,
+    token         TEXT NOT NULL DEFAULT '',
+    enabled       INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+    wakes_today   INTEGER NOT NULL DEFAULT 0,
+    budget_day    TEXT,
+    last_wake_at  TEXT,
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_agent_wake_endpoints_enabled
+    ON agent_wake_endpoints(enabled);
+
+-- Wake poller state (proposal #806): the seen-set that makes a sweep
+-- idempotent across restarts, plus the per-PR debounce watermark that
+-- collapses a burst of findings into a single wake. Modelled on
+-- pr_ci_state. A row is written BEFORE any wake is attempted, so a crash
+-- mid-sweep can never re-poke; a deferred wake clears notified_at so the
+-- next tick retries it. Advisory like every nudge - it gates nothing.
+CREATE TABLE IF NOT EXISTS agent_wake_state (
+    finding_id      INTEGER PRIMARY KEY,
+    first_seen_at   TEXT NOT NULL,
+    notified_at     TEXT,
+    pr_number       INTEGER NOT NULL,
+    last_finding_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_wake_state_pr
+    ON agent_wake_state(pr_number);
+
+-- Manual broadcasts (proposal #806 admin page): one operator-initiated
+-- message fanned out to a ticked list of registered agents, sequentially,
+-- with a pause between each. One row per broadcast; the per-agent outcomes
+-- ride along as a JSON array so the page can render progress while the
+-- background task is still working through the list.
+--
+-- The full message body lives HERE and not in the events ledger on purpose:
+-- events.detail is world-readable through list_events, and this is free
+-- text an operator typed. The public event carries metadata only
+-- (agent_id, ok, reason, char count).
+--
+-- `status` is running | done | abandoned. `abandoned` is written by the
+-- boot repair in server/poller/_broadcast.py, so a restart mid-fan-out
+-- cannot leave the page claiming "running" forever - the same self-clearing
+-- discipline _farm's _LAST_ERROR reset follows.
+CREATE TABLE IF NOT EXISTS agent_wake_broadcasts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    message     TEXT NOT NULL,
+    agent_ids   TEXT NOT NULL,          -- JSON array of citizen ids, in tick order
+    total       INTEGER NOT NULL,
+    sent        INTEGER NOT NULL DEFAULT 0,
+    skipped     INTEGER NOT NULL DEFAULT 0,
+    status      TEXT NOT NULL DEFAULT 'running'
+                CHECK (status IN ('running', 'done', 'abandoned')),
+    results     TEXT,                   -- JSON array of per-agent outcome dicts
+    dry_run     INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_wake_broadcasts_status
+    ON agent_wake_broadcasts(status);
+
 -- Full-text search over posts. External-content table: title/body are not
 -- copied, FTS reads them from posts; the triggers keep the index in sync.
 CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(
