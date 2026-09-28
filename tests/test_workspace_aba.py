@@ -551,6 +551,154 @@ def test_queued_sync_mutator_rechecks_claim(agents):
         sb.close()
 
 
+def test_acquire_window_replacement_surfaces_forum_error_async(agents):
+    """#B117 deterministic pin (async arm): a replacement landing between
+    claim-resolve and lock-acquisition destroys the tree first, so
+    workspace_lock's missing-tree RepoError fires before the graceful
+    re-check ever runs. The contention-based twin above hits that window
+    ~1-in-10 under two-burner load; this pin CONSTRUCTS it by landing the
+    replacement's destructive half at the acquire boundary itself - zero
+    burners, zero scheduling luck. Contract after the fix: the documented
+    recoverable ForumError. Failure signature before the fix: RepoError
+    ('no workspace tree held') escaping the mutator."""
+    sb = _Sandbox()
+    try:
+        tok = agents["gamma"]["token"]
+        pid = db.create_proposal(tok, "B117 acquire window async", "body")["post_id"]
+        claimed = workspace_tools.claim_workspace(tok, pid, "dev")
+        claim_id = int(claimed["claim"]["id"])
+        lock_factory = workspace_tools.workspace_lock
+        invoked = threading.Event()
+
+        async def stale_write(token, proposal_id, name):
+            invoked.set()
+
+        serialized = workspace_tools._workspace_serialized(stale_write)
+
+        @contextmanager
+        def replacing_lock(path, *, allow_missing=False):
+            # The replacement's destructive half, landed at the acquire
+            # boundary: the claim is released (CAS on our id) and the tree
+            # retired - the real lock then observes the missing tree,
+            # exactly what the loaded interleaving produces mid-replacement.
+            db.release_workspace(tok, pid, "dev", claim_id=claim_id)
+            assert ws._retire_claim_tree_locked(path), path
+            with lock_factory(path, allow_missing=allow_missing):
+                yield
+
+        async def run():
+            with patch.object(workspace_tools, "workspace_lock", replacing_lock):
+                await serialized(tok, pid, "dev")
+
+        try:
+            asyncio.run(run())
+        except db.ForumError as exc:
+            error = str(exc)
+        except BaseException as exc:
+            raise AssertionError(
+                "#B117: acquisition-time replacement surfaced "
+                f"{type(exc).__name__}({exc}) instead of the recoverable "
+                "ForumError('changed while waiting for its lock')"
+            ) from exc
+        else:
+            raise AssertionError("mutator ran on a released claim")
+        assert "changed while waiting for its lock" in error, error
+        assert not invoked.is_set(), "the stale write must never run"
+    finally:
+        sb.close()
+    print("  acquire-window replacement -> ForumError (async): ok")
+
+
+def test_acquire_window_replacement_surfaces_forum_error_sync(agents):
+    """Sync-arm twin: sync_wrapper shares the resolve-then-acquire
+    ordering, so it shares the window and the translation."""
+    sb = _Sandbox()
+    try:
+        tok = agents["delta"]["token"]
+        pid = db.create_proposal(tok, "B117 acquire window sync", "body")["post_id"]
+        claimed = workspace_tools.claim_workspace(tok, pid, "dev")
+        claim_id = int(claimed["claim"]["id"])
+        lock_factory = workspace_tools.workspace_lock
+        invoked = threading.Event()
+
+        def stale_write(token, proposal_id, name):
+            invoked.set()
+
+        serialized = workspace_tools._workspace_serialized(stale_write)
+
+        @contextmanager
+        def replacing_lock(path, *, allow_missing=False):
+            db.release_workspace(tok, pid, "dev", claim_id=claim_id)
+            assert ws._retire_claim_tree_locked(path), path
+            with lock_factory(path, allow_missing=allow_missing):
+                yield
+
+        try:
+            with patch.object(workspace_tools, "workspace_lock", replacing_lock):
+                serialized(tok, pid, "dev")
+        except db.ForumError as exc:
+            error = str(exc)
+        except BaseException as exc:
+            raise AssertionError(
+                "#B117 (sync arm): acquisition-time replacement surfaced "
+                f"{type(exc).__name__}({exc}) instead of the recoverable "
+                "ForumError"
+            ) from exc
+        else:
+            raise AssertionError("sync mutator ran on a released claim")
+        assert "changed while waiting for its lock" in error, error
+        assert not invoked.is_set(), "the stale write must never run"
+    finally:
+        sb.close()
+    print("  acquire-window replacement -> ForumError (sync): ok")
+
+
+def test_acquire_window_infra_fault_stays_loud(agents):
+    """The translation must not widen: with the claim record INTACT and
+    the tree gone for unrelated reasons, the fault is infrastructure, not
+    a lost race - retrying cannot fix it, so the RepoError('no workspace
+    tree held') must surface unchanged. Without this pin, "translate the
+    replacement case" could silently drift into "swallow every acquisition
+    fault" and a broken deployment would degrade into an endless
+    'retry against the current claim' loop."""
+    sb = _Sandbox()
+    try:
+        tok = agents["epsilon"]["token"]
+        pid = db.create_proposal(tok, "B117 infra fault stays loud", "body")["post_id"]
+        workspace_tools.claim_workspace(tok, pid, "dev")
+        lock_factory = workspace_tools.workspace_lock
+
+        async def noop_write(token, proposal_id, name):
+            raise AssertionError("the mutator must not run without a tree")
+
+        serialized = workspace_tools._workspace_serialized(noop_write)
+
+        @contextmanager
+        def treeless_lock(path, *, allow_missing=False):
+            assert ws._retire_claim_tree_locked(path), path
+            with lock_factory(path, allow_missing=allow_missing):
+                yield
+
+        async def run():
+            with patch.object(workspace_tools, "workspace_lock", treeless_lock):
+                await serialized(tok, pid, "dev")
+
+        try:
+            asyncio.run(run())
+        except Exception as exc:
+            assert type(exc).__name__ == "RepoError", (
+                "claim-intact tree loss must surface the RepoError"
+                f" unchanged, got {type(exc).__name__}: {exc}"
+            )
+            assert "no workspace tree held" in str(exc), exc
+        else:
+            raise AssertionError("expected RepoError with the claim intact")
+        workspace_tools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  acquire-window infra fault stays loud (RepoError): ok")
+
+
 def main():
     agents, _post_id = setup()
     test_stale_release_cas(agents)
@@ -563,6 +711,9 @@ def main():
     test_lifecycle_release_waits_for_active_transfer_and_reclaims(agents)
     test_queued_async_mutator_rechecks_claim(agents)
     test_queued_sync_mutator_rechecks_claim(agents)
+    test_acquire_window_replacement_surfaces_forum_error_async(agents)
+    test_acquire_window_replacement_surfaces_forum_error_sync(agents)
+    test_acquire_window_infra_fault_stays_loud(agents)
     print("test_workspace_aba: all scenarios passed")
 
 

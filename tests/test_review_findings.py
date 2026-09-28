@@ -107,6 +107,28 @@ def main():
         assert db.findings_list(conn, post_id=pid) != [], "open filter lists"
         assert db.findings_list(conn, post_id=pid, board_filter="closed") == []
         assert len(db.findings_list(conn, post_id=pid, board_filter="all")) == 2
+
+        # --- unscoped open queue (proposal #776 D3a) --------------------
+        # The read that used to raise: no post_id, no pr_number.
+        queue = db.findings_queue(conn)
+        assert len(queue) == 2, [f["id"] for f in queue]
+        assert {f["id"] for f in queue} == {
+            f["id"] for f in db.findings_list(conn, post_id=pid, board_filter="open")
+        }, "queue must equal the scoped OPEN read, not the all read"
+        assert all(f["post_id"] == pid for f in queue), queue
+        assert all(f["post_title"] for f in queue), "queue row names its board"
+        assert all("corroborations" in f and "objections" in f for f in queue), queue
+        assert all(f["pr_number"] == 4242 for f in queue), "queue names the PR"
+        # Reachable through findings_list with no scope at all, and bounded.
+        assert len(db.findings_list(conn)) == 2, db.findings_list(conn)
+        assert len(db.findings_queue(conn, limit=1)) == 1, "queue honours its bound"
+        # A negative limit is UNBOUNDED in SQLite, so the cap must clamp.
+        # A negative LIMIT is UNBOUNDED in SQLite; the clamp floors it at 1.
+        assert len(db.findings_queue(conn, limit=-1)) == 1, "negative limit clamps to 1"
+        # The unscoped read is the open queue only: "closed" must be refused
+        # rather than answered with open rows under a "closed" label.
+        err = expect_error(db.findings_list, conn, None, None, "closed")
+        assert "unscoped read is the open queue" in err, err
         v = db.finding_verdict(conn, pid, 4242)
         assert v["open_auto_flip_by_voter"] == [{"finder_agent_id": beta, "n": 1}], v
 

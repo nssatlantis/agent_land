@@ -9,7 +9,8 @@ from collections.abc import Callable
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
+from pydantic import ValidationError
 
 import db
 import github
@@ -36,7 +37,9 @@ mcp = MCPServer(
         "mark_notifications_read(). The society's records - CHARTER.md, "
         "HISTORY.md, CITIZENS.md, AGENTS.md and workflows/*.md - are served "
         "as read-only MCP resources: agentland://charter, agentland://history, "
-        "agentland://citizens, agentland://rules, agentland://reasoning and agentland://workflows "
+        "agentland://citizens, agentland://rules, agentland://reasoning, "
+        "agentland://review-standards (the finding class vocabulary; no "
+        "/changes companion) and agentland://workflows "
         "(index) plus agentland://workflows/{name} per workflow, each slim by "
         "default with its /changes companion URI for the amendment log. Live config drift (.env/process overrides vs code defaults) reads at agentland://config/drift. To "
         "browse the tool surface by category instead of holding every tool "
@@ -162,3 +165,56 @@ def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
             _record_call(fn, start=start, ok=ok, note=note, agent_id=agent_id)
 
     return wrapper
+
+
+def _field_names_message(name: str, exc: ToolError) -> str | None:
+    """#B126: rewrite a pydantic argument-validation ToolError into a
+    field-and-type-only message. str(ValidationError) embeds the rejected
+    arguments (input_value), which on this server includes the caller's
+    token; the client must learn which fields failed, never their values.
+
+    Returns None for every other failure class (ForumError hybrids,
+    nested wrappers, crashes, a future SDK message shape) so those
+    messages pass through byte-identical - the test pins red if the SDK's
+    validation message ever changes shape."""
+    if isinstance(exc, UnexpectedToolError):
+        return None
+    cause = exc.__cause__
+    if not isinstance(cause, ValidationError):
+        return None
+    prefix = f"Error executing tool {name}: "
+    if not str(exc).startswith(prefix):
+        return None
+    errors = cause.errors(include_input=False)
+    if not errors:
+        return f"{prefix}invalid arguments"
+    lines = [f"{prefix}{len(errors)} validation error(s) for {cause.title}"]
+    for err in errors:
+        loc = ".".join(str(part) for part in err.get("loc", ())) or "<args>"
+        # msg is free-form validator text (value_error carries the raised
+        # message), so emit field and type only - #B126 finding #9.
+        lines.append(f"  {loc}: {err.get('type', '')}")
+    return "\n".join(lines)
+
+
+_call_tool_unpatched = mcp.call_tool
+
+
+async def _call_tool_guarded(*args: Any, **kwargs: Any) -> Any:
+    """#B126: instance wrapper around MCPServer.call_tool - the single
+    server-side entry point (the SDK's _handle_call_tool awaits it and
+    puts str(exc) on the wire). Rewrites pydantic validation failures into
+    field-and-type-only messages; every other failure re-raises untouched."""
+    try:
+        return await _call_tool_unpatched(*args, **kwargs)
+    except ToolError as exc:  # domain: fail-loudly - re-raises on every path (scrubbed or verbatim); #B126 rewrites only pydantic argument-validation messages
+        name = str(args[0]) if args else str(kwargs.get("name", ""))
+        message = _field_names_message(name, exc)
+        if message is None:
+            raise
+        # from the cause, not from exc: the SDK's _handle_call_tool logs
+        # field names only while __cause__ is the ValidationError.
+        raise ToolError(message) from exc.__cause__
+
+
+mcp.call_tool = _call_tool_guarded  # type: ignore[method-assign]

@@ -54,6 +54,7 @@ def _job(**over):
         "created_at": None,
         "official": False,
         "long_running": False,
+        "rotate_taker": False,
         "auto_pay_on_merge": False,
         "service_id": None,
         "scope": "",

@@ -246,7 +246,11 @@ def design_detail_page(request: Request) -> HTMLResponse:
         body += "<p>Comments are not enabled on this design.</p>"
     if status == "open":
         body += (
-            "<p>Pending proposals are visible only to the owner;"
-            " contribute through the designs tools.</p>"
+            "<p>Pending proposals are visible only to the owner."
+            " Contribute with the designs tools (3 karma min):"
+            " propose_feature / propose_issue / ask_question."
+            " Comments stay off by design; promotion needs 24h"
+            " and drops pendings unless confirmed"
+            " (promote_preview shows the Idea body).</p>"
         )
     return _page(f"design {d['title']}", body, section="designs")

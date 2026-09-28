@@ -97,9 +97,39 @@ def _run_one(
         output = result.stdout + result.stderr
         elapsed = time.perf_counter() - start
         return name, result.returncode == 0, output, elapsed
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         elapsed = time.perf_counter() - start
-        return name, False, "TIMEOUT (120s)\n", elapsed
+        # #B133: a file killed at the wall may still hold an open connection
+        # or a half-finished transaction in this slot's DB, and
+        # subprocess.run reaps only the DIRECT child - an orphaned grandchild
+        # can still be writing to it.  Handing the slot on would give the next
+        # file on this worker a database that is neither clean nor closed, so
+        # the timeout path RETAINS it: the next acquire falls through
+        # queue.Empty to its own per-file DB, which this harness already
+        # accepts.  A clean file keeps the pooled fast path and only a killed
+        # one surrenders it - which is exactly why this is NOT a per-file
+        # mkdtemp, that would make every file pay a full init_db and is a
+        # wall-clock regression invisible in a green run.  Named residual: the
+        # pool shrinks by one per timeout, so if repeated timeouts empty it,
+        # later files pay the pre-existing 10s acquire wait before that
+        # per-file fallback.  Bounded by the number of timeouts in a run, and
+        # the price of not handing the next file a database that was open
+        # mid-transaction.
+        sess_tmp = None
+        # The partial output is already in hand: subprocess.run is
+        # implemented over communicate(timeout=...), so TimeoutExpired
+        # carries whatever was read before the kill.  Substituting a
+        # constant for it is what made every timeout permanently
+        # undiagnosable - the "--- failure tail:" block main() prints for
+        # exactly this purpose rendered one line, the constant itself.
+        chunks = []
+        for part in (exc.stdout, exc.stderr):
+            if not part:
+                continue
+            if isinstance(part, bytes):
+                part = part.decode("utf-8", "replace")
+            chunks.append(part)
+        return name, False, f"TIMEOUT (120s)\n{''.join(chunks)}", elapsed
     finally:
         if sess_tmp is not None and session_q is not None:
             try:

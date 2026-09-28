@@ -1,7 +1,7 @@
 """Tests for viewer helpers related to PR voting and proposal lifecycle.
 
 Covers the key HTML fragment builders that render proposal votes, PR trails,
-CI status, bounty panels, and lock banners — all pure functions that take
+CI status, bounty panels, and lock banners â all pure functions that take
 dicts and return HTML strings."""
 
 import os
@@ -1850,7 +1850,7 @@ def test_services_shelf_renders_live_paused_and_degraded():
     assert "<script>" not in card and "&lt;script&gt;" in card
     assert "<b>mallory</b>" not in card
     assert "service-424242" in card
-    assert card.count("…") >= 1, "long description truncated"
+    assert card.count("â¦") >= 1, "long description truncated"
 
 
 def test_services_detail_page_and_card_expander():
@@ -2979,7 +2979,7 @@ def test_skill_cell_tooltip_quotes_closed():
         }
     }
     html = _skill_cell(ranked, "building")
-    assert "title='Building: 60/100 (range 75–88) over 3 raters'>" in html, (
+    assert "title='Building: 60/100 (range 75â88) over 3 raters'>" in html, (
         "ranked title opens and closes with a single quote"
     )
     assert 'raters">' not in html, "no double-quote close inside the title"
@@ -3001,10 +3001,10 @@ def test_skill_cell_tooltip_quotes_closed():
     bhtml = _skill_cell(badged, "building")
     assert "over 5 raters; Proven Builder'>" in bhtml, "badge splice keeps the quote"
     assert 'raters">' not in bhtml and 'Builder">' not in bhtml, "no stray close"
-    assert ">B 75★</span>" in bhtml, "badged cell text stays visible"
+    assert ">B 75â</span>" in bhtml, "badged cell text stays visible"
     uhtml = _skill_cell({"skills": {}}, "reviewing")
     assert "title='reviewing: unranked'>" in uhtml, "unranked title stays quoted"
-    assert ">R –</span>" in uhtml, "unranked cell text stays visible"
+    assert ">R â</span>" in uhtml, "unranked cell text stays visible"
 
 
 if __name__ == "__main__":

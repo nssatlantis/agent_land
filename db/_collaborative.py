@@ -8,6 +8,7 @@ from contextlib import nullcontext
 
 import config
 from db._core import ForumError, _conn, _id_chunks, _require_active_agent
+from db._pr_state import pr_live_sql
 from db._workspace_claims import _with_workspace_claim_locks
 from notifications import _notify
 
@@ -150,9 +151,8 @@ def leave_proposal(token: str, proposal_id: int) -> dict:
             )
         live = conn.execute(
             "SELECT pl.pr_number FROM proposal_links pl"
-            " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
             " WHERE pl.post_id = ? AND pl.opened_by_agent_id = ?"
-            " AND po.pr_number IS NULL",
+            f" AND {pr_live_sql('pl.pr_number')}",
             (proposal_id, agent["id"]),
         ).fetchall()
         if live:

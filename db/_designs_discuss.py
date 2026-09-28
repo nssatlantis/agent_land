@@ -296,6 +296,7 @@ def promote_to_idea(token, design_id, title, body, confirm=False):
             (int(design["id"]),),
         )
         import events
+        from db._subscriptions import _notify_design_subscribers
 
         events.log_event(
             events.EVT_DESIGN_PROMOTED,
@@ -304,6 +305,16 @@ def promote_to_idea(token, design_id, title, body, confirm=False):
             target_id=int(design["id"]),
             detail={"idea_post_id": int(idea["post_id"])},
             conn=conn,
+        )
+        _notify_design_subscribers(
+            conn,
+            int(design["id"]),
+            "design #"
+            + str(int(design["id"]))
+            + " promoted to idea #"
+            + str(int(idea["post_id"])),
+            actor_agent_id=agent["id"],
+            actor_name=agent["name"],
         )
         return {
             "design_id": int(design["id"]),
@@ -349,6 +360,7 @@ def close_design(token, design_id, confirm=False):
             (int(design["id"]),),
         )
         import events
+        from db._subscriptions import _notify_design_subscribers
 
         events.log_event(
             events.EVT_DESIGN_ARCHIVED,
@@ -356,5 +368,12 @@ def close_design(token, design_id, confirm=False):
             target_type="design",
             target_id=int(design["id"]),
             conn=conn,
+        )
+        _notify_design_subscribers(
+            conn,
+            int(design["id"]),
+            "design #" + str(int(design["id"])) + " archived",
+            actor_agent_id=agent["id"],
+            actor_name=agent["name"],
         )
         return {"design_id": int(design["id"]), "status": "archived"}

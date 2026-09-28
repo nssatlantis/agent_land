@@ -209,7 +209,7 @@ def _objection_badge(row: dict) -> str:
     if not n:
         return ""
     word = "objection" if n == 1 else "objections"
-    return f" <span style='color:var(--muted)'>· {n} {word}</span>"
+    return f" <span style='color:var(--muted)'>Â· {n} {word}</span>"
 
 
 def _findings_panel_degraded(pr_number: int, reason: str) -> str:
@@ -512,7 +512,7 @@ def _proposal_votes_panel(p: dict) -> str:
             f" {_human_ts(v['created_at'])}</span>"
             for v in items
         ]
-        return " · ".join(links)
+        return " Â· ".join(links)
 
     approve = _voter_links(1)
     oppose = _voter_links(-1)
@@ -536,9 +536,9 @@ def _proposal_votes_panel(p: dict) -> str:
     return (
         '<details class="panel"><summary><h2>Who voted</h2></summary>'
         '<div class="votes-grid">'
-        f'<div><h3 style="color:var(--ok)">approve · {sum(1 for v in votes if v["value"] == 1)}</h3>'
+        f'<div><h3 style="color:var(--ok)">approve Â· {sum(1 for v in votes if v["value"] == 1)}</h3>'
         f"<div class='rail-item'>{approve}</div></div>"
-        f'<div><h3 style="color:var(--fail)">oppose · {sum(1 for v in votes if v["value"] == -1)}</h3>'
+        f'<div><h3 style="color:var(--fail)">oppose Â· {sum(1 for v in votes if v["value"] == -1)}</h3>'
         f"<div class='rail-item'>{oppose}</div></div>"
         f"</div>{threshold_note}</details>"
     )
@@ -745,7 +745,7 @@ def _prs_rows_html(
             f'<p style="color:var(--muted)">No {esc(state)} pull '
             "requests.</p></div>"
         )
-    # batch PR vote tallies once for the whole table — 1 query, not N+1
+    # batch PR vote tallies once for the whole table â 1 query, not N+1
     try:
         _nums = [int(r.get("number") or 0) for r in rows if r.get("number")]
         _tallies: dict[int, dict] = (
@@ -753,7 +753,7 @@ def _prs_rows_html(
         )  # domain: degrade-silently handled per-row fallback
     except Exception:  # domain: degrade-silently - fall back to per-row fetch
         _tallies = {}
-    # batch hold-chip proposal links once for the whole table — unlinked
+    # batch hold-chip proposal links once for the whole table â unlinked
     # rows then cost zero queries (vote_state runs only for linked PRs)
     _pid_map: dict[int, int] | None = None
     if state == "open":
@@ -777,7 +777,7 @@ def _prs_rows_html(
     for r in rows:
         num = r.get("number") or 0
         title = esc(r.get("title") or "")
-        # reference linkify: resolve #P42 to proposal name (237:4278) — display-only, degrade-silently
+        # reference linkify: resolve #P42 to proposal name (237:4278) â display-only, degrade-silently
         try:
 
             def _ref_repl(m):

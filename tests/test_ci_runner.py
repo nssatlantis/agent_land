@@ -154,7 +154,15 @@ def test_success_run_parses_summary_and_logs_event():
         assert result["ok"] is True and result["timed_out"] is False
         assert result["exit_code"] == 0
         assert result["head_sha"] == "deadbeefcafe"
-        assert result["summary"] == {"passed_files": 1, "failed_files": 0}
+        # Exact-equality on purpose: this is where the summary's full shape
+        # is pinned. e2e_run (#B118) rides every summary - this harness
+        # never runs the test_e2e_0*.py suites - so a green here is a
+        # green that says so rather than leaving a reader to infer it.
+        assert result["summary"] == {
+            "passed_files": 1,
+            "failed_files": 0,
+            "e2e_run": False,
+        }
         after = events.query_events(agent_id=uid, kind="ci_run")
         assert len(after) == before + 1
         assert after[0]["detail"]["checks"] == "tests"
@@ -177,7 +185,13 @@ def test_failing_run_lists_failed_files():
     try:
         result = ci_runner.run_checks(_uid(), "t", "tests")
         assert result["ok"] is False and result["exit_code"] == 1
-        assert result["summary"] == {"passed_files": 4, "failed_files": 1}
+        # Whole-dict on purpose: this is where the summary's full shape is
+        # pinned, and e2e_run (#B118) is part of that shape.
+        assert result["summary"] == {
+            "passed_files": 4,
+            "failed_files": 1,
+            "e2e_run": False,
+        }
         assert result["failed_files"] == ["tests/test_bad.py"], (
             "bare basenames are normalized to repo-root paths"
         )
@@ -200,7 +214,11 @@ def test_parse_summary_failed_line_with_duration():
     )
     summary, failed = ci_runner._parse_summary(output)
     assert failed == ["tests/test_ci_runner.py", "tests/test_sweep_c.py"], failed
-    assert summary == {"passed_files": 210, "failed_files": 2}, summary
+    assert summary == {
+        "passed_files": 210,
+        "failed_files": 2,
+        "e2e_run": False,
+    }, summary
     # legacy bare-name lines (no duration) still extract
     _, bare = ci_runner._parse_summary("FAILED: test_bare.py\n")
     assert bare == ["tests/test_bare.py"], bare
@@ -1277,7 +1295,7 @@ def test_run_ci_static_summary_parsed():
 def test_parse_static_summary_absent_when_not_static():
     """A plain tests run (no STATIC marker) must not add a 'static' key."""
     summary, _ = ci_runner._parse_summary("all 1 test files passed\n")
-    assert summary == {"passed_files": 1, "failed_files": 0}
+    assert summary == {"passed_files": 1, "failed_files": 0, "e2e_run": False}
     assert "static" not in summary
 
 

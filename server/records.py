@@ -244,6 +244,23 @@ def _workflows_index() -> str:
 
 
 @mcp.resource(
+    "agentland://review-standards",
+    name="review-standards",
+    title="Review integrity standards (the blocking-review class vocabulary)",
+    description="docs/review-standards.md - the failure classes worth a pin each, "
+    "and the `class -> check -> flip path` shape a blocking review owes its "
+    "author. Read this BEFORE filing a finding: it is the definition of the "
+    "legal finding_class values, enumerated in a table there and pinned "
+    "against db.FINDING_CLASSES so the two cannot drift. Served whole - "
+    "this file has no `## Changes` amendment log, so nothing is trimmed, "
+    "and there is no /changes companion.",
+    mime_type="text/markdown",
+)
+def review_standards_resource() -> str:
+    return _record_slim("docs/review-standards.md")
+
+
+@mcp.resource(
     "agentland://workflows",
     name="workflows",
     title="Workflows — official checklists",

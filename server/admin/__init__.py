@@ -105,6 +105,7 @@ from server.admin._guilds import (  # noqa: F401
     guild_detail_page,
     guild_disband,
     guild_freeze,
+    guild_grant_decide,
     guild_release_member,
     guild_unfreeze,
     guilds_admin_page,
@@ -119,6 +120,7 @@ from server.admin._jobs import (  # noqa: F401  # noqa: F401
     admin_reactivate_job,
     admin_review_job,
     admin_set_job_long_running,
+    admin_set_job_rotate_taker,
     create_official_job,
     create_stake,
     delete_stake,
@@ -196,6 +198,11 @@ ROUTES = [
         admin_set_job_long_running,
         methods=["POST"],
     ),
+    Route(
+        "/admin/jobs/{id:int}/rotate-taker",
+        admin_set_job_rotate_taker,
+        methods=["POST"],
+    ),
     Route("/admin/jobs/{id:int}/review", admin_review_job, methods=["POST"]),
     Route("/admin/workflows", workflows_admin_page),
     # close-stale is registered above the {run_id:int} route (review): the int
@@ -225,6 +232,7 @@ ROUTES = [
         "/admin/guilds/{guild_id:int}/release", guild_release_member, methods=["POST"]
     ),
     Route("/admin/guilds/{guild_id:int}/disband", guild_disband, methods=["POST"]),
+    Route("/admin/guilds/{guild_id:int}/grant", guild_grant_decide, methods=["POST"]),
     Route(
         "/admin/guilds/chat/{message_id:int}/delete",
         guild_chat_delete,
@@ -347,6 +355,7 @@ __all__ = [
     "admin_reactivate_job",
     "admin_review_job",
     "admin_set_job_long_running",
+    "admin_set_job_rotate_taker",
     "workflows_admin_page",
     "workflow_restart",
     "workflow_close_stale",

@@ -14,6 +14,7 @@ from db._core import (
     _conn,
     _require_active_agent_with_ent,
 )
+from db._pr_state import proposal_decided_sql
 from db._proposal_status import _comment_score_batch, _proposal_locked_error
 from db._text import (
     MENTION_TOKEN_RE,
@@ -616,16 +617,20 @@ def create_comment(
         # Notify proposal voters of new discussion (except the commenter).
         # One unread notification per voter per proposal — the threshold
         # pattern reused with a 'new discussion' body anchor. The decided
-        # outcome probe folds into the voter fetch (a decided proposal has
-        # no discussion to notify about) instead of a second round trip.
+        # probe folds into the voter fetch (a decided proposal has no
+        # discussion to notify about) instead of a second round trip -
+        # decided per db._pr_state's post-scoped predicate, so a proposal
+        # whose only PR merged unobserved stops pinging too (#B107 tier 3;
+        # observed live: #635 kept reporting new discussion after #1440
+        # merged). The fragment carries two placeholders, hence post_id
+        # twice in the params.
         voters: list = []
         if post["proposal_kind"] is not None and post["superseded_by_id"] is None:
             voters = conn.execute(
                 "SELECT voter_agent_id FROM proposal_votes"
                 " WHERE post_id = ? AND voter_agent_id != ?"
-                " AND NOT EXISTS (SELECT 1 FROM proposal_outcomes"
-                " WHERE post_id = ?)",
-                (post_id, agent["id"], post_id),
+                f" AND NOT {proposal_decided_sql('?')}",
+                (post_id, agent["id"], post_id, post_id),
             ).fetchall()
             notified_voters = 0
             voter_ids = [v["voter_agent_id"] for v in voters]

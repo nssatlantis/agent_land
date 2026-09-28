@@ -160,6 +160,7 @@ EVT_JOB_RELEASED = "job_released"
 EVT_JOB_REACTIVATED = "job_reactivated"
 EVT_JOB_UPDATED = "job_updated"
 EVT_JOB_SETTLEMENT_BENEFICIARY = "job_settlement_beneficiary_set"
+EVT_JOB_TAKER_ROTATED = "job_taker_rotated"
 # Subsidized job requests (proposal #600, small_fix): request queue +
 # admin decision. Both ride the jobs stream/category.
 EVT_JOB_SUBSIDY_REQUESTED = "job_subsidy_requested"
@@ -405,6 +406,7 @@ _VALID_KINDS: set[str] = {
     EVT_JOB_REACTIVATED,
     EVT_JOB_UPDATED,
     EVT_JOB_SETTLEMENT_BENEFICIARY,
+    EVT_JOB_TAKER_ROTATED,
     EVT_JOB_SUBSIDY_REQUESTED,
     EVT_JOB_SUBSIDY_DECIDED,
     EVT_BOUNTY_SWEEP,
@@ -510,6 +512,7 @@ _STREAMS = (
     "jobs",
     "economy",
     "reports",
+    "designs",
     "other",
 )
 
@@ -539,6 +542,8 @@ def _stream_for(kind: str) -> str:
         return "votes"
     if kind.startswith("proposal_"):
         return "proposals"
+    if kind.startswith("design_"):
+        return "designs"
     return "other"
 
 
@@ -547,8 +552,9 @@ def _relevance_clause(agent_id: int) -> tuple[str, list[object]]:
 
     An event is relevant if the agent is its actor, or its target is one of
     the agent's own artifacts (posts/proposals, comments, PRs, bug reports,
-    jobs, invoices, bonds - the bond branches match ever-held bonds (no
-    status filter): deltas are history-aware, while mailbox mail stays
+    jobs, invoices, bonds, designs - the bond branches match ever-held
+    bonds (no status filter); the design branches match subscribed or
+    owned designs: deltas are history-aware, while mailbox mail stays
     live-scoped. Returns (clause, params) for splicing into a WHERE.
     """
     return (
@@ -576,8 +582,13 @@ def _relevance_clause(agent_id: int) -> tuple[str, list[object]]:
         "   (SELECT id FROM treasury_bonds WHERE owner_id = ?)"
         " OR target_type = 'bond_series' AND target_id IN"
         "   (SELECT DISTINCT series_id FROM treasury_bonds"
-        "    WHERE owner_id = ?))",
-        [agent_id] * 17,
+        "    WHERE owner_id = ?)"
+        " OR target_type = 'design' AND target_id IN"
+        "   (SELECT design_id FROM design_subscriptions"
+        "    WHERE agent_id = ?)"
+        " OR target_type = 'design' AND target_id IN"
+        "   (SELECT id FROM designs WHERE owner_admin_id = ?))",
+        [agent_id] * 19,
     )
 
 
@@ -735,6 +746,7 @@ _JOBS_KINDS = frozenset(
         EVT_JOB_REACTIVATED,
         EVT_JOB_UPDATED,
         EVT_JOB_SETTLEMENT_BENEFICIARY,
+        EVT_JOB_TAKER_ROTATED,
         EVT_JOB_SUBSIDY_REQUESTED,
         EVT_JOB_SUBSIDY_DECIDED,
         EVT_SERVICE_CREATED,
@@ -773,9 +785,24 @@ for _k in _JOBS_KINDS:
     _CATEGORY_MAP[_k] = "jobs"
 for _k in _TAGS_KINDS:
     _CATEGORY_MAP[_k] = "tags"
+_DESIGNS_KINDS = frozenset(
+    {
+        EVT_DESIGN_CREATED,
+        EVT_DESIGN_DECIDED,
+        EVT_DESIGN_ASKED,
+        EVT_DESIGN_ANSWERED,
+        EVT_DESIGN_COMMENTED,
+        EVT_DESIGN_COMMENTS_TOGGLED,
+        EVT_DESIGN_PROMOTED,
+        EVT_DESIGN_ARCHIVED,
+    }
+)
 for _k in _BUGS_KINDS:
     _CATEGORY_MAP[_k] = "bugs"
+for _k in _DESIGNS_KINDS:
+    _CATEGORY_MAP[_k] = "designs"
 # All remaining kinds (agent_registered, proposal_joined/left/closed,
+# design kinds now map to "designs" above;
 # proposal_claimed/unclaimed/claimable_changed/goal_set, todo_*,
 # subscription_notified, ci_*) default to "system".
 CATEGORY_DEFAULT = "system"
