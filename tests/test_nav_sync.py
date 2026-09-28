@@ -108,11 +108,26 @@ def test_every_live_page_is_reachable():
     # which is the point: /findings was linked from a docket chip only
     # after this PR, and from nothing at all before it. Form actions count
     # too, or the site search box reads as an orphan.
+    # The capture deliberately KEEPS "{". The old one excluded it, which
+    # truncated all 113 f-string hrefs in viewer/ at the first brace -
+    # href="/posts/{pid}" matched as "/posts/". That was LATENT rather than
+    # live, and the measurement is worth keeping: because _reaches
+    # normalises a route to its family head immediately afterwards, the
+    # truncated fragment and the full href land on the same answer, and
+    # tightening the matcher changes no route's verdict today (0 of them).
+    # So what the fix buys is not a fixed false negative - it is a matcher
+    # that means what it reads. The trap it removes is a future href whose
+    # head is NOT the family head, e.g. "/static/style.css?v={css_hash}",
+    # which the old form reduced to the meaningless "/static/style.css?v=".
     linked = set()
     for path in pathlib.Path("viewer").glob("*.py"):
         src = path.read_text(encoding="utf-8")
-        linked |= set(re.findall(r'href="(/[^"{]*)', src))
-        linked |= set(re.findall(r'action="(/[^"{]*)', src))
+        linked |= {
+            h.split("{")[0].rstrip("/") for h in re.findall(r'href="(/[^"]*)', src)
+        }
+        linked |= {
+            a.split("{")[0].rstrip("/") for a in re.findall(r'action="(/[^"]*)', src)
+        }
     route_paths = set(re.findall(r'Route\(\s*"(/[^"]*)"', init))
 
     def _reaches(route: str) -> bool:
@@ -123,7 +138,8 @@ def test_every_live_page_is_reachable():
             return True
         # A link to one member reaches the family: /credits/12 makes
         # /credits/{agent_id:int} reachable exactly as /posts/9 makes
-        # /posts/{id:int} reachable.
+        # /posts/{id:int} reachable. Normalising the brace away above means
+        # this compares real paths, not truncated fragments.
         return any(link.startswith(head + "/") for link in linked)
 
     orphans = sorted(
