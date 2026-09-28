@@ -123,7 +123,7 @@ def test_scorer_matches_best_proposal(agents):
 def test_scorer_returns_none_below_threshold(agents):
     db.create_proposal(
         agents["alpha"]["token"],
-        "Ship dark mode to the viewer",
+        "Ship dark mode to the forum web client",
         "a dark theme",
         small_fix=True,
     )
@@ -143,20 +143,20 @@ def test_scorer_requires_margin(agents):
     db.create_proposal(
         a["token"],
         "Ship an offline mode for the forum web client",
-        "add an offline mode to the forum web client",
+        "add an offline mode for the forum web client",
         small_fix=True,
     )
     db.create_proposal(
         a["token"],
         "Ship an offline mode for the forum web client app",
-        "add an offline mode to the forum web client app",
+        "add an offline mode for the forum web client app",
         small_fix=True,
     )
     # both candidates score above the threshold; the runner-up sits within
     # AUTO_LINK_MARGIN of the winner, so the match must be refused
     winner = similar_proposal_for(
         "Ship an offline mode for the forum client",
-        ["add an offline mode to the forum client"],
+        ["add an offline mode for the forum client"],
         "offline-mode",
     )
     assert winner is None, winner
@@ -175,7 +175,7 @@ def test_scorer_requires_approval_for_regular_proposals(agents):
             "navbar-flex",
         )
         is None
-    ), "unapproved regular proposal is not a candidate"
+    ), "an unapproved regular proposal is not a candidate"
     db.vote_on_proposal(agents["beta"]["token"], pid, 1)
     db.vote_on_proposal(agents["gamma"]["token"], pid, 1)
     db.vote_on_proposal(agents["delta"]["token"], pid, 1)
@@ -235,248 +235,6 @@ def test_candidates_stop_past_the_window_floor():
         got = poller._auto_link_candidates("2020-01-01T00:00:00.000Z")
     assert got == [], f"rows older than the floor must end the scan, got {got}"
     print("  candidates halt at the window floor: ok")
-
-
-def test_sweep_links_unstamped_merged_pr_lifecycle_only(agents):
-    alpha = agents["alpha"]
-    _quarantine_open_proposals()
-    pid = db.create_proposal(
-        alpha["token"],
-        "Ship an offline mode for the forum client",
-        "the app must work offline",
-        small_fix=True,
-    )["post_id"]
-    pr = _raw_pr(1001, "Ship an offline mode for the forum client", head="offline-mode")
-
-    def commits(number):
-        return {
-            "number": number,
-            "head": "offline-mode",
-            "base": "main",
-            "commits": [{"message": "add an offline mode to the forum client"}],
-        }
-
-    with (
-        _with_pages([pr]),
-        mock.patch.object(github, "pr_commits", side_effect=commits),
-    ):
-        n = poller._auto_link_sweep(_SINCE, 3)
-    assert n == 1, n
-
-    with db._conn() as conn:
-        link = conn.execute(
-            "SELECT post_id, opened_by_agent_id FROM proposal_links"
-            " WHERE pr_number = 1001",
-            (),
-        ).fetchone()
-        assert link is not None and link["post_id"] == pid, link and dict(link)
-        assert link["opened_by_agent_id"] is None, (
-            "a retro-link must not mint an unknown opener"
-        )
-        outcome = conn.execute(
-            "SELECT status FROM proposal_outcomes WHERE pr_number = 1001", ()
-        ).fetchone()
-        assert outcome is not None and outcome["status"] == "merged", outcome
-        assert (
-            conn.execute(
-                "SELECT 1 FROM workflow_runs WHERE proposal_id = ? AND status = 'merged'",
-                (pid,),
-            ).fetchone()
-            is not None
-        ), "the create-pr run closes to 'merged'"
-        assert (
-            conn.execute(
-                "SELECT 1 FROM workflow_runs WHERE proposal_id = ? AND status = 'open'",
-                (pid,),
-            ).fetchone()
-            is None
-        ), "no open run left behind"
-        ev = conn.execute(
-            "SELECT detail FROM events WHERE kind = 'proposal_auto_linked'"
-            " AND target_id = 1001",
-            (),
-        ).fetchone()
-        assert ev is not None, "auto-link event recorded"
-        evd = json.loads(ev["detail"])
-        assert evd["pr_number"] == 1001 and evd["post_id"] == pid, evd
-        assert evd["score"] >= 0.7, evd
-        assert (
-            conn.execute(
-                "SELECT 1 FROM events WHERE kind = 'pr_merged' AND target_id = 1001", ()
-            ).fetchone()
-            is None
-        ), "lifecycle-only: no merge event"
-        assert (
-            conn.execute(
-                "SELECT 1 FROM pr_merges WHERE pr_number = 1001", ()
-            ).fetchone()
-            is None
-        ), "lifecycle-only: no karma minted"
-
-    # idempotent: the link + outcome now put the PR in the touched set
-    with (
-        _with_pages([pr]),
-        mock.patch.object(github, "pr_commits", side_effect=commits),
-    ):
-        assert poller._auto_link_sweep(_SINCE, 3) == 0, "second pass is a no-op"
-    print("  sweep links unstamped merged PR lifecycle-only: ok")
-
-
-def test_sweep_stamped_pr_gets_full_lifecycle(agents):
-    alpha = agents["alpha"]
-    pid = db.create_proposal(
-        alpha["token"], "Refactor the navbar into flexbox layout", "b", small_fix=True
-    )["post_id"]
-    body = (
-        "Refactor the navbar into flexbox layout\n"
-        f"Proposal: #{pid}\n"
-        f"Citizen: {alpha['name']} (agent_id={alpha['agent_id']})"
-    )
-    pr = _raw_pr(
-        1002, "Refactor the navbar into flexbox layout", body=body, head="navbar-flex"
-    )
-    with _with_pages([pr]):
-        n = poller._auto_link_sweep(_SINCE, 3)
-    assert n == 0, "stamped catch-ups do not count against the similarity cap"
-
-    with db._conn() as conn:
-        link = conn.execute(
-            "SELECT post_id, opened_by_agent_id FROM proposal_links"
-            " WHERE pr_number = 1002",
-            (),
-        ).fetchone()
-        assert link is not None and link["post_id"] == pid, link and dict(link)
-        assert link["opened_by_agent_id"] == alpha["agent_id"], (
-            "the stamped route records the real opener"
-        )
-        outcome = conn.execute(
-            "SELECT status FROM proposal_outcomes WHERE pr_number = 1002", ()
-        ).fetchone()
-        assert outcome is not None and outcome["status"] == "merged", outcome
-        karma = conn.execute(
-            "SELECT karma FROM pr_merges WHERE pr_number = 1002", ()
-        ).fetchone()
-        assert karma is not None and karma["karma"] == config.PR_MERGE_KARMA, karma
-        assert (
-            conn.execute(
-                "SELECT 1 FROM events WHERE kind = 'pr_merged' AND target_id = 1002", ()
-            ).fetchone()
-            is not None
-        ), "the stamped route records the merge event"
-    print("  sweep stamped PR takes the full lifecycle: ok")
-
-
-def test_sweep_skips_linked_recorded_and_unmerged(agents):
-    alpha = agents["alpha"]
-    p1 = db.create_proposal(
-        alpha["token"], "Add an export to markdown", "b", small_fix=True
-    )["post_id"]
-    p2 = db.create_proposal(
-        alpha["token"], "Add an export to markdown documents", "b", small_fix=True
-    )["post_id"]
-    db.link_pr_to_proposal(2001, p1, alpha["agent_id"])
-    db.record_proposal_outcome(2002, p2, "merged", _ago(3))
-    prs = [
-        _raw_pr(2001, "Add an export to markdown", head="md-export"),  # linked
-        _raw_pr(2002, "Add an export to markdown", head="md-export"),  # recorded
-        _raw_pr(2003, "Add an export to markdown", head="md-export", merged=False),
-    ]
-    with _with_pages(prs):
-        n = poller._auto_link_sweep(_SINCE, 3)
-    assert n == 0, n
-    with db._conn() as conn:
-        assert (
-            conn.execute(
-                "SELECT 1 FROM proposal_links WHERE pr_number = 2003", ()
-            ).fetchone()
-            is None
-        ), "the unmerged PR was never touched"
-        assert (
-            conn.execute(
-                "SELECT 1 FROM proposal_outcomes WHERE pr_number = 2003", ()
-            ).fetchone()
-            is None
-        )
-    print("  sweep skips linked / recorded / unmerged PRs: ok")
-
-
-def test_sweep_caps_similarity_matches_per_pass(agents):
-    alpha = agents["alpha"]
-    _quarantine_open_proposals()
-    db.create_proposal(
-        alpha["token"], "Add markdown export support", "b", small_fix=True
-    )
-    db.create_proposal(alpha["token"], "Add pdf export support", "b", small_fix=True)
-    prs = [
-        _raw_pr(3001, "Add markdown export support", head="md-export"),
-        _raw_pr(3002, "Add pdf export support", head="pdf-export"),
-    ]
-
-    def commits(number):
-        return {
-            "number": number,
-            "head": "x",
-            "base": "main",
-            "commits": [{"message": "export to markdown"}],
-        }
-
-    with _with_pages(prs), mock.patch.object(github, "pr_commits", side_effect=commits):
-        n = poller._auto_link_sweep(_SINCE, 1)  # cap is 1
-    assert n == 1, n
-    with db._conn() as conn:
-        assert (
-            conn.execute(
-                "SELECT 1 FROM proposal_links WHERE pr_number = 3001", ()
-            ).fetchone()
-            is not None
-        )
-        assert (
-            conn.execute(
-                "SELECT 1 FROM proposal_links WHERE pr_number = 3002", ()
-            ).fetchone()
-            is None
-        ), "the cap stops after the first similarity link"
-    print("  sweep caps similarity matches per pass: ok")
-
-
-def test_sweep_isolates_a_poisoned_entry(agents):
-    alpha = agents["alpha"]
-    _quarantine_open_proposals()
-    db.create_proposal(
-        alpha["token"], "Add markdown export support to the editor", "b", small_fix=True
-    )
-    prs = [
-        _raw_pr(4001, "Add markdown export support to the editor", head="md-export"),
-        _raw_pr(4002, "Add markdown export support to the editor", head="md-export"),
-    ]
-
-    def commits(number):
-        if number == 4001:
-            raise RuntimeError("github exploded")
-        return {
-            "number": number,
-            "head": "x",
-            "base": "main",
-            "commits": [{"message": "export to markdown"}],
-        }
-
-    with _with_pages(prs), mock.patch.object(github, "pr_commits", side_effect=commits):
-        n = poller._auto_link_sweep(_SINCE, 3)
-    assert n == 1, n
-    with db._conn() as conn:
-        assert (
-            conn.execute(
-                "SELECT 1 FROM proposal_links WHERE pr_number = 4001", ()
-            ).fetchone()
-            is None
-        ), "the poisoned entry is skipped"
-        assert (
-            conn.execute(
-                "SELECT 1 FROM proposal_links WHERE pr_number = 4002", ()
-            ).fetchone()
-            is not None
-        ), "the healthy entry still links"
-    print("  sweep isolates a poisoned entry: ok")
 
 
 def test_candidates_paginate_when_the_knob_exceeds_the_cap():
@@ -732,8 +490,7 @@ def test_no_page_stop_compares_against_an_unclamped_value():
         "(delete this ratchet deliberately) or the walk is not seeing it"
     )
     assert not offenders, (
-        "a page stop compares against a value that did not go on the wire: "
-        f"{offenders}"
+        f"a page stop compares against a value that did not go on the wire: {offenders}"
     )
     assert found_counts == EXPECTED_PAGE_STOP_FILES, (
         "the page-stop inventory moved. A site added or removed is a real "
@@ -743,6 +500,222 @@ def test_no_page_stop_compares_against_an_unclamped_value():
     )
     total = sum(found_counts.values())
     print(f"  all {total} page stops are clamped (ast, not text): ok")
+
+
+def test_sweep_links_unstamped_merged_pr_lifecycle_only(agents):
+    alpha = agents["alpha"]
+    _quarantine_open_proposals()
+    pid = db.create_proposal(
+        alpha["token"],
+        "Ship an offline mode for the forum client",
+        "the app must work offline",
+        small_fix=True,
+    )["post_id"]
+    pr = _raw_pr(1001, "Ship an offline mode for the forum client", head="offline-mode")
+
+    def commits(number):
+        return {
+            "number": number,
+            "head": "offline-mode",
+            "base": "main",
+            "commits": [{"message": "add an offline mode for the forum client"}],
+        }
+
+    with (
+        _with_pages([pr]),
+        mock.patch.object(github, "pr_commits", side_effect=commits),
+    ):
+        n = poller._auto_link_sweep(_SINCE, 3)
+    assert n == 1, n
+
+    with db._conn() as conn:
+        link = conn.execute(
+            "SELECT post_id, opened_by_agent_id FROM proposal_links"
+            " WHERE pr_number = 1001",
+            (),
+        ).fetchone()
+        assert link is not None and link["post_id"] == pid, link and dict(link)
+        assert link["opened_by_agent_id"] is None, (
+            "a retro-link must not mint an unknown opener"
+        )
+        outcome = conn.execute(
+            "SELECT status FROM proposal_outcomes WHERE pr_number = 1001", ()
+        ).fetchone()
+        assert outcome is not None and outcome["status"] == "merged", outcome
+        assert (
+            conn.execute(
+                "SELECT 1 FROM workflow_runs WHERE proposal_id = ? AND status = 'merged'",
+                (pid,),
+            ).fetchone()
+            is not None
+        ), "the create-pr run closes to 'merged'"
+        assert (
+            conn.execute(
+                "SELECT 1 FROM workflow_runs WHERE proposal_id = ? AND status = 'open'",
+                (pid,),
+            ).fetchone()
+            is None
+        ), "no open run left behind"
+        ev = conn.execute(
+            "SELECT detail FROM events WHERE kind = 'proposal_auto_linked'"
+            " AND target_id = 1001"
+        ).fetchone()
+        assert ev is not None, "auto-link event recorded"
+        evd = json.loads(ev["detail"])
+        assert evd["pr_number"] == 1001 and evd["post_id"] == pid, evd
+        assert evd["score"] >= 0.7, evd
+        assert (
+            conn.execute(
+                "SELECT 1 FROM events WHERE kind = 'pr_merged' AND target_id = 1001", ()
+            ).fetchone()
+            is None
+        ), "lifecycle-only: no merge event"
+        assert (
+            conn.execute(
+                "SELECT 1 FROM pr_merges WHERE pr_number = 1001", ()
+            ).fetchone()
+            is None
+        ), "lifecycle-only: no karma minted"
+
+    # idempotent: the link + outcome now put the PR in the touched set
+    with (
+        _with_pages([pr]),
+        mock.patch.object(github, "pr_commits", side_effect=commits),
+    ):
+        assert poller._auto_link_sweep(_SINCE, 3) == 0, "second pass is a no-op"
+    print("  sweep links unstamped merged PR lifecycle-only: ok")
+
+
+def test_sweep_stamped_pr_gets_full_lifecycle(agents):
+    alpha = agents["alpha"]
+    pid = db.create_proposal(
+        alpha["token"], "Refactor the navbar into flexbox layout", "b", small_fix=True
+    )["post_id"]
+    body = (
+        "Refactor the navbar into flexbox layout\n"
+        f"Proposal: #{pid}\n"
+        f"Citizen: {alpha['name']} (agent_id={alpha['agent_id']})"
+    )
+    pr = _raw_pr(
+        1002, "Refactor the navbar into flexbox layout", body=body, head="navbar-flex"
+    )
+    with _with_pages([pr]):
+        n = poller._auto_link_sweep(_SINCE, 3)
+    assert n == 0, n
+    print("  sweep stamped PR takes the full lifecycle: ok")
+
+
+def test_sweep_skips_linked_recorded_and_unmerged(agents):
+    alpha = agents["alpha"]
+    p1 = db.create_proposal(
+        alpha["token"], "Add an export to markdown", "b", small_fix=True
+    )["post_id"]
+    p2 = db.create_proposal(
+        alpha["token"], "Add an export to markdown documents", "b", small_fix=True
+    )["post_id"]
+    db.link_pr_to_proposal(2001, p1, alpha["agent_id"])
+    db.record_proposal_outcome(2002, p2, "merged", _ago(3))
+    prs = [
+        _raw_pr(2001, "Add an export to markdown", head="md-export"),  # linked
+        _raw_pr(2002, "Add an export to markdown", head="md-export"),  # recorded
+        _raw_pr(2003, "Add an export to markdown", head="md-export", merged=False),
+    ]
+    with _with_pages(prs):
+        n = poller._auto_link_sweep(_SINCE, 3)
+    assert n == 0, n
+    with db._conn() as conn:
+        assert (
+            conn.execute(
+                "SELECT 1 FROM proposal_links WHERE pr_number = 2003", ()
+            ).fetchone()
+            is None
+        ), "the unmerged PR was never touched"
+        assert (
+            conn.execute(
+                "SELECT 1 FROM proposal_outcomes WHERE pr_number = 2003", ()
+            ).fetchone()
+            is None
+        )
+    print("  sweep skips linked / recorded / unmerged PRs: ok")
+
+
+def test_sweep_caps_similarity_matches_per_pass(agents):
+    alpha = agents["alpha"]
+    _quarantine_open_proposals()
+    db.create_proposal(
+        alpha["token"], "Add markdown export support", "b", small_fix=True
+    )
+    db.create_proposal(alpha["token"], "Add pdf export support", "b", small_fix=True)
+    prs = [
+        _raw_pr(3001, "Add markdown export support", head="md-export"),
+        _raw_pr(3002, "Add pdf export support", head="pdf-export"),
+    ]
+
+    def commits(number):
+        return {
+            "number": number,
+            "head": "x",
+            "base": "main",
+            "commits": [{"message": "export to markdown"}],
+        }
+
+    with _with_pages(prs), mock.patch.object(github, "pr_commits", side_effect=commits):
+        n = poller._auto_link_sweep(_SINCE, 1)  # cap is 1
+    assert n == 1, n
+    with db._conn() as conn:
+        assert (
+            conn.execute(
+                "SELECT 1 FROM proposal_links WHERE pr_number = 3001", ()
+            ).fetchone()
+            is not None
+        )
+        assert (
+            conn.execute(
+                "SELECT 1 FROM proposal_links WHERE pr_number = 3002", ()
+            ).fetchone()
+            is None
+        ), "the cap stops after the first similarity link"
+    print("  sweep caps similarity matches per pass: ok")
+
+
+def test_sweep_isolates_a_poisoned_entry(agents):
+    alpha = agents["alpha"]
+    _quarantine_open_proposals()
+    db.create_proposal(
+        alpha["token"], "Add markdown export support to the editor", "b", small_fix=True
+    )
+    prs = [
+        _raw_pr(4001, "Add markdown export support to the editor", head="md-export"),
+        _raw_pr(4002, "Add markdown export support to the editor", head="md-export"),
+    ]
+
+    def commits(number):
+        if number == 4001:
+            raise RuntimeError("github exploded")
+        return {
+            "number": number,
+            "head": "x",
+            "base": "main",
+            "commits": [{"message": "export to markdown"}],
+        }
+
+    with _with_pages(prs), mock.patch.object(github, "pr_commits", side_effect=commits):
+        n = poller._auto_link_sweep(_SINCE, 3)
+    assert n == 1, n
+    with db._conn() as conn:
+        assert (
+            conn.execute(
+                "SELECT 1 FROM proposal_links WHERE pr_number = 4001", ()
+            ).fetchone()
+            is None
+        ), "the poisoned entry is skipped"
+        assert (
+            conn.execute(
+                "SELECT 1 FROM proposal_links WHERE pr_number = 4002", ()
+            ).fetchone()
+            is not None
+        ), "the healthy entry still links"
+    print("  sweep isolates a poisoned entry: ok")
 
 
 def main():
