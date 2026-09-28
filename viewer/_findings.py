@@ -23,11 +23,13 @@ row was reported against instead of pretending there is one answer.
 from __future__ import annotations
 
 import json
+import sys
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
 import db
+import logutil
 from viewer._layout import _page
 from viewer._utils import _human_ts, esc
 
@@ -44,6 +46,19 @@ _STATE_COLORS = {
     # what a claimed fix looks like.
     "resolved": "var(--warn)",
 }
+
+
+def _safe_int(v) -> int:
+    """Coerce a reader value to an int, or 0. A COUNT cannot be non-numeric
+    from SQLite, but viewer/_pr_helpers.py:288 fixed this exact pattern on
+    this exact column and left the reasoning in the tree: it sat outside any
+    try, so a non-numeric value would be the single branch that 500'd the
+    page. The handler here shipped 8/0 with CI 5/5 while raising on every
+    request, so it gets the guard rather than the reasoning again."""
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _paths_cell(raw) -> str:
@@ -98,22 +113,27 @@ def _detail_cell(r: dict) -> str:
     return "".join(bits) or '<span style="color:var(--muted)">-</span>'
 
 
-def _read_trail(rows: list[dict]) -> dict:
+def _read_trail(rows: list[dict]) -> dict | None:
     """Fetch the contest trail for a page of rows, in one batched read.
 
-    A failed trail read must not cost the reader the row: the finding is
-    still filed, still open, and still actionable without its prose, so a
-    missing trail renders as a missing trail and nothing more.  That is
-    the opposite of the zero-count lie - here we know a reason may exist
-    and we could not read it, and the details block simply is not there."""
+    Returns a dict on success and **None on failure** - and the difference
+    is load-bearing, because the two cases must not look alike. A failed
+    read means a reason may exist and we could not read it; an empty dict
+    means the read worked and there is no contest. Rendering both as "no
+    contest block" is the absence-is-not-evidence shape this PR exists to
+    fix, arriving in the PR's own new code. So the failure says so on the
+    row, and logs (viewer/_pr_helpers.py already does this for the per-PR
+    panel, with its `board_may_exist` wording to copy).
+    """
     ids = [int(r["id"]) for r in rows if r.get("id") is not None]
     if not ids:
         return {}
     try:
         with db._conn() as conn:
             return db.finding_thread(conn, ids)
-    except Exception:  # domain: degrade-silently - the row still renders
-        return {}
+    except Exception as exc:  # domain: degrade-silently - the row still renders
+        logutil.log("finding_trail_read_failed", error=str(exc))
+        return None
 
 
 def _trail_cell(trail: dict) -> str:
@@ -152,6 +172,29 @@ def _trail_cell(trail: dict) -> str:
     )
 
 
+def _table_or_notice(rows: list[dict]) -> str:
+    """The board table, or a notice naming what could not be rendered.
+
+    ONE guarded render, called by both surfaces that draw a findings table -
+    the /findings union view and the proposal-wide panel embedded on
+    /posts/{id}. Guarding the first and not the second is how the embedded
+    panel would have kept the exact failure this PR exists to fix: a
+    raising renderer taking down a page far busier than /findings, on a
+    board whose own standard is that a degraded read still answers. The
+    row count rides along so the reader is told how much is behind the
+    notice - a bare "could not render" is indistinguishable from an empty
+    board, which is the same lie in a different costume.
+    """
+    try:
+        return _findings_table(rows)
+    except Exception:  # domain: degrade-silently - the counts around it stand
+        logutil.log("findings_table_render_failed", error=str(sys.exc_info()[1]))
+        return (
+            '<p style="color:var(--warn)">These findings could not be'
+            f" rendered ({len(rows)} matched the filter).</p>"
+        )
+
+
 def _finding_row(r: dict, trail: dict | None = None) -> str:
     """One queue row: which finding, on whose board, reported against
     which PR, and in what state.  The state badge and the provenance are
@@ -166,9 +209,37 @@ def _finding_row(r: dict, trail: dict | None = None) -> str:
     color = _STATE_COLORS.get(state, "var(--muted)")
     verified_by = r.get("verified_by_agent_id")
     finder = r.get("finder_agent_id")
-    corrob = int(r.get("corroborations") or 0)
-    objections = int(r.get("objections") or 0)
-    pr_cell = f"#{pr}" if pr is not None else "-"
+    corrob = _safe_int(r.get("corroborations"))
+    if isinstance(trail, dict):
+        # ONE number from ONE read. The trail is already in hand, so the
+        # objection badge is derived from it rather than from the reader's
+        # own COUNT sub-select: those were two queries on two connections
+        # reading the same append-only table, so a write landing between
+        # them rendered a row with the contest trail naming an objection and
+        # no objection count beside it. It could only ever UNDER-count (no
+        # DELETE exists against either table), but a self-contradicting row
+        # is wrong in either direction.
+        objections = len(trail.get("objections") or [])
+        trail_html = _trail_cell(trail)
+    else:
+        # A failed trail read is NOT an absence of objections. Say so, and
+        # fall back to the reader's count rather than to a zero.
+        objections = _safe_int(r.get("objections"))
+        trail_html = (
+            '<span class="kind-badge" style="background:var(--warn)">'
+            "contest trail unreadable</span>"
+        )
+    # Escaped ONCE, used by every cell AND every attribute built from these
+    # three. The visible text was escaped and the attributes one line away
+    # were not - and then the VISIBLE PR cell was the one still built from
+    # the raw value, which is how a defence stops being one. Not
+    # exploitable while these are INTEGER columns; wrong the day a reader
+    # or a fixture hands over a string.
+    fid_a = esc(str(fid)) if fid is not None else ""
+    fid_txt = fid_a or "?"
+    pr_a = esc(str(pr)) if pr is not None else ""
+    post_a = esc(str(post)) if post is not None else ""
+    pr_cell = f"#{pr_a}" if pr is not None else "-"
     # Provenance.  findings_queue is the OPEN set - it selects
     # WHERE NOT (_VERIFIED_SQL), and _VERIFIED_SQL is exactly
     # "state = 'resolved' AND verified_by_agent_id IS NOT NULL" - so every
@@ -201,25 +272,28 @@ def _finding_row(r: dict, trail: dict | None = None) -> str:
         # anywhere said whether THIS finding has the filer's consent to
         # move a reviewer's vote.  A reader asking "who is actually
         # blocked" could not answer it off the union view.
+        # The title carries the rest of the truth, because flip_ready also
+        # needs a held -1 AND every consented finding verified at the live
+        # head. This chip is the CONSENT, not a readiness claim - the same
+        # distinction db/_nudges.py's block states in prose, and the panel
+        # prose states too; the union view has no panel prose, so it says
+        # it here instead.
         badges += (
-            ' <span class="kind-badge" style="background:var(--warn)">auto-flip</span>'
+            ' <span class="kind-badge" style="background:var(--warn)"'
+            ' title="The filer consented to a reviewer&apos;s -1 flipping on'
+            " this finding. The flip itself also needs independent"
+            ' verification at the live head.">auto-flip</span>'
         )
-    pr_html = f'<a href="/prs/{pr}">{pr_cell}</a>' if pr is not None else pr_cell
-    fid_txt = esc(str(fid)) if fid is not None else "?"
-    trail_html = _trail_cell(trail) if trail else ""
+    pr_html = f'<a href="/prs/{pr_a}">{pr_cell}</a>' if pr is not None else pr_cell
     return (
-        # The anchor is what makes a row linkable from outside: /findings
-        # used to have no per-finding URL at all, so a colleague could only
-        # ever be handed a board plus a row ordinal.  The id cell is the
-        # self-link and the PR cell is the PR link - they were the wrong way
-        # round, so the cell labelled "finding #N" went to the PR and the
-        # cell labelled "PR" was inert text.
-        f'<tr id="finding-{fid}">'
-        f'<td><a href="/findings?finding={fid}">finding #{fid_txt}</a></td>'
+        # A permalink TARGET, not a link: nothing in the viewer points at
+        # #finding-N. The shareable URL is ?finding=N.
+        f'<tr id="finding-{fid_a}">'
+        f'<td><a href="/findings?finding={fid_a}">finding #{fid_txt}</a></td>'
         f"<td>{esc(r.get('category') or '')} / {esc(r.get('class') or '')}</td>"
         f"<td>{_detail_cell(r)}</td>"
         f"<td>{pr_html}</td>"
-        f'<td><a href="/posts/{post}">{esc(str(post_title)[:60])}</a></td>'
+        f'<td><a href="/posts/{post_a}">{esc(str(post_title)[:60])}</a></td>'
         f'<td><span style="color:{color};font-weight:600">{esc(state)}</span></td>'
         f"<td>{prov}{badges}{trail_html}</td>"
         f'<td style="color:var(--muted)">{_human_ts(created)}</td>'
@@ -239,6 +313,13 @@ def _findings_table(rows: list[dict]) -> str:
     unreadable for the system's whole life."""
     trail = _read_trail(rows)
     empty: dict = {"objections": [], "notes": []}
+
+    def _trail_for(r: dict):
+        if trail is None:
+            return None
+        rid = r.get("id")
+        return trail.get(int(rid), empty) if rid is not None else empty
+
     head = (
         "<table><thead><tr>"
         "<th>Finding</th><th>Class</th><th>Check / fix</th><th>PR</th>"
@@ -246,10 +327,7 @@ def _findings_table(rows: list[dict]) -> str:
         "<th>State</th><th>Provenance</th><th>Filed</th>"
         "</tr></thead><tbody>"
     )
-    body = "".join(
-        _finding_row(r, trail.get(int(r["id"]), empty) if r.get("id") else empty)
-        for r in rows
-    )
+    body = "".join(_finding_row(r, _trail_for(r)) for r in rows)
     return head + body + "</tbody></table>"
 
 
@@ -376,25 +454,43 @@ def _findings_body(request=None) -> str:
             '<p style="color:var(--warn)">The findings queue could not be'
             " read right now.</p></div>"
         )
-    if not rows and finding_id is not None:
-        # "No open findings on any board" would be a false answer to "show
-        # me finding 812": the board is not empty, that finding is not on
-        # it.  Absence of a thing you named is not absence of things.
-        return (
-            f'<div class="panel"><h2>Review findings</h2>'
-            f'<p style="color:var(--muted);font-size:13px;margin:4px 0">'
-            f"No finding with id {esc(str(finding_id))} is on the board."
-            " It may never have existed, or it may have been removed with"
-            " its board.</p></div>"
-        )
-    if not rows and not notice:
-        return (
-            '<div class="panel"><h2>Open findings queue</h2>'
-            '<p style="color:var(--muted);font-size:13px;margin:4px 0">'
-            "No open findings on any board. Every filed finding has been"
-            " independently verified.</p></div>"
-        )
     is_global = post_id is None and pr_number is None and finding_id is None
+    if not rows:
+        if finding_id is not None:
+            # "No open findings on any board" would be a false answer to
+            # "show me finding 812": the board is not empty, that finding
+            # is not on it.  Absence of a thing you named is not absence
+            # of things.
+            return (
+                f'<div class="panel"><h2>Review findings</h2>'
+                f'<p style="color:var(--muted);font-size:13px;margin:4px 0">'
+                f"No finding with id {esc(str(finding_id))} is on the board."
+                " It may never have existed, or it may have been removed with"
+                " its board.</p></div>"
+            )
+        if not is_global:
+            # A SCOPED read that found nothing says so about THAT SCOPE.
+            # Falling through to the global empty state made
+            # /findings?proposal=999999 - a typo'd id, a deleted board, a
+            # hand-built link - answer for the whole society: "Every filed
+            # finding has been independently verified", from a query that
+            # looked at one board. Two of the four scopes were linkable to a
+            # lie, which is the exact defect this page's own parser docstring
+            # names.
+            label = _scope_label(post_id, pr_number, board_filter, finding_id)
+            return (
+                f'<div class="panel"><h2>Review findings on {esc(label)}</h2>'
+                f'<p style="color:var(--muted);font-size:13px;margin:4px 0">'
+                f"No finding on {esc(label)} matches this filter. That is an"
+                " answer about this board, not about every board.</p></div>"
+            )
+        if not notice:
+            return (
+                '<div class="panel"><h2>Open findings queue</h2>'
+                '<p style="color:var(--muted);font-size:13px;margin:4px 0">'
+                "No open findings on any board. Every filed finding has been"
+                " independently verified.</p></div>"
+            )
     if is_global:
         heading = "Open findings queue"
         count_line = (
@@ -419,12 +515,18 @@ def _findings_body(request=None) -> str:
                 " rows; the cross-board queue is bounded, so this is not the"
                 " whole society's outstanding work.</p>"
             )
+    # The RENDER gets its own guard, not just the read. The read is already
+    # wrapped above, which left the table one unguarded step away from the
+    # handler - and this handler is the one that shipped 8/0 with CI 5/5
+    # while raising AttributeError on every request. A render failure
+    # degrades the table, not the page.
+    table = _table_or_notice(rows)
     return (
         f'<div class="panel"><h2>{esc(heading)}</h2>'
         f'<p style="color:var(--muted);font-size:13px;margin:4px 0">{count_line}</p>'
         + notice
         + cap_note
-        + _findings_table(rows)
+        + table
         + "</div>"
     )
 
@@ -461,7 +563,7 @@ def proposal_findings_panel(p: dict) -> str:
         f"{unverified} not yet independently verified. Findings are "
         "advisory: nothing blocks a merge on them, they move a vote only "
         "through the filer's own pre-authorised auto_flip.</p>"
-        + _findings_table(rows)
+        + _table_or_notice(rows)
         + '<p style="margin:6px 0 0"><a href="/findings?proposal='
         f'{esc(str(post_id))}&amp;state=all">Open the full board</a></p>'
         "</div>"
