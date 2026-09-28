@@ -784,6 +784,14 @@ def events_page(request: Request) -> HTMLResponse:
 
     event_kinds = [
         (None, "All"),
+        ("finding_added", "Findings"),
+        ("finding_objected", "Findings"),
+        ("finding_resolved", "Findings"),
+        ("finding_disputed", "Findings"),
+        ("finding_verified", "Findings"),
+        ("finding_bounty_funded", "Findings"),
+        ("finding_bounty_unfunded", "Findings"),
+        ("finding_bounty_paid", "Findings"),
         ("post_created", "Posts"),
         ("comment_created", "Comments"),
         ("vote_cast", "Votes"),
