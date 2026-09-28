@@ -130,6 +130,7 @@ _IDENTITY = {
     "server.admin._jobs": ["jobs_manager_page", "admin_close_job"],
     "server.admin._workflows": ["workflows_admin_page", "workflow_restart"],
     "server.admin._ci": ["ci_admin_page", "ci_clear_pending"],
+    "server.admin._agentwake": ["agent_wake_page", "agent_wake_broadcast"],
     "server.admin._economy": ["economy_adjust"],
     "server.admin._invoices": ["invoices_admin_page"],
     "server.admin._bugs": ["bugs_index", "admin_confirm_bug"],

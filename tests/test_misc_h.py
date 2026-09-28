@@ -552,6 +552,150 @@ def main():
         db.DB_PATH = saved_db_path
     print("  native double-boot cutover: ok")
 
+    # --- migration: the one-running-broadcast unique index (proposal #806)
+    # AGENTS.md asks for a `test_misc_*.py` shard for added tables, and the
+    # table-creation leg used to live only in tests/test_agent_wake.py. The
+    # crash hazard the rule guards against does not apply here (all three
+    # indexes are on newly created tables), so this is placement - but the
+    # rule is the rule, so the shard now carries its own leg.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "wake_tables_migration.db")
+        db.init_db()
+        wake_agent = db.register_agent("wakemig")
+        with db._conn(immediate=True) as conn:
+            for table in (
+                "agent_wake_endpoints",
+                "agent_wake_state",
+                "agent_wake_broadcasts",
+            ):
+                conn.execute(f"DROP TABLE {table}")
+        db.init_db()  # the upgrade re-creates them
+        with db._conn() as conn:
+            present = {
+                r["name"]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+        assert {
+            "agent_wake_endpoints",
+            "agent_wake_state",
+            "agent_wake_broadcasts",
+        } <= present, sorted(t for t in present if "agent_wake" in t)
+        # And the feature works against the migrated schema.
+        from server.poller import _wake as _wakemig
+
+        # One row per citizen (UNIQUE agent_id) - the same constraint that
+        # makes an unauthenticated squat possible on an open panel.
+        _wakemig.register_endpoint(wake_agent["agent_id"], "dir", "http://oc")
+        assert _wakemig.endpoint_for_agent(wake_agent["agent_id"]) is None, (
+            "a DISABLED endpoint is visible to the deliverable reader"
+        )
+        _wakemig.update_endpoint(
+            _wakemig.endpoint_for_agent(wake_agent["agent_id"], require_enabled=False)[
+                "id"
+            ],
+            enabled=True,
+        )
+        assert _wakemig.endpoint_for_agent(wake_agent["agent_id"]) is not None, (
+            "the registry does not work on the migrated tables"
+        )
+    finally:
+        db.DB_PATH = saved_db_path
+    print("  wake tables migration: ok")
+
+    # --- migration: the one-running-broadcast unique index (proposal #806)
+    # The "one real broadcast at a time" invariant is a partial UNIQUE index
+    # on (status) WHERE status='running' AND dry_run=0. It is created in
+    # db/_core/_boot_schema.py, not in schema.sql, and the reason is the
+    # whole point of this pin: a UNIQUE index cannot be created over rows
+    # that violate it, and a database upgrading from an EARLIER BUILD of this
+    # same feature can hold two `running` rows - previews were exempt from
+    # the application-level check, so a preview and a real broadcast could
+    # both be in flight. In schema.sql the CREATE would raise inside
+    # init_db() and the server would not boot at all.
+    #
+    # The honest "old schema" is therefore a live database with the index
+    # DROPPED and two running rows present. init_db() must retire the
+    # surplus rows and then create the index.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "broadcast_index_migration.db")
+        db.init_db()
+        bc_agent = db.register_agent("bcmig")
+        from server.poller import _broadcast as _bcm
+
+        with db._conn(immediate=True) as conn:
+            # The pre-index shape: no unique index, and two REAL running
+            # rows, which is the state an early build could leave behind.
+            conn.execute("DROP INDEX IF EXISTS idx_agent_wake_broadcasts_one_running")
+            for i in range(2):
+                conn.execute(
+                    "INSERT INTO agent_wake_broadcasts (message, agent_ids,"
+                    " total, status, dry_run) VALUES (?, '[]', 0, 'running', 0)",
+                    (f"stranded-{i}",),
+                )
+        db.init_db()  # the upgrade: retire the surplus, then index
+        with db._conn() as conn:
+            idx = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+                " AND name = 'idx_agent_wake_broadcasts_one_running'"
+            ).fetchone()
+            assert idx is not None, "the upgrade created the unique index"
+            live = conn.execute(
+                "SELECT id, status FROM agent_wake_broadcasts WHERE status ="
+                " 'running' AND dry_run = 0"
+            ).fetchall()
+            assert len(live) == 1, [dict(r) for r in live]
+            # The oldest survivor keeps its id, so the invariant still has
+            # something to hold rather than starting from nothing.
+            assert live[0]["id"] == 1, [dict(r) for r in live]
+            retired = conn.execute(
+                "SELECT status, finished_at FROM agent_wake_broadcasts WHERE id = 2"
+            ).fetchone()
+            assert retired["status"] == "abandoned", dict(retired)
+            assert retired["finished_at"] is not None, (
+                "a retired row must be stamped finished, not left open-ended"
+            )
+        # The index now bites for real, and PREVIEWS are still exempt - that
+        # exemption is the reason the index is partial rather than a plain
+        # unique on status. The upgrade deliberately left one running row
+        # behind, so the very next real broadcast is the one refused.
+        aid = bc_agent["agent_id"]
+        try:
+            try:
+                _bcm.create_broadcast([aid], "real one")
+            except Exception as exc:
+                assert "already running" in str(exc), exc
+            else:
+                raise AssertionError("a second real broadcast was queued")
+        finally:
+            _bcm.repair_running()
+        # With nothing running, a real broadcast lands and a PREVIEW is still
+        # accepted alongside it - the exemption the partial predicate buys.
+        _bcm.create_broadcast([aid], "real one")
+        _bcm.create_broadcast([aid], "a preview", dry_run=True)
+        db.init_db()  # second boot: no crash, no drift
+        with db._conn() as conn:
+            assert (
+                conn.execute(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index'"
+                    " AND name = 'idx_agent_wake_broadcasts_one_running'"
+                ).fetchone()[0]
+                == 1
+            ), "a second boot duplicated the index"
+            assert (
+                conn.execute(
+                    "SELECT COUNT(*) FROM agent_wake_broadcasts WHERE status ="
+                    " 'running' AND dry_run = 0"
+                ).fetchone()[0]
+                <= 1
+            ), "a second boot let a second real broadcast through"
+    finally:
+        db.DB_PATH = saved_db_path
+    print("  one-running-broadcast index migration: ok")
+
     print("test_misc_h: all assertions passed")
     import shutil
 
