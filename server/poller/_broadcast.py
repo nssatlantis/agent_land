@@ -98,6 +98,17 @@ from server.poller import _wake
 # session in one click.
 MAX_MESSAGE_CHARS = 4000
 
+# Per-agent pause ceiling - the same bound in the other direction. The
+# operator picks the gap on /admin/agentwake and the DEFAULT is
+# `AGENT_WAKE_BROADCAST_GAP_SECONDS`; this is only the backstop that catches a
+# typo. "One broadcast at a time" is a DATA invariant here (the partial unique
+# index on `agent_wake_broadcasts(status)`), so a five-digit gap does not just
+# run long - it locks the operator out of starting the next one for months.
+# 3600 catches `99999` and `86400` and still permits a deliberately slow
+# server: against the 10-agent default that is at most 9 hours, and the
+# operator can always tick fewer agents.
+MAX_GAP_SECONDS = 3600
+
 # Every reason a single agent may not receive the message. The list is
 # EXHAUSTIVE over `_deliver_sync` plus the walk's not-registered branch, and
 # a reason missing from it renders as an opaque raw string in the results

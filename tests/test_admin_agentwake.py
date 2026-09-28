@@ -1089,6 +1089,179 @@ def test_broadcast_enforces_the_fan_out_cap_at_the_page_too():
     assert bc.active_broadcast() is None, "an over-cap broadcast still queued"
 
 
+# --- the operator-chosen broadcast gap (proposal #814) -----------------------
+
+
+def _record_run_broadcast(calls):
+    """Swap `run_broadcast` for a recorder, so the kwarg is observable.
+
+    A plain function, not an `async def`: the handler hands the return value
+    straight to `asyncio.create_task`, so a normal function records
+    SYNCHRONOUSLY and returns a coroutine to satisfy that call. An `async def`
+    stub would only record if the spawned task were allowed to run, and
+    `asyncio.run` is under no obligation to run it - the capture would be a
+    race and the pin a coin flip.
+    """
+
+    def fake(broadcast_id, *, gap_seconds=None):
+        calls.append(gap_seconds)
+
+        async def _noop():
+            return None
+
+        return _noop()
+
+    return fake
+
+
+def test_the_gap_box_shows_the_live_knob_not_a_literal():
+    import re
+
+    saved = config.AGENT_WAKE_BROADCAST_GAP_SECONDS
+    config.AGENT_WAKE_BROADCAST_GAP_SECONDS = 137
+    try:
+        html = _render()
+    finally:
+        config.AGENT_WAKE_BROADCAST_GAP_SECONDS = saved
+    tag = re.search(r'<input[^>]*name="gap"[^>]*>', html)
+    assert tag, "the send form has no gap box"
+    assert 'value="137"' in tag.group(0), tag.group(0)
+    # type=text, NOT type=number, and no min/max/step. A number input's
+    # value-sanitisation algorithm turns an invalid entry into "", so a browser
+    # would submit a typo as BLANK and the server would answer with the
+    # CONFIGURED default - a silent, different broadcast from the one typed,
+    # which is the failure this form exists to prevent. Client constraints are
+    # also only a bubble; the server refusal names the offending value.
+    assert 'type="text"' in tag.group(0), tag.group(0)
+    assert 'inputmode="numeric"' in tag.group(0), tag.group(0)
+    assert "min=" not in tag.group(0), tag.group(0)
+    assert "max=" not in tag.group(0), tag.group(0)
+
+
+def test_an_out_of_range_configured_gap_is_never_pre_filled():
+    """The knob is a live, UNVALIDATED env read, so it can be unsendable.
+
+    `config.__getattr__` applies only `int` and re-reads on every access, so
+    -1 or 99999 is accepted silently. Pre-filling either would make the box's
+    OWN default fail its own parser - and because a cleared box delegates to
+    the knob, the operator would be told they "typed" a figure they never
+    touched. The configured number is still named in the copy, so the page
+    does not quietly lie about it either.
+    """
+    import re
+
+    saved = config.AGENT_WAKE_BROADCAST_GAP_SECONDS
+    try:
+        for bad in (-1, bc.MAX_GAP_SECONDS + 1):
+            config.AGENT_WAKE_BROADCAST_GAP_SECONDS = bad
+            html = _render()
+            tag = re.search(r'<input[^>]*name="gap"[^>]*>', html)
+            assert tag, "the send form has no gap box"
+            assert "value=" not in tag.group(0), (bad, tag.group(0))
+            assert "outside the 0-" in html, (bad, html[:400])
+    finally:
+        config.AGENT_WAKE_BROADCAST_GAP_SECONDS = saved
+
+
+def test_a_blank_gap_means_the_config_default_never_zero():
+    # THE arm worth pinning. `int(form.get("gap") or 0)` - the obvious
+    # one-liner - satisfies every other case here and turns "left blank" into
+    # "no pause at all", which is the opposite of what the knob exists to
+    # prevent. `None` is the only value that keeps the default resolved in
+    # the engine, at send time, where the knob is actually read.
+    for extra in ({}, {"gap": ""}, {"gap": "   "}):
+        form = {"agent": ["1"], "message": "hi", **extra}
+        got = ag._gap_seconds(asyncio.run(_StubReq(form).form()))
+        assert got is None, (extra, got)
+
+
+def test_a_typed_gap_reaches_the_send_and_writes_the_row():
+    calls = []
+    saved_run = bc.run_broadcast
+    before = _newest_broadcast()
+    bc.run_broadcast = _record_run_broadcast(calls)
+    os.environ["ADMIN_PASSWORD"] = "secret"
+    try:
+        resp = _call(
+            ag.agent_wake_broadcast, {"agent": ["1"], "message": "hi", "gap": "250"}
+        )
+    finally:
+        os.environ.pop("ADMIN_PASSWORD", None)
+        bc.run_broadcast = saved_run
+        # The stubbed task never runs, so the row would sit `running` and lock
+        # out the next broadcast on the one-at-a-time invariant.
+        bc.repair_running()
+    assert resp.status_code == 303, resp.status_code
+    # The CONTROL half of this arm: a valid gap is honoured, not refused.
+    # 303 happens only when create_broadcast returned, so this is also the
+    # proof a row was written - which is what gives the refusal arm its teeth.
+    assert (_newest_broadcast() or {}).get("id") != (before or {}).get("id")
+    assert calls == [250], calls
+
+
+def test_a_bad_gap_is_refused_without_writing_a_row():
+    before = _newest_broadcast()
+    bodies = {}
+    os.environ["ADMIN_PASSWORD"] = "secret"
+    try:
+        # chr(0xB2) is U+00B2 SUPERSCRIPT TWO: `isdigit()` calls it True and
+        # `int()` then raises ValueError, so a naive int() would fall into the
+        # generic error flash instead of naming the problem. Spelled chr() on
+        # purpose - this file's writer normalises non-ASCII on the way in.
+        for bad in ("12.5", "abc", "1_000", "2e3", "-5", "99999", chr(0xB2)):
+            resp = _call(
+                ag.agent_wake_broadcast, {"agent": ["1"], "message": "hi", "gap": bad}
+            )
+            body = resp.body.decode()
+            bodies[bad] = body
+            assert resp.status_code == 200, (bad, resp.status_code)
+            assert "gap" in body.lower(), (bad, body[:200])
+            # The message must NAME the value. That is the only thing
+            # separating the two refusal arms, and a ForumError("invalid
+            # gap") would satisfy every assertion above this line.
+            assert str(bad) in body, (bad, body[:200])
+    finally:
+        os.environ.pop("ADMIN_PASSWORD", None)
+    assert (_newest_broadcast() or {}).get("id") == (before or {}).get("id"), (
+        "a refused gap still queued a broadcast"
+    )
+    # ...and the two arms are not one message wearing different numbers.
+    assert bodies["12.5"] != bodies["99999"], "one refusal text for both arms"
+
+
+def test_the_preview_still_runs_with_no_gap():
+    calls = []
+    saved_run = bc.run_broadcast
+    bc.run_broadcast = _record_run_broadcast(calls)
+    os.environ["ADMIN_PASSWORD"] = "secret"
+    try:
+        resp = _call(
+            ag.agent_wake_broadcast_preview,
+            {"agent": ["1"], "message": "hi", "gap": "900"},
+        )
+    finally:
+        os.environ.pop("ADMIN_PASSWORD", None)
+        bc.run_broadcast = saved_run
+        bc.repair_running()
+    assert resp.status_code == 303, resp.status_code
+    # A preview contacts nobody and exists to show the results table fast, so
+    # a typed gap must not leak into it.
+    assert calls == [0], calls
+    # ...and the box is on the send form only, so it cannot be misread as
+    # governing the preview button sitting directly above it.
+    assert _render().count('name="gap"') == 1
+
+
+def test_the_cost_line_names_the_gap_instead_of_claiming_immediately():
+    # The bare word "immediately" SURVIVES in the new copy ("the first
+    # immediately"), so pinning it would be vacuous. The old SENTENCE is the
+    # invariant: the page must not describe a broadcast as starting every
+    # ticked agent at once, and must name the gap in its place.
+    html = _render()
+    assert "ticked agent, immediately" not in html, html[:400]
+    assert "one every" in html, html[:400]
+
+
 def test_main_registers_every_test_in_this_module():
     import inspect
     import re
@@ -1145,6 +1318,13 @@ def main():
         test_broadcast_queues_a_row_and_returns_immediately,
         test_broadcast_surfaces_an_empty_selection,
         test_broadcast_enforces_the_fan_out_cap_at_the_page_too,
+        test_the_gap_box_shows_the_live_knob_not_a_literal,
+        test_an_out_of_range_configured_gap_is_never_pre_filled,
+        test_a_blank_gap_means_the_config_default_never_zero,
+        test_a_typed_gap_reaches_the_send_and_writes_the_row,
+        test_a_bad_gap_is_refused_without_writing_a_row,
+        test_the_preview_still_runs_with_no_gap,
+        test_the_cost_line_names_the_gap_instead_of_claiming_immediately,
         test_main_registers_every_test_in_this_module,
     ]
     failed = []

@@ -166,6 +166,26 @@ def render_post(
         except Exception:  # domain: degrade-silently - chip hides, page renders
             p["active_workspaces"] = 0
             p["workspace_chip"] = ""
+    # #816: the proposal-wide findings board, embedded here. The docket
+    # chip counts it and the PR page reports it, but a proposal was the
+    # one surface that knew nothing about it - so a reader who opened the
+    # thing under review saw no board at all. board_filter="all" because
+    # the panel is the record, not a to-do list. Degrades to no panel;
+    # a failed findings read must never cost the page.
+    p["findings_panel"] = ""
+    p["findings_rows"] = []
+    if p.get("proposal_kind"):
+        try:
+            from viewer._findings import proposal_findings_panel as _pfind
+
+            with db._conn() as _fconn:
+                p["findings_rows"] = db.findings_list(
+                    _fconn, post_id=post_id, board_filter="all"
+                )
+            p["findings_panel"] = _pfind(p)
+        except Exception:  # domain: degrade-silently - panel hides, page renders
+            p["findings_panel"] = ""
+            p["findings_rows"] = []
     # The to-do panel is a pure renderer; the page handler does the only
     # DB reads - a paged drill-in (get_todos_list) for `tlist`, a paged
     # full-text search (search_todos) for `tq`, or the capped whole board
@@ -273,6 +293,7 @@ def render_post(
         + (_design_origin_chip(p.get("id")) if p.get("proposal_kind") == "idea" else "")
         + _stake_panel(p)
         + _proposal_prs_panel(p)
+        + p.get("findings_panel", "")
         + _proposal_votes_panel(p)
         + _collaborators_panel(p)
         + _edits_panel(p)
