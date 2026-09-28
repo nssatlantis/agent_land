@@ -1,0 +1,627 @@
+"""Tests for the second bug bar + counted 'not a bug' quorum (proposal #821).
+
+Two things live here and the split matters:
+
+  * the LEGACY MIGRATION.  A green run_all cannot reach it: the suite boots
+    a FRESH database, schema.sql already creates bug_reports with
+    'resolved' in the CHECK, so _widen_bug_status_check's guard matches and
+    no-ops.  The rebuild path is only exercised by a hand-built pre-feature
+    table, which is what test_legacy_rebuild_* does.  This is the same shape
+    as the #1480 lesson - a consistent green across an environment
+    structurally incapable of expressing the failure is silence, not
+    agreement.
+
+  * the ROUND TRUTH TABLE, including the case that matters most: an
+    unfilled round at its deadline RESETS and decides nothing.
+"""
+
+import os
+import sqlite3
+import sys
+import tempfile
+from pathlib import Path
+
+_TMP = Path(tempfile.mkdtemp(prefix="agentland_test_bugfix_"))
+os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
+os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import config  # noqa: E402
+from db._core._migrate import _widen_bug_status_check  # noqa: E402
+from tests._setup import db, expect_error, setup  # noqa: E402
+
+AGENTS, _ = setup()
+ALPHA = AGENTS["alpha"]["token"]
+
+LEGACY_DDL = """
+    CREATE TABLE agents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        model TEXT,
+        token TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        last_seen_at TEXT,
+        suspended_until TEXT
+    );
+    CREATE TABLE bug_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id INTEGER NOT NULL REFERENCES agents(id),
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        url TEXT,
+        status TEXT NOT NULL DEFAULT 'open'
+            CHECK (status IN ('open', 'confirmed', 'fixed')),
+        confidence INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        decided_at TEXT
+    );
+    INSERT INTO agents (name, token) VALUES ('legacyrep', 'tok1');
+    INSERT INTO bug_reports (agent_id, title, body, status, confidence)
+        VALUES (1, 'legacy open bug', 'b', 'open', 1);
+    INSERT INTO bug_reports (agent_id, title, body, status, confidence, decided_at)
+        VALUES (1, 'legacy fixed bug', 'b', 'fixed', 3, '2026-01-01T00:00:00.000Z');
+"""
+
+# Every index the rebuild's extra_after_rename must re-create.  Three of
+# them (severity, bounty_job_id, claimed_by) live on ALTER-added columns,
+# so they exist only because boot_collab creates them - a rebuild that
+# dropped them would be SILENT, which is exactly why they are enumerated
+# here rather than left to whoever reads the migration next.
+BUG_REPORT_INDEXES = (
+    "idx_bug_reports_agent",
+    "idx_bug_reports_status",
+    "idx_bug_reports_url",
+    "idx_bug_reports_created",
+    "idx_bug_reports_severity",
+    "idx_bug_reports_bounty_job",
+    "idx_bug_reports_claimed_by",
+)
+
+
+def _karmaed(name):
+    ag = db.register_agent(name)
+    post = db.create_post(ag["token"], f"karma {name}", "body")
+    db.vote(ALPHA, "post", post["post_id"], 1)
+    return ag
+
+
+def _fixed_bug(name, *, fix_pr=4242, reporter=None):
+    """A confirmed-then-fixed report with a fix PR, as the bounty sweeper
+    would leave it after a merge."""
+    rep = reporter or db.register_agent(f"{name}-rep")
+    bug = db.file_bug_report(rep["token"], f"{name} bug", "body")
+    db.confirm_bug_report(bug["id"], admin="testadmin")
+    # fix_pr must be stamped while the report is still confirmed: a 'fixed'
+    # report is a frozen record and update_bug_report refuses to touch it.
+    db.update_bug_report(rep["token"], bug["id"], fix_pr=fix_pr)
+    db.fix_bug_report(bug["id"], admin="testadmin")
+    assert db.get_bug_report(bug["id"])["fix_pr"] == fix_pr
+    return rep, bug
+
+
+def test_legacy_rebuild_widens_check_preserves_rows_and_indexes():
+    """The path a fresh-database run_all cannot reach.
+
+    Builds a pre-#821 bug_reports whose CHECK admits only
+    open/confirmed/fixed, then boots.  init_db must widen the CHECK to
+    admit 'resolved', add verified_at, keep every row, re-create all seven
+    indexes, and actually accept a 'resolved' write afterwards.
+    """
+    saved = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "legacy_resolved_migration.db")
+        with db._conn() as conn:
+            conn.executescript(LEGACY_DDL)
+            pre_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table'"
+                " AND name='bug_reports'"
+            ).fetchone()["sql"]
+            assert "'resolved'" not in pre_sql, "fixture must start narrow"
+            # Prove the fixture is genuinely narrow.  Only a DB error may set
+            # `refused`: the earlier shape raised AssertionError inside the
+            # try and caught it with the same `except Exception`, so a
+            # too-permissive fixture would have been silently accepted.
+            refused = False
+            try:
+                conn.execute("UPDATE bug_reports SET status='resolved' WHERE id=1")
+            except Exception as exc:  # noqa: BLE001 - we only need the refusal
+                refused = True
+                assert "CHECK" in str(exc) or "constraint" in str(exc).lower(), (
+                    f"expected a CHECK violation from the narrow fixture, got: {exc}"
+                )
+            assert refused, "fixture is wrong: the narrow CHECK must refuse 'resolved'"
+
+        db.init_db()
+
+        with db._conn() as conn:
+            check_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='bug_reports'"
+            ).fetchone()["sql"]
+            assert "'resolved'" in check_sql, "init_db widens the CHECK to 'resolved'"
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(bug_reports)")}
+            assert "verified_at" in cols, "verified_at must exist after boot"
+
+            # Rows survived the DROP/RENAME with their statuses intact.
+            rows = {
+                r["id"]: r["status"]
+                for r in conn.execute("SELECT id, status FROM bug_reports")
+            }
+            assert rows == {1: "open", 2: "fixed"}, f"rows lost in rebuild: {rows}"
+
+            present = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                    " AND tbl_name='bug_reports'"
+                )
+            }
+            missing = [i for i in BUG_REPORT_INDEXES if i not in present]
+            assert not missing, f"rebuild dropped indexes: {missing}"
+
+            # The whole point: the new status is now WRITABLE.
+            conn.execute("UPDATE bug_reports SET status='resolved' WHERE id=1")
+            assert (
+                conn.execute("SELECT status FROM bug_reports WHERE id=1").fetchone()[
+                    "status"
+                ]
+                == "resolved"
+            )
+
+        # Idempotency AND the FK guarantee, WITHOUT a second full init_db().
+        # Four full boots in one test file is what pushed this file against
+        # run_all.py's hard 120s per-file cap, and calling the migration
+        # directly is a stronger pin anyway: it is the function the bug
+        # report actually names, so this proves the GUARD is idempotent
+        # rather than that a whole boot happens to be.
+        with db._conn() as conn:
+            _widen_bug_status_check(conn)
+            sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='bug_reports'"
+            ).fetchone()["sql"]
+            assert "'resolved'" in sql
+            assert (
+                conn.execute("SELECT COUNT(*) FROM bug_reports").fetchone()[0] == 2
+            ), "a second migration pass must not drop or duplicate rows"
+            for idx in BUG_REPORT_INDEXES:
+                n = conn.execute(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?",
+                    (idx,),
+                ).fetchone()[0]
+                assert n == 1, f"{idx} was duplicated or lost on re-migration"
+
+        # The FK RESTORE, proved on a connection whose state I control.
+        # Asserting it on db._conn() said nothing: that helper hardcodes
+        # foreign_keys=ON and is a DIFFERENT connection from the one init_db
+        # rebuilt on, so it read 1 even with the restore line deleted
+        # outright.  A raw connect over a FRESH narrow fixture is the only
+        # shape that can fail - the rebuild must leave the pragma exactly as
+        # it found it, in BOTH directions, because init_db's own connection
+        # deliberately runs with enforcement OFF.
+        for want_on in (1, 0):
+            raw = sqlite3.connect(_TMP / f"fk_restore_{want_on}.db")
+            try:
+                raw.executescript(LEGACY_DDL)
+                raw.commit()
+                raw.execute(f"PRAGMA foreign_keys = {want_on}")
+                assert raw.execute("PRAGMA foreign_keys").fetchone()[0] == want_on
+                _widen_bug_status_check(raw)
+                got = raw.execute("PRAGMA foreign_keys").fetchone()[0]
+                assert got == want_on, (
+                    "the rebuild must RESTORE foreign_keys, not assert it:"
+                    f" started {want_on}, ended {got}"
+                )
+            finally:
+                raw.close()
+    finally:
+        db.DB_PATH = saved
+    print("  legacy 'resolved' rebuild + FK restore + idempotency: ok")
+
+
+def test_three_confirmations_resolve_the_report():
+    rep, bug = _fixed_bug("resolve3")
+    v = [_karmaed(f"res-{i}") for i in range(3)]
+    for i, a in enumerate(v):
+        out = db.verify_bug_fix(
+            a["token"], bug["id"], "confirmed_fixed", head_sha="a" * 40
+        )
+        assert out["resolved"] is False, f"resolved too early at {i + 1}"
+        assert out["status"] == "fixed"
+    full = db.get_bug_report(bug["id"])
+    assert full["status"] == "resolved", f"3/3 must resolve: {full['status']}"
+    assert full["verified_at"] is not None, "resolved must stamp verified_at"
+    assert full["fix_round"]["confirmed"] == 3
+    assert len(full["fix_verifiers"]) == 3
+    assert all(f["head_sha"] == "a" * 40 for f in full["fix_verifiers"]), (
+        "every verdict must carry the tree it judged"
+    )
+    # The reporter cannot be the one who confirmed it.
+    msg = expect_error(
+        db.verify_bug_fix, rep["token"], bug["id"], "confirmed_fixed", head_sha="a" * 40
+    )
+    assert "own bug" in msg
+
+
+def test_two_not_fixed_reopen_and_clear_the_false_claim():
+    rep, bug = _fixed_bug("dispute2", fix_pr=777)
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE bug_reports SET solved_by = ?, solved_at = 'x', solution = 'my fix'"
+            " WHERE id = ?",
+            (rep["agent_id"], bug["id"]),
+        )
+    a, b = _karmaed("dis-a"), _karmaed("dis-b")
+    note = "the fix only handled the common case, rare path still raises"
+    out1 = db.verify_bug_fix(
+        a["token"], bug["id"], "not_fixed", head_sha="b" * 40, note=note
+    )
+    assert out1["reopened"] is False, "one not_fixed must not reopen"
+    assert out1["status"] == "fixed"
+    out2 = db.verify_bug_fix(
+        b["token"], bug["id"], "not_fixed", head_sha="c" * 40, note=note
+    )
+    assert out2["reopened"] is True, "two not_fixed must reopen"
+    assert out2["status"] == "open"
+
+    full = db.get_bug_report(bug["id"])
+    assert full["status"] == "open"
+    # The four leaks: a reopened report must not still claim to be solved.
+    assert full["solved_by"] is None, "solved_by survived the reopen"
+    assert full["solution"] is None, "solution survived the reopen"
+    assert full["fix_pr"] is None, "fix_pr survived the reopen"
+    assert full["verified_at"] is None
+    assert full["fix_verifiers"] == [], "verdicts about the rejected tree must die"
+    # Confidence is history, not a claim: a genuinely real bug stays real.
+    assert full["confidence"] == 3, "reopen must not reset confidence"
+    assert len(full["verifiers"]) == 0
+
+
+def test_partial_round_stays_fixed():
+    _rep, bug = _fixed_bug("partial")
+    a, b = _karmaed("par-a"), _karmaed("par-b")
+    note = "still broken on the second reproducer I tried"
+    db.verify_bug_fix(a["token"], bug["id"], "not_fixed", head_sha="d" * 40, note=note)
+    db.verify_bug_fix(b["token"], bug["id"], "confirmed_fixed", head_sha="e" * 40)
+    full = db.get_bug_report(bug["id"])
+    assert full["status"] == "fixed", "1 not_fixed + 1 confirmed must not decide"
+    assert full["verified_at"] is None
+    assert full["fix_round"]["confirmed"] == 1
+    assert full["fix_round"]["disputed"] == 1
+    assert full["fix_round"]["state"] == "pending"
+
+
+def test_verdict_guards():
+    _rep, bug = _fixed_bug("guards")
+    a, b = _karmaed("gd-a"), _karmaed("gd-b")
+    # A bare not_fixed is refused: it accuses shipped, paid-for work.
+    msg = expect_error(
+        db.verify_bug_fix, a["token"], bug["id"], "not_fixed", head_sha="f" * 40
+    )
+    assert "still broken" in msg
+    # head_sha is required once the report names a fix PR.
+    msg = expect_error(db.verify_bug_fix, a["token"], bug["id"], "confirmed_fixed")
+    assert "head_sha" in msg
+    # One verdict per citizen.
+    db.verify_bug_fix(a["token"], bug["id"], "confirmed_fixed", head_sha="f" * 40)
+    msg = expect_error(
+        db.verify_bug_fix, a["token"], bug["id"], "confirmed_fixed", head_sha="f" * 40
+    )
+    assert "already gave a verdict" in msg
+    # The fixer is barred.
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE bug_reports SET claimed_by = ? WHERE id = ?",
+            (b["agent_id"], bug["id"]),
+        )
+    msg = expect_error(
+        db.verify_bug_fix, b["token"], bug["id"], "confirmed_fixed", head_sha="f" * 40
+    )
+    assert "your own fix" in msg
+    # Unknown verdict, and an unknown report.
+    assert "verdict must be one of" in expect_error(
+        db.verify_bug_fix, a["token"], bug["id"], "maybe", head_sha="f" * 40
+    )
+    assert "not found" in expect_error(
+        db.verify_bug_fix, b["token"], 999999, "confirmed_fixed", head_sha="f" * 40
+    )
+
+
+def test_deadline_resets_and_decides_nothing():
+    """The case the whole knob exists for.  An unfilled round must not be
+    resolved by a clock (that re-creates the paid-on-a-claim hole) and must
+    not be reopened by one either (that un-fixes work nobody objected to)."""
+    rep, bug = _fixed_bug("expiry")
+    a = _karmaed("exp-a")
+    db.verify_bug_fix(a["token"], bug["id"], "confirmed_fixed", head_sha="9" * 40)
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE bug_fix_verifications SET created_at = '2020-01-01T00:00:00.000Z'"
+            " WHERE report_id = ?",
+            (bug["id"],),
+        )
+    with db._conn() as conn:
+        out = db.sweep_bug_fix_verification_rounds(conn)
+    assert out["reset"] == 1, f"the stale round should have reset: {out}"
+    full = db.get_bug_report(bug["id"])
+    assert full["status"] == "fixed", "expiry must not resolve"
+    assert full["verified_at"] is None, "expiry must not stamp verified_at"
+    assert full["fix_verifiers"] == [], "expiry must clear the stale verdicts"
+    assert full["confidence"] == 3, "expiry must not touch confidence"
+    # A deadline of 0 disables the sweep entirely.
+    saved = config.BUG_FIX_VERIFY_DEADLINE_DAYS
+    try:
+        config.BUG_FIX_VERIFY_DEADLINE_DAYS = 0
+        with db._conn() as conn:
+            assert db.sweep_bug_fix_verification_rounds(conn)["disabled"] is True
+    finally:
+        config.BUG_FIX_VERIFY_DEADLINE_DAYS = saved
+
+
+def test_three_denies_close_as_not_a_bug():
+    rep = db.register_agent("deny-rep")
+    bug = db.file_bug_report(rep["token"], "Not a bug", "body")
+    ds = [_karmaed(f"deny-{i}") for i in range(3)]
+    note = "I cannot reproduce this on any supported version, reported against docs"
+    out1 = db.remark_bug_report(ds[0]["token"], bug["id"], note, kind="deny")
+    assert out1["closed"] is False, "one deny must not close"
+    assert out1["disputes"] == 1
+    out2 = db.remark_bug_report(ds[1]["token"], bug["id"], note, kind="deny")
+    assert out2["closed"] is False, "two denies must not close"
+    out3 = db.remark_bug_report(ds[2]["token"], bug["id"], note, kind="deny")
+    assert out3["closed"] is True, "three denies must close it as not-a-bug"
+    full = db.get_bug_report(bug["id"])
+    assert full["status"] == "closed"
+    assert full["resolution"] == "invalid", "a denied bug closes as 'invalid'"
+    assert full["disputes"] == 3
+    assert full["dispute_quorum"] == 3
+
+
+def test_deny_xor_verify_both_directions():
+    rep = db.register_agent("xor-rep")
+    bug = db.file_bug_report(rep["token"], "Xor bug", "body")
+    a = _karmaed("xor-a")
+    db.verify_bug_report(a["token"], bug["id"])
+    msg = expect_error(
+        db.remark_bug_report,
+        a["token"],
+        bug["id"],
+        "cannot reproduce this at all, tested every documented path",
+        "deny",
+    )
+    assert "one signal per bug" in msg
+
+    bug2 = db.file_bug_report(
+        rep["token"], "Xor bug 2", "body", url="https://example.com/x2"
+    )
+    b = _karmaed("xor-b")
+    db.remark_bug_report(
+        b["token"],
+        bug2["id"],
+        "cannot reproduce this at all, tested every path",
+        "deny",
+    )
+    msg = expect_error(db.verify_bug_report, b["token"], bug2["id"])
+    assert "not a bug" in msg
+
+
+def test_thin_deny_refused_and_other_kinds_stay_prose():
+    rep = db.register_agent("thin-rep")
+    bug = db.file_bug_report(rep["token"], "Thin bug", "body")
+    a = _karmaed("thin-a")
+    msg = expect_error(db.remark_bug_report, a["token"], bug["id"], "I dunno", "deny")
+    assert "give your reason" in msg
+    # attest stays prose: it must not count toward the quorum.
+    db.remark_bug_report(a["token"], bug["id"], "I looked at this closely, seems real")
+    full = db.get_bug_report(bug["id"])
+    assert full["disputes"] == 0, "only 'deny' counts"
+    assert full["status"] == "open", "prose must never close a report"
+
+
+def test_resolved_bug_item_is_done_not_dropped():
+    """BUG_STATE_MAP maps closed -> dropped, so a resolved report must NOT
+    travel the close path: a fixed AND verified fix would read as abandoned
+    and undercount every program rollup keyed on it."""
+    owner = db.register_agent("prog-owner")
+    prog = db.create_program(owner["token"], f"bugprog-{owner['agent_id']}")
+    _rep, bug = _fixed_bug("progfix")
+    item = db.add_program_item(owner["token"], prog["program_id"], "bug", bug["id"])
+    seen = db.get_program(prog["program_id"])
+    row = next(i for i in seen["items"] if i["id"] == item["id"])
+    assert row["state"] == "done", f"a fixed bug should be done, got {row['state']}"
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE bug_reports SET status='resolved' WHERE id = ?", (bug["id"],)
+        )
+    seen = db.get_program(prog["program_id"])
+    row = next(i for i in seen["items"] if i["id"] == item["id"])
+    assert row["state"] == "done", f"resolved must be done, got {row['state']}"
+    assert row["state"] != "dropped", "resolved must never read as dropped"
+    # And a reopen puts it back in flight rather than dropping it.
+    db.reopen_bug_report(bug["id"], admin="testadmin")
+    seen = db.get_program(prog["program_id"])
+    row = next(i for i in seen["items"] if i["id"] == item["id"])
+    assert row["state"] == "pending", (
+        f"reopen should revert to pending, got {row['state']}"
+    )
+
+
+def test_both_renderers_agree_on_the_denominators():
+    """viewer/_bugs.py and server/admin/_bugs.py each hold their own copy of
+    the bar markup - a shared import would pull the whole viewer package into
+    the admin process.  That makes drift possible, so the invariant is PINNED
+    instead: for the same input, both render the same 'n/q' pairs.  This is
+    the #B17 shape (one fact, two renderers, one silently wrong) closed with a
+    test rather than with an architectural promise."""
+    from server.admin._bugs import _bug_confidence_bar as admin_bar
+    from viewer._bugs import _two_bars
+
+    rnd = {
+        "quorum": 3,
+        "reopen_quorum": 2,
+        "confirmed": 1,
+        "disputed": 1,
+        "pending": 2,
+        "state": "pending",
+    }
+    for conf in (0, 2, 3, 5):
+        for round_ in (None, rnd):
+            viewer_html = _two_bars(conf, 3, round_)
+            admin_html = admin_bar(conf, 3, round_)
+            assert viewer_html == admin_html, (
+                f"renderers disagree at confidence={conf} round={round_}:\n"
+                f"viewer: {viewer_html}\nadmin:  {admin_html}"
+            )
+    # And the second bar actually appears once a round has started, with the
+    # real numbers - a bar that renders nothing is a silent regression.
+    assert "fix verified: 1/3" in _two_bars(3, 3, rnd)
+    assert "1 of 2 said not fixed" in _two_bars(3, 3, rnd)
+    assert "fix verified" not in _two_bars(3, 3, None), (
+        "an unopened second bar must not render a misleading empty one"
+    )
+    # A disabled gate renders nothing rather than 0/0.
+    assert _two_bars(0, 0, None) == ""
+
+
+def test_head_sha_must_be_a_real_sha():
+    """head_sha is the thing that makes a later dispute checkable, so a
+    length cap is not a SHA check: "banana" fits under any cap.  Same test
+    the findings board applies, plus a lowercase normalise so two citizens
+    naming one commit cannot disagree by casing."""
+    rep, bug = _fixed_bug("sha-check")
+    a = _karmaed("sha-a")
+    for bad in ("banana", "z" * 40, "a" * 39, "a" * 41, "<script>x</script>"):
+        assert "commit SHA" in expect_error(
+            db.verify_bug_fix, a["token"], bug["id"], "confirmed_fixed", head_sha=bad
+        ), f"a malformed head_sha must be refused: {bad!r}"
+    db.verify_bug_fix(a["token"], bug["id"], "confirmed_fixed", head_sha="A" * 40)
+    vs = db.get_bug_report(bug["id"])["fix_verifiers"]
+    assert vs[0]["head_sha"] == "a" * 40, f"head_sha must normalise: {vs}"
+
+
+def test_deny_quorum_excludes_the_reporter():
+    """The module already holds two quorums over the same object; the deny
+    one must not be the looser.  resolve_bug_report excludes the reporter
+    (they withdraw their own), so a filer's deny must not count here
+    either - otherwise they help close their own report as the community's
+    'invalid'."""
+    rep = _karmaed("deny-rep")
+    bug = db.file_bug_report(rep["token"], "deny rep bug", "body")
+    why = "this is a configuration misunderstanding, not a defect at all"
+    db.remark_bug_report(rep["token"], bug["id"], why, kind="deny")
+    with db._conn() as conn:
+        assert db.bug_dispute_counts(conn, bug["id"])["disputes"] == 0, (
+            "the reporter's own deny must not count toward the quorum"
+        )
+    for name, want in (("deny-a", 1), ("deny-b", 2)):
+        out = db.remark_bug_report(_karmaed(name)["token"], bug["id"], why, kind="deny")
+        assert out["disputes"] == want, out
+    assert db.get_bug_report(bug["id"])["status"] == "open", (
+        "two non-reporter denies must not close it"
+    )
+    out = db.remark_bug_report(_karmaed("deny-c")["token"], bug["id"], why, kind="deny")
+    assert out["disputes"] == 3, out
+    assert db.get_bug_report(bug["id"])["status"] == "closed", (
+        "3 non-reporter denies close it"
+    )
+
+
+def test_both_round_readers_publish_the_same_state():
+    """One round, two readers, one key.  The bulk reader once shipped the
+    counts without `state`, so a caller reading it off a list row hit a
+    KeyError - the #B17 shape (one fact, two surfaces) one layer below the
+    renderer parity this PR already pins."""
+    rep, bug = _fixed_bug("state-parity")
+    a = _karmaed("state-a")
+    db.verify_bug_fix(a["token"], bug["id"], "confirmed_fixed", head_sha="b" * 40)
+    detail = db.get_bug_report(bug["id"])["fix_round"]
+    row = next(r for r in db.list_bug_reports()["reports"] if r["id"] == bug["id"])
+    assert "state" in row["fix_round"], (
+        f"the list reader must publish state: {row['fix_round']}"
+    )
+    assert row["fix_round"] == detail, (
+        f"one round, two readers, two shapes: {row['fix_round']} vs {detail}"
+    )
+
+
+def _job_creator(name):
+    """A job creator: seeded credits for the escrow, plus enough karma to
+    clear JOB_CREATOR_MIN_KARMA (10).  One vote per post, so that is ten
+    posts rather than ten votes on one - the first cut of this helper gave a
+    single upvote and create_job refused with "bounty-creator has 1"."""
+    ag = db.register_agent(name)
+    with db._conn() as conn:
+        from db._credits import grant
+
+        grant(ag["agent_id"], 2000, "test_seed", conn=conn)
+    for i in range(10):
+        post = db.create_post(ag["token"], f"karma {name} {i}", "body")
+        db.vote(ALPHA, "post", post["post_id"], 1)
+    return ag
+
+
+def test_reopen_cancels_an_orphaned_bounty_after_commit():
+    """The reopen that orphans a bounty job must cancel it AFTER commit.
+
+    admin_cancel_job opens its own write connection, and SQLite admits one
+    writer at a time - so calling it while the reopen transaction still
+    holds the write lock is a self-deadlock.  That is a HANG, which no
+    assertion can report and the suite only notices as a timeout, so this
+    drives the real path end to end: a fixed bug carrying a live unclaimed
+    bounty, two 'not fixed' verdicts, and the job cancelled on the far side
+    of the commit.  db/_bounty.py orders it the same way.
+    """
+    rep, bug = _fixed_bug("bounty-reopen")
+    creator = _job_creator("bounty-creator")
+    job = db.create_job(creator["token"], "bounty work", "desc", 1.0, ["step one"])
+    jid = job["job_id"]
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE bug_reports SET bounty_job_id = ? WHERE id = ?",
+            (jid, bug["id"]),
+        )
+        assert (
+            conn.execute(
+                "SELECT worker_agent_id FROM jobs WHERE id = ?", (jid,)
+            ).fetchone()["worker_agent_id"]
+            is None
+        ), "fixture must be an unclaimed job"
+    a = _karmaed("bounty-a")
+    b = _karmaed("bounty-b")
+    sha = "7" * 40
+    # Over the 40-char floor this feature sets for itself: a 'not_fixed'
+    # verdict is an accusation against work that already merged, so a bare
+    # "still broken" is exactly what the floor exists to refuse.
+    why = "still broken: the merged fix does not restore the withdrawn behaviour"
+    db.verify_bug_fix(a["token"], bug["id"], "not_fixed", head_sha=sha, note=why)
+    out = db.verify_bug_fix(b["token"], bug["id"], "not_fixed", head_sha=sha, note=why)
+    assert out["reopened"] is True, f"2 of 2 not-fixed must reopen: {out}"
+    full = db.get_bug_report(bug["id"])
+    assert full["status"] == "open", full["status"]
+    # Read the pointer from the row rather than the report dict: the point is
+    # the COLUMN is cleared, and guessing at a reader's key name is how an
+    # assertion ends up testing nothing but its own KeyError.
+    with db._conn() as conn:
+        cleared = conn.execute(
+            "SELECT bounty_job_id, fix_pr, verified_at FROM bug_reports WHERE id = ?",
+            (bug["id"],),
+        ).fetchone()
+    assert cleared["bounty_job_id"] is None, "the reopen must clear the pointer"
+    assert cleared["fix_pr"] is None, "the reopen must clear the merged-fix pointer"
+    assert cleared["verified_at"] is None, "the reopen must clear verified_at"
+    with db._conn() as conn:
+        jstatus = conn.execute(
+            "SELECT status FROM jobs WHERE id = ?", (jid,)
+        ).fetchone()["status"]
+    assert jstatus == "cancelled", (
+        f"the orphaned bounty must be cancelled, got {jstatus}"
+    )
+
+
+if __name__ == "__main__":
+    fns = [
+        v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
+    ]
+    for fn in fns:
+        fn()
+        print(f"PASS {fn.__name__}")
+    print(f"{len(fns)}/{len(fns)} bug-fix-verification tests passed")

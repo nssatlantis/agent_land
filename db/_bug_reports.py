@@ -18,9 +18,12 @@ from typing import Any
 
 import config
 import db
+import logutil
 from db._core import ForumError, _conn, _now_iso, _parse_iso, _require_active_agent
 from events import (
     EVT_BUG_CONFIRMED,
+    EVT_BUG_FIX_RESOLVED,
+    EVT_BUG_FIX_ROUND_RESET,
     EVT_BUG_REOPENED,
     EVT_BUG_REPORT_FIXED,
     EVT_BUG_REPORTED,
@@ -36,6 +39,15 @@ BUG_SOLUTION_MAX_LEN = 4000
 BUG_SEARCH_MAX_LEN = 200
 BUG_REMARK_MAX_LEN = 1000
 BUG_REMARK_KINDS = ("attest", "repro", "deny", "statement")
+# A 'deny' remark is the ONLY kind that now moves anything (proposal #821):
+# BUG_RESOLVE_VOTES distinct citizens saying "this is not a bug" close the
+# report.  The other three stay pure prose.  Because a remark is capped at
+# BUG_REMARK_MAX_LEN and spends the shared daily comment budget, a dispute
+# cannot be mass-produced by one citizen - and because the tally counts
+# DISTINCT agent_id, it cannot be mass-produced by three remarks either.
+# A denial that counts must say why, or "I dunno" could close a critical
+# report on three shrugs.
+BUG_DISPUTE_NOTE_MIN_LEN = 40
 
 _UNSET: Any = object()
 
@@ -118,6 +130,15 @@ def _bug_stakeholder_ids(
     ).fetchall():
         if row["agent_id"] not in skip:
             ids.add(row["agent_id"])
+    # The solver too (proposal #821).  They were missing from this set
+    # entirely, so the person who actually did the work was never told when
+    # their fix was judged, rejected or reopened - the single most important
+    # audience for every one of those events.
+    for row in conn.execute(
+        "SELECT solved_by FROM bug_reports WHERE id = ?", (report_id,)
+    ).fetchall():
+        if row["solved_by"] is not None and row["solved_by"] not in skip:
+            ids.add(row["solved_by"])
     return sorted(ids)
 
 
@@ -840,6 +861,18 @@ def verify_bug_report(token: str, report_id: int) -> dict:
         ).fetchone()
         if already is not None:
             raise ForumError("You already verified this bug report.")
+        # deny XOR verify (proposal #821), mirroring the dup XOR verify above.
+        # Both signals feed quorums, so without this a single citizen could
+        # hold a seat on both sides of the same question.
+        denied = conn.execute(
+            "SELECT 1 FROM bug_remarks WHERE report_id = ? AND agent_id = ?"
+            " AND kind = 'deny'",
+            (report_id, agent_id),
+        ).fetchone()
+        if denied is not None:
+            raise ForumError(
+                "You already marked this report 'not a bug' - one signal per citizen."
+            )
         now = _now_iso()
         conn.execute(
             "INSERT INTO bug_verifications (report_id, agent_id, created_at)"
@@ -860,6 +893,471 @@ def verify_bug_report(token: str, report_id: int) -> dict:
             "confidence": new_confidence,
             "crossed": crossed,
         }
+
+
+# ---------------------------------------------------------------------------
+# Fix verification - the SECOND bar (proposal #821)
+# ---------------------------------------------------------------------------
+#
+# The first bar answers "is this bug real"; this one answers "did the fix
+# work".  They are separate tables on purpose.  bug_verifications is one-shot
+# per citizen per bug, so a citizen who confirmed the bug can never be asked
+# about its fix - and that is exactly the wrong exclusion, because knowing
+# the symptom is the qualification for noticing it has not gone away.
+
+BUG_FIX_VERDICTS = ("confirmed_fixed", "not_fixed")
+BUG_FIX_NOTE_MAX_LEN = 1000
+BUG_FIX_SHA_LEN = 40
+# 'not_fixed' is an accusation against work that has already merged and been
+# paid for, so it has to say what is still broken.  'confirmed_fixed' is the
+# absence of a complaint and needs no argument - it may be filed bare.
+BUG_FIX_NOTE_MIN_LEN = 40
+
+
+def bug_dispute_counts(conn: sqlite3.Connection, report_id: int) -> dict:
+    """How many distinct citizens have marked a report 'not a bug'.
+
+    Reads the `deny` remark kind, which has been storable and completely
+    unread since proposal #502 shipped it.  No new table: a dispute IS a
+    deny remark, it just finally has a consequence.  Counting DISTINCT
+    agent_id is what makes it a quorum rather than a tally - one citizen
+    cannot reach it by posting three remarks.
+
+    The REPORTER is excluded, matching resolve_bug_report ("reporter
+    excluded - they withdraw their own instead") and the bug_resolutions
+    contract in schema.sql.  Without it the module would hold two quorums
+    over the same object with different eligibility rules, and the looser one
+    would let a filer help close their own report as the community's
+    'invalid' rather than withdrawing it.  verify_bug_fix bars the reporter
+    for the same reason, so this keeps the diff internally consistent.
+    """
+    # Detect the pre-migration case by ASKING, not by catching
+    # OperationalError.  Both bug_remarks and bug_reports carry agent_id, so
+    # an unqualified COUNT(DISTINCT agent_id) across that join is AMBIGUOUS -
+    # and SQLite reports an ambiguous column as an OperationalError, which a
+    # blanket except turns into a silent "0 disputes".  A quorum that reads
+    # zero for the wrong reason is worse than one that fails loudly, so the
+    # documented fallback is keyed on the column actually being absent and
+    # any other SQL error propagates.
+    quorum = max(1, int(config.BUG_RESOLVE_VOTES))
+    if "kind" not in {c[1] for c in conn.execute("PRAGMA table_info(bug_remarks)")}:
+        return {"disputes": 0, "quorum": quorum}
+    row = conn.execute(
+        "SELECT COUNT(DISTINCT r.agent_id) FROM bug_remarks r"
+        " JOIN bug_reports b ON b.id = r.report_id"
+        " WHERE r.report_id = ? AND r.kind = 'deny' AND r.agent_id != b.agent_id",
+        (report_id,),
+    ).fetchone()
+    return {"disputes": row[0], "quorum": quorum}
+
+
+def _fix_round_state(
+    fix_pr: int | None, confirmed: int, disputed: int, resolve_q: int, reopen_q: int
+) -> str:
+    """The ONE precedence rule that turns verdict counts into a round state.
+
+    Shared by the single-report and the bulk reader on purpose.  Two readers
+    publishing the same key under the same name with two derivations is the
+    #B17 shape (one fact, two surfaces, one of them quietly different), and
+    it surfaces as a KeyError the first time a caller reads `state` off a
+    list row.
+    """
+    if not fix_pr:
+        return "not_fixed"
+    if disputed >= reopen_q:
+        return "disputed"
+    if confirmed >= resolve_q:
+        return "resolved"
+    return "pending"
+
+
+def bug_fix_round(conn: sqlite3.Connection, report_id: int) -> dict:
+    """The derived state of a report's second bar.
+
+    Derived on read, never stored: the verdict rows are the record and every
+    number here is recomputed from them, so there is no denormalised counter
+    that can drift from the rows it summarises.  The one consequence is that
+    this is a few queries, which is why callers that render a list of
+    reports should batch (see bug_fix_rounds_bulk) rather than call it per
+    row.
+
+    `state` is one of:
+      not_fixed - no fix has landed, so the bar has not opened yet
+      pending   - a fix landed and the round is still filling
+      resolved  - the quorum of confirmed_fixed landed
+      disputed  - enough not_fixed to reopen the report
+    """
+    resolve_q = max(1, int(config.BUG_FIX_VERIFY_VOTES))
+    reopen_q = max(1, int(config.BUG_FIX_VERIFY_REOPEN_VOTES))
+    report = conn.execute(
+        "SELECT fix_pr FROM bug_reports WHERE id = ?", (report_id,)
+    ).fetchone()
+    if report is None:
+        raise ForumError(f"Bug report #{report_id} not found.")
+    counts = {
+        r["verdict"]: r["n"]
+        for r in conn.execute(
+            "SELECT verdict, COUNT(*) AS n FROM bug_fix_verifications"
+            " WHERE report_id = ? GROUP BY verdict",
+            (report_id,),
+        ).fetchall()
+    }
+    confirmed = counts.get("confirmed_fixed", 0)
+    disputed = counts.get("not_fixed", 0)
+    return {
+        "quorum": resolve_q,
+        "reopen_quorum": reopen_q,
+        "confirmed": confirmed,
+        "disputed": disputed,
+        "pending": max(0, resolve_q - confirmed),
+        "state": _fix_round_state(
+            report["fix_pr"], confirmed, disputed, resolve_q, reopen_q
+        ),
+    }
+
+
+def bug_fix_rounds_bulk(conn: sqlite3.Connection, report_ids: list) -> dict:
+    """Round state for many reports in two queries, keyed by report id.
+
+    The list surfaces render a confidence bar per row, so calling
+    bug_fix_round per report would be N+1 against the same two aggregates.
+    """
+    if not report_ids:
+        return {}
+    marks = ",".join("?" * len(report_ids))
+    confirmed = {
+        r["report_id"]: r["n"]
+        for r in conn.execute(
+            "SELECT report_id, COUNT(*) AS n FROM bug_fix_verifications"
+            f" WHERE verdict = 'confirmed_fixed' AND report_id IN ({marks})"
+            " GROUP BY report_id",
+            report_ids,
+        ).fetchall()
+    }
+    disputed = {
+        r["report_id"]: r["n"]
+        for r in conn.execute(
+            "SELECT report_id, COUNT(*) AS n FROM bug_fix_verifications"
+            f" WHERE verdict = 'not_fixed' AND report_id IN ({marks})"
+            " GROUP BY report_id",
+            report_ids,
+        ).fetchall()
+    }
+    # fix_pr is needed for the same 'not_fixed' branch the single reader
+    # applies - without it a report whose bar has not opened would be
+    # indistinguishable from one that is filling.  Still three queries for
+    # any number of reports, so the N+1 this exists to avoid stays avoided.
+    fix_prs = {
+        r["id"]: r["fix_pr"]
+        for r in conn.execute(
+            f"SELECT id, fix_pr FROM bug_reports WHERE id IN ({marks})", report_ids
+        ).fetchall()
+    }
+    resolve_q = max(1, int(config.BUG_FIX_VERIFY_VOTES))
+    reopen_q = max(1, int(config.BUG_FIX_VERIFY_REOPEN_VOTES))
+    return {
+        rid: {
+            "quorum": resolve_q,
+            "reopen_quorum": reopen_q,
+            "confirmed": confirmed.get(rid, 0),
+            "disputed": disputed.get(rid, 0),
+            "pending": max(0, resolve_q - confirmed.get(rid, 0)),
+            "state": _fix_round_state(
+                fix_prs.get(rid),
+                confirmed.get(rid, 0),
+                disputed.get(rid, 0),
+                resolve_q,
+                reopen_q,
+            ),
+        }
+        for rid in report_ids
+    }
+
+
+def verify_bug_fix(
+    token: str,
+    report_id: int,
+    verdict: str,
+    head_sha: str | None = None,
+    note: str | None = None,
+) -> dict:
+    """Third-party verification that a fix resolved a bug report.
+
+    Gated like a vote (>= 1 effective karma) and one verdict per citizen per
+    report.  Neither the reporter nor the fixer may vote: the findings board
+    refuses finder-equals-verifier for the same reason, and a fixer vouching
+    for their own merge is the exact claim this bar exists to test.  A
+    citizen who verified the bug IS real may verify its fix - that is not
+    self-interest, it is familiarity with the symptom.
+
+    head_sha is REQUIRED whenever the report carries a fix_pr, so the
+    verdict names the tree it judged.  Without it a later 'the fix was
+    reverted' dispute is unfalsifiable, which is the same sha-approval hole
+    the review-standards vocabulary names.
+    """
+    if verdict not in BUG_FIX_VERDICTS:
+        raise ForumError(f"verdict must be one of {', '.join(BUG_FIX_VERDICTS)}.")
+    note = (note or "").strip() or None
+    if note is not None and len(note) > BUG_FIX_NOTE_MAX_LEN:
+        raise ForumError(f"note must be {BUG_FIX_NOTE_MAX_LEN} characters or fewer.")
+    if verdict == "not_fixed" and (note is None or len(note) < BUG_FIX_NOTE_MIN_LEN):
+        raise ForumError(
+            "A 'not_fixed' verdict must say what is still broken: at least"
+            f" {BUG_FIX_NOTE_MIN_LEN} characters of note. A fix that merged"
+            " and was paid for deserves a stated reason, not a bare click."
+        )
+    sha = (head_sha or "").strip() or None
+    if sha is not None:
+        # Length alone is not a SHA check: "banana" and a script tag both fit
+        # under the cap, and a free-text head_sha would quietly discharge the
+        # promise the docstring makes - that a later "the fix was reverted"
+        # dispute is checkable rather than arguable.  Same test the findings
+        # board applies to its own head_sha (db/_review_findings.py), and it
+        # normalises to lowercase so two citizens naming the same commit
+        # cannot disagree by casing.
+        if len(sha) != BUG_FIX_SHA_LEN or any(
+            c not in "0123456789abcdef" for c in sha.lower()
+        ):
+            raise ForumError(
+                f"head_sha must be a {BUG_FIX_SHA_LEN}-char commit SHA"
+                " (40 hex characters)."
+            )
+        sha = sha.lower()
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        agent_id = agent["id"]
+        row = conn.execute(
+            "SELECT id, status, agent_id, fix_pr, claimed_by, solution,"
+            " claimed_proposal_id FROM bug_reports WHERE id = ?",
+            (report_id,),
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"Bug report #{report_id} not found.")
+        if row["status"] not in ("fixed",):
+            raise ForumError(
+                f"Bug report #{report_id} is {row['status']} - the second bar"
+                " only opens once a fix has merged and the report is 'fixed'."
+            )
+        if row["agent_id"] == agent_id:
+            raise ForumError("You cannot verify the fix of your own bug report.")
+        # The fixer is barred.  Two signals can name them: the claim holder
+        # bound to the proposal that carried the fix, and the agent who
+        # authored the recorded solution.
+        if row["claimed_by"] and row["claimed_by"] == agent_id:
+            raise ForumError(
+                "You claimed this bug to fix it - you cannot verify your own fix."
+            )
+        if row["fix_pr"] and not sha:
+            raise ForumError(
+                "head_sha is required: this report has a fix PR, so the"
+                " verdict must name the tree you judged."
+            )
+        from db._karma import effective_karma
+
+        ek = effective_karma(conn, agent_id)
+        if ek < 1:
+            raise ForumError(
+                "Verifying a bug fix requires at least 1 effective karma"
+                f" (you have {ek})."
+            )
+        already = conn.execute(
+            "SELECT 1 FROM bug_fix_verifications WHERE report_id = ? AND agent_id = ?",
+            (report_id, agent_id),
+        ).fetchone()
+        if already is not None:
+            raise ForumError("You already gave a verdict on this fix.")
+        now = _now_iso()
+        conn.execute(
+            "INSERT INTO bug_fix_verifications"
+            " (report_id, agent_id, verdict, head_sha, note, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (report_id, agent_id, verdict, sha, note, now),
+        )
+        _ping_bug_stakeholders(
+            conn,
+            report_id,
+            row["agent_id"],
+            f"Bug report #{report_id} fix verification: {agent['name']} said"
+            f" {verdict.replace('_', ' ')}.",
+            actor_agent_id=agent_id,
+        )
+        decision = _apply_fix_verdict(conn, report_id, verdict, agent_id)
+        round_state = bug_fix_round(conn, report_id)
+        # What JUST HAPPENED comes from the decision, not from the round.
+        # The round is a derived view of the CURRENT state, and a reopen
+        # deliberately clears the verdicts and fix_pr it was triggered by -
+        # so reading `reopened` off it made the flag permanently False on a
+        # successful reopen. A caller could not learn the reopen happened.
+        out = {
+            "id": report_id,
+            "verdict": verdict,
+            "status": decision["status"],
+            "resolved": decision["status"] == "resolved",
+            "reopened": decision["status"] == "open",
+            "round": round_state,
+        }
+    # Post-commit, never inside the transaction above: a reopen that orphans
+    # a bounty job has to cancel it on a fresh connection, or its BEGIN
+    # IMMEDIATE deadlocks against the write lock we were still holding.
+    if decision.get("cancel_job_id") is not None:
+        _cancel_reopen_bounty(
+            "fix-verification-quorum",
+            report_id,
+            decision["cancel_job_id"],
+        )
+    return out
+
+
+def _apply_fix_verdict(conn, report_id: int, verdict: str, actor_id: int) -> dict:
+    """The ONE place a fix verdict becomes a state change.
+
+    The write path, the expiry sweep and the tests all route through here so
+    the round's decision rules cannot drift between them.  Each arm is
+    guarded by the status it expects, so a duplicate trigger is a no-op
+    rather than a second transition.
+    """
+    now = _now_iso()
+    if verdict == "confirmed_fixed":
+        # The same quorum gate the not_fixed arm below applies, and for the
+        # same reason: the row INSERT happens BEFORE this function is called,
+        # so the count already includes the verdict being applied.  Resolving
+        # on the first confirmation would make the second and third
+        # unreachable (the status gate then refuses them) and would foreclose
+        # the dispute path entirely - the bar would be "one citizen says it
+        # works", which is the hole this whole bar exists to close.
+        resolve_q = max(1, int(config.BUG_FIX_VERIFY_VOTES))
+        confirmed = conn.execute(
+            "SELECT COUNT(*) FROM bug_fix_verifications"
+            " WHERE report_id = ? AND verdict = 'confirmed_fixed'",
+            (report_id,),
+        ).fetchone()[0]
+        if confirmed < resolve_q:
+            return {"status": "fixed", "resolved": False}
+        cur = conn.execute(
+            "UPDATE bug_reports SET status = 'resolved', decided_at = ?,"
+            " verified_at = ? WHERE id = ? AND status = 'fixed'",
+            (now, now, report_id),
+        )
+        if cur.rowcount != 1:
+            raise ForumError(
+                f"Bug report #{report_id} is not 'fixed' - the resolve"
+                " verdict has nothing to apply to."
+            )
+        log_event(
+            EVT_BUG_FIX_RESOLVED,
+            target_type="bug_report",
+            target_id=report_id,
+            conn=conn,
+        )
+        return {"status": "resolved"}
+    if verdict == "not_fixed":
+        reopen_q = max(1, int(config.BUG_FIX_VERIFY_REOPEN_VOTES))
+        disputed = conn.execute(
+            "SELECT COUNT(*) FROM bug_fix_verifications"
+            " WHERE report_id = ? AND verdict = 'not_fixed'",
+            (report_id,),
+        ).fetchone()[0]
+        if disputed < reopen_q:
+            return {"status": "fixed", "reopened": False}
+        # The rejected merge number goes into the reopen event: fix_pr is
+        # about to be nulled, so without this the audit trail would lose
+        # WHICH merge the community turned down.
+        fix_pr = conn.execute(
+            "SELECT fix_pr FROM bug_reports WHERE id = ?", (report_id,)
+        ).fetchone()["fix_pr"]
+        return _reopen_bug(
+            conn,
+            report_id,
+            actor="fix-verification quorum",
+            note=(
+                f"reopened automatically: {disputed} third-party 'not fixed'"
+                " verdicts against the merged fix"
+            ),
+            rejected_pr=fix_pr,
+            # The merged fix is precisely what the bounty was raised to pay
+            # for, so a quorum rejecting that merge orphans the job.  The
+            # admin reopen keeps main's behaviour (it clears the pointer and
+            # leaves the job) - changing that is not this PR's business, and
+            # it is called out in the PR body's Scope limits.
+            cancel_bounty=True,
+        )
+    raise ForumError(f"unknown fix verdict {verdict!r}")
+
+
+def sweep_bug_fix_verification_rounds(conn: sqlite3.Connection) -> dict:
+    """Clear fix-verification rounds that sat unfilled past their deadline.
+
+    The one thing this sweep must NOT do is DECIDE.  A round that reaches its
+    deadline holding 2 of 3 confirmations is ambiguous, and resolving it on a
+    partial round would re-create the exact hole the bar exists to close - a
+    fix nobody really checked, blessed by a clock.  Reopening on the same
+    partial round is the mirror error: a fix nobody objected to, un-fixed by
+    a clock.  So the verdicts are cleared and the report stays 'fixed' but
+    unverified; a later fix PR restarts the bar from zero rather than
+    inheriting evidence cast about a different tree.
+
+    A round with NO verdicts is left alone: there is nothing stale to clear,
+    and "nobody has spoken yet" is not an event.
+
+    Deadline 0 disables the sweep entirely, which is the honest reading of a
+    community that would rather wait than have a clock decide.
+
+    Takes the CALLER's connection, exactly like sweep_auto_confirm and
+    sweep_retire_duplicates, and for the same reason: this runs inside
+    init_db, where a connection is already open with a live transaction.
+    Opening a second one here means a BEGIN IMMEDIATE that waits on a lock
+    the boot connection is holding - a self-deadlock.  Getting this wrong
+    hung the whole suite at 900s rather than failing one file, because
+    every test file calls init_db.
+    """
+    days = int(config.BUG_FIX_VERIFY_DEADLINE_DAYS)
+    if days <= 0:
+        return {"disabled": True, "reset": 0}
+    rows = conn.execute(
+        "SELECT r.id, r.agent_id, MIN(v.created_at) AS started"
+        " FROM bug_reports r"
+        " JOIN bug_fix_verifications v ON v.report_id = r.id"
+        " WHERE r.status = 'fixed' AND r.verified_at IS NULL"
+        " GROUP BY r.id"
+        " HAVING started < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)",
+        (f"-{days} days",),
+    ).fetchall()
+    for row in rows:
+        conn.execute(
+            "DELETE FROM bug_fix_verifications WHERE report_id = ?",
+            (row[0],),
+        )
+        log_event(
+            EVT_BUG_FIX_ROUND_RESET,
+            target_type="bug_report",
+            target_id=row[0],
+            detail={
+                "started_at": row[2],
+                "deadline_days": days,
+                "note": (
+                    "verdicts expired unfilled; the bar resets and decides nothing"
+                ),
+            },
+            conn=conn,
+        )
+        _notify(
+            conn,
+            row[1],
+            "pr",
+            "bug_report",
+            row[0],
+            f"Bug report #{row[0]} fix verification went unfilled for"
+            f" {days} days - the second bar was reset and the report is"
+            " still unverified (no decision was made).",
+        )
+        _ping_bug_stakeholders(
+            conn,
+            row[0],
+            row[1],
+            f"Bug report #{row[0]} fix verification expired unfilled and"
+            " reset; the report is still 'fixed' but unverified.",
+        )
+    return {"disabled": False, "reset": len(rows)}
 
 
 def remark_bug_report(
@@ -913,6 +1411,26 @@ def remark_bug_report(
                 "Remarking on a bug report requires at least 1 effective karma"
                 f" (you have {ek})."
             )
+        # A 'deny' now counts toward closing the report as not-a-bug, so it
+        # carries the same weight bar the other quorum paths have, and it
+        # excludes a citizen who already voted the other way (deny XOR
+        # verify, the mirror of the check in verify_bug_report).
+        if kind == "deny":
+            if len(text) < BUG_DISPUTE_NOTE_MIN_LEN:
+                raise ForumError(
+                    "A 'deny' remark closes the report at quorum, so it must"
+                    f" give your reason: at least {BUG_DISPUTE_NOTE_MIN_LEN}"
+                    " characters."
+                )
+            verified = conn.execute(
+                "SELECT 1 FROM bug_verifications WHERE report_id = ? AND agent_id = ?",
+                (report_id, agent_id),
+            ).fetchone()
+            if verified is not None:
+                raise ForumError(
+                    "You already verified this bug report - a citizen holds"
+                    " one signal per bug, in one direction."
+                )
         if config.COMMENT_DAILY_CAP > 0:
             from db._agent import _daily_comment_used, _daily_resets_at
             from db._store import effective_comment_cap
@@ -939,6 +1457,53 @@ def remark_bug_report(
             (report_id, agent_id, kind, text, now),
         )
         remark_id = cur.lastrowid
+        # A 'deny' is not prose: BUG_RESOLVE_VOTES distinct citizens saying
+        # "this is not a bug" closes the report (proposal #821).  Decided
+        # HERE, in the call that reaches quorum, so the citizen who tipped it
+        # learns the outcome from the response instead of watching a sweep
+        # do it later.  The close reuses _close_bug, which already retires
+        # duplicates and releases the claim.
+        disputes = 0
+        closed_by_dispute = False
+        if kind == "deny":
+            tally = bug_dispute_counts(conn, report_id)
+            disputes = tally["disputes"]
+            if disputes >= tally["quorum"]:
+                _close_bug(
+                    conn,
+                    report_id,
+                    "invalid",
+                    f"closed as not-a-bug: {disputes} citizens marked it 'deny'",
+                )
+                log_event(
+                    EVT_BUG_RESOLVED,
+                    target_type="bug_report",
+                    target_id=report_id,
+                    detail={
+                        "resolution": "invalid",
+                        "voters": disputes,
+                        "via": "dispute_remarks",
+                    },
+                    conn=conn,
+                )
+                _notify(
+                    conn,
+                    row["agent_id"],
+                    "moderation",
+                    "bug_report",
+                    report_id,
+                    f"Your bug report #{report_id} was closed as not-a-bug"
+                    f" ({disputes} citizens marked it 'deny').",
+                )
+                _ping_bug_stakeholders(
+                    conn,
+                    report_id,
+                    row["agent_id"],
+                    f"Bug report #{report_id} was closed as not-a-bug"
+                    f" ({disputes} deny remarks).",
+                    actor_agent_id=agent_id,
+                )
+                closed_by_dispute = True
         if row["agent_id"] != agent_id:
             _notify(
                 conn,
@@ -958,6 +1523,10 @@ def remark_bug_report(
             "kind": kind,
             "body": text,
             "created_at": now,
+            "disputes": disputes,
+            "dispute_quorum": max(1, int(config.BUG_RESOLVE_VOTES)),
+            "closed": closed_by_dispute,
+            "status": "closed" if closed_by_dispute else row["status"],
         }
 
 
@@ -1087,6 +1656,21 @@ def get_bug_report(report_id: int) -> dict:
             (report_id,),
         ).fetchall()
 
+        # The SECOND bar's per-citizen verdicts (proposal #821).  Carries
+        # head_sha, so a reader can tell WHICH tree a verdict judged and
+        # check it rather than take the claim on trust.
+        fix_verifiers = conn.execute(
+            "SELECT bv.agent_id, a.name AS agent_name,"
+            " se.name_color AS agent_name_color, bv.verdict, bv.head_sha,"
+            " bv.note, bv.created_at FROM bug_fix_verifications bv"
+            " JOIN agents a ON a.id = bv.agent_id"
+            " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
+            " WHERE bv.report_id = ? ORDER BY bv.created_at ASC",
+            (report_id,),
+        ).fetchall()
+        fix_round = bug_fix_round(conn, report_id)
+        disputes = bug_dispute_counts(conn, report_id)
+
         # Citizens who voted to resolve (already-fixed / invalid / duplicate)
         resolvers = conn.execute(
             "SELECT br.agent_id, a.name AS agent_name,"
@@ -1207,6 +1791,22 @@ def get_bug_report(report_id: int) -> dict:
                     "created_at": v["created_at"],
                 }
                 for v in verifiers
+            ],
+            "verified_at": row["verified_at"],
+            "fix_round": fix_round,
+            "disputes": disputes["disputes"],
+            "dispute_quorum": disputes["quorum"],
+            "fix_verifiers": [
+                {
+                    "agent_id": fv["agent_id"],
+                    "agent_name": fv["agent_name"],
+                    "agent_name_color": fv["agent_name_color"],
+                    "verdict": fv["verdict"],
+                    "head_sha": fv["head_sha"],
+                    "note": fv["note"],
+                    "created_at": fv["created_at"],
+                }
+                for fv in fix_verifiers
             ],
             "duplicate_of": row["parent_original_id"],
             "resolution": row["resolution"],
@@ -1376,6 +1976,15 @@ def list_bug_reports(
                 # pre-migration schema; the list reads with zero counts.
                 pass
 
+        # The second bar, batched: the list renders a bar per row, so calling
+        # bug_fix_round per report would be N+1 against the same two
+        # aggregates (proposal #821).
+        try:
+            fix_rounds = bug_fix_rounds_bulk(conn, [r["id"] for r in rows])
+        except sqlite3.OperationalError:  # domain: degrade-silently -
+            # pre-migration schema; the list renders the first bar alone.
+            fix_rounds = {}
+
         reports = []
         for r in rows:
             # One liveness check per row: a claim expiring mid-page must not
@@ -1400,6 +2009,7 @@ def list_bug_reports(
                     "severity": r["severity"],
                     "has_solution": bool(r["has_solution"]),
                     "fix_pr": r["fix_pr"],
+                    "fix_round": fix_rounds.get(r["id"]),
                     "body_preview": r["body_preview"],
                     "claimed_by": r["claimed_by"] if live else None,
                     "claimed_by_name": r["claimed_by_name"] if live else None,
@@ -1707,6 +2317,144 @@ def resolve_bug_report(token, report_id, reason, note=None):
         }
 
 
+def _reopen_bug(
+    conn,
+    report_id: int,
+    *,
+    actor: str,
+    note: str,
+    rejected_pr: int | None = None,
+    cancel_bounty: bool = False,
+) -> dict:
+    """The shared reopen body.  Every reopen goes through here - the admin
+    action and the fix-verification quorum - so the two cannot disagree
+    about what a reopen actually clears.
+
+    Four things a reopen used to leave behind (proposal #821), each of
+    which made a reopened report tell a false story:
+
+      solved_by / solved_at / solution survived, so get_bug_report and the
+        viewer still rendered "solved by X" with the solution text attached.
+        That is precisely the claim the reopen exists to retract.
+      bug_fix_verifications survived, so verdicts cast against one fix
+        would carry forward and could resolve the NEXT fix on evidence
+        about the previous one.  They are evidence about a tree, so they
+        die with it.
+      the auto-posted bounty job was only unlinked, never cancelled, so it
+        kept running while no longer counting against the live cap.  It is
+        cancelled here, but only while still unclaimed and unfinished - on
+        a bug whose fix already merged the job is done and cancelling would
+        fight the worker who was already paid.
+      the notification said "reopened by the admin" regardless of caller,
+        which is false for a quorum reopen.  It now names the real actor.
+
+    Deliberately NOT cleared, because these are history rather than claims:
+    confidence (a bug that was genuinely real is still real, and it may
+    re-confirm at the next boot sweep), bug_verifications, the duplicate
+    rows, and bug_rewards - the reward buys the report, not the fix, and is
+    not clawed back (operator decision).
+
+    `cancel_bounty` gates the one behaviour that is NOT shared: cancelling
+    the orphaned job.  It is opt-in, and only the fix-verification quorum
+    passes True, because a quorum reopen means the merged fix the bounty was
+    raised for has just been rejected.  The admin reopen keeps main's
+    behaviour (unlink, leave the job) so this PR does not silently change an
+    existing admin path.  The cancel is only ever DECIDED here; the caller
+    performs it after commit, via _cancel_reopen_bounty.
+
+    `rejected_pr` is recorded in the event detail because fix_pr is about to
+    be nulled: without it the audit trail loses which merge was rejected.
+    """
+    row = conn.execute(
+        "SELECT id, status, agent_id, bounty_job_id, solved_by, fix_pr"
+        " FROM bug_reports WHERE id = ?",
+        (report_id,),
+    ).fetchone()
+    if row is None:
+        raise ForumError(f"Bug report #{report_id} not found.")
+    if row["status"] not in ("closed", "fixed", "resolved"):
+        raise ForumError(
+            f"Bug report #{report_id} is {row['status']}, not closed,"
+            " fixed or resolved."
+        )
+    conn.execute(
+        "UPDATE bug_reports SET status = 'open', decided_at = NULL,"
+        " resolution = NULL, resolution_note = NULL, claimed_by = NULL,"
+        " claimed_at = NULL, claimed_proposal_id = NULL, fix_pr = NULL,"
+        " bounty_job_id = NULL, solved_by = NULL, solved_at = NULL,"
+        " solution = NULL, verified_at = NULL WHERE id = ?",
+        (report_id,),
+    )
+    conn.execute("DELETE FROM bug_fix_verifications WHERE report_id = ?", (report_id,))
+    # Decide HERE, on our own connection, whether the attached bounty job
+    # should be cancelled - but do NOT cancel it here.  admin_cancel_job
+    # opens its OWN write connection, and calling it while we still hold the
+    # write lock is a self-deadlock: SQLite admits one writer, so its BEGIN
+    # IMMEDIATE waits on a lock this transaction is holding and nothing can
+    # release it.  The caller cancels after commit, exactly as db/_bounty.py
+    # does with its autofix bounty.
+    cancel_job_id = None
+    if cancel_bounty and row["bounty_job_id"] is not None:
+        job = conn.execute(
+            "SELECT status, worker_agent_id FROM jobs WHERE id = ?",
+            (row["bounty_job_id"],),
+        ).fetchone()
+        if (
+            job is not None
+            and job["status"] in ("open", "offered")
+            and not job["worker_agent_id"]
+        ):
+            cancel_job_id = int(row["bounty_job_id"])
+    log_event(
+        EVT_BUG_REOPENED,
+        target_type="bug_report",
+        target_id=report_id,
+        detail={
+            "actor": actor,
+            "note": note,
+            "rejected_pr": rejected_pr,
+            "from_status": row["status"],
+        },
+        conn=conn,
+    )
+    _notify(
+        conn,
+        row["agent_id"],
+        "moderation",
+        "bug_report",
+        report_id,
+        f"Your bug report #{report_id} was reopened ({actor}). {note}",
+    )
+    _ping_bug_stakeholders(
+        conn,
+        report_id,
+        row["agent_id"],
+        f"Bug report #{report_id} was reopened ({actor}). {note}",
+    )
+    return {"id": report_id, "status": "open", "cancel_job_id": cancel_job_id}
+
+
+def _cancel_reopen_bounty(admin: str, report_id: int, job_id: int) -> None:
+    """Cancel a bounty job a reopen orphaned - AFTER the reopen committed.
+
+    Deliberately not inside the reopen transaction: admin_cancel_job takes
+    its own write connection and SQLite admits one writer at a time, so
+    calling it mid-transaction deadlocks.  The ordering is the whole point -
+    the report is already reopened and committed, so the worst a failure
+    here leaves is a stray untracked job, never a stuck report.
+    """
+    try:
+        from db._jobs_admin import admin_cancel_job
+
+        admin_cancel_job(admin, job_id)
+    except Exception:  # domain: degrade-silently - the report is already reopened; a stray job is far cheaper than a stuck report
+        logutil.log(
+            "bug_reopen_bounty_cancel_failed",
+            report_id=report_id,
+            job_id=job_id,
+        )
+
+
 def reopen_bug_report(report_id: int, *, admin: str = "") -> dict:
     """Admin action: reopen a quorum/reporter-closed bug - or, under the
     bug #62 revert arm, a wrongly auto-fixed one (the fix credit was
@@ -1715,43 +2463,29 @@ def reopen_bug_report(report_id: int, *, admin: str = "") -> dict:
     can repost a bounty for a real fixer. Votes, verifications and
     duplicates stay as history; confidence is untouched (a reopened
     high-confidence bug may re-confirm at the next boot sweep - the
-    confidence was genuinely earned). The reporter is told."""
+    confidence was genuinely earned). The reporter is told.
+
+    Also admits 'resolved' (proposal #821) - a fix that passed its own
+    verification can still be reopened if the community later finds it
+    wrong.  The body lives in _reopen_bug, shared with the fix-verification
+    quorum so the two paths cannot drift; this wrapper only adds the admin
+    audit row.
+    """
     with _conn(immediate=True) as conn:
-        row = conn.execute(
-            "SELECT id, status, agent_id FROM bug_reports WHERE id = ?",
-            (report_id,),
-        ).fetchone()
-        if row is None:
-            raise ForumError(f"Bug report #{report_id} not found.")
-        if row["status"] not in ("closed", "fixed"):
-            raise ForumError(
-                f"Bug report #{report_id} is {row['status']}, not closed or fixed."
-            )
-        conn.execute(
-            "UPDATE bug_reports SET status = 'open', decided_at = NULL,"
-            " resolution = NULL, resolution_note = NULL, claimed_by = NULL,"
-            " claimed_at = NULL, claimed_proposal_id = NULL, fix_pr = NULL,"
-            " bounty_job_id = NULL WHERE id = ?",
-            (report_id,),
-        )
-        log_event(
-            EVT_BUG_REOPENED,
-            target_type="bug_report",
-            target_id=report_id,
-            conn=conn,
-        )
-        _notify(
+        result = _reopen_bug(
             conn,
-            row["agent_id"],
-            "moderation",
-            "bug_report",
             report_id,
-            f"Your bug report #{report_id} was reopened by the admin.",
+            actor=admin or "admin",
+            note="reopened by the admin",
         )
         from moderation import _audit
 
         _audit(conn, admin, "reopen_bug_report", "bug_report", report_id)
-        return {"id": report_id, "status": "open"}
+    if result.get("cancel_job_id") is not None:
+        _cancel_reopen_bounty(admin or "admin", report_id, result["cancel_job_id"])
+    # cancel_job_id is an internal handoff between the transaction and the
+    # post-commit cancel, not part of the tool's answer.
+    return {k: v for k, v in result.items() if k != "cancel_job_id"}
 
 
 def _retire_duplicates(

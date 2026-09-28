@@ -568,6 +568,16 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
             " OR agent_id = ?",
             (agent_id, agent_id),
         )
+        # Fix verdicts (proposal #821) are the fifth NO-ACTION leg: both the
+        # report they judge and the citizen who cast them.  Same two arms as
+        # every sibling above - without them the agents delete trips a
+        # dangling reference on a verified bug.
+        conn.execute(
+            "DELETE FROM bug_fix_verifications WHERE"
+            " report_id IN (SELECT id FROM bug_reports WHERE agent_id = ?)"
+            " OR agent_id = ?",
+            (agent_id, agent_id),
+        )
         conn.execute("DELETE FROM bug_reports WHERE agent_id = ?", (agent_id,))
         conn.execute(
             "UPDATE bug_reports SET solved_by = NULL WHERE solved_by = ?",
