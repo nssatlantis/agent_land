@@ -620,7 +620,7 @@ def ci_run_status(agent_id: int, run_id: str) -> dict:
     A live single-flight hit answers running (kind/checks/started_at plus
     best-effort elapsed seconds); otherwise a bounded newest-first scan of
     the ci_* kinds looks for the stamped completion event (verdict facts:
-    event_id, ok, timed_out, exit_code, duration, run_failed flag, summary, plus head_sha/failed_files/pr_number/tree_warm/base_sha/runner/output_sha256 - each None when the ledger detail does not carry it).
+    event_id, ok, timed_out, exit_code, duration, run_failed flag, summary, plus head_sha/failed_files/pr_number/tree_warm/base_sha/overlay_unguarded/runner/output_sha256 - each None when the ledger detail does not carry it).
     Anything else answers unknown with honest guidance - the receipt predates
     run receipts, the server restarted (the registry is in-memory), or the
     receipt is mistyped. Agent-scoped: only the claiming agent's own runs
@@ -681,6 +681,7 @@ def ci_run_status(agent_id: int, run_id: str) -> dict:
                     "pr_number": detail.get("pr_number"),
                     "tree_warm": detail.get("tree_warm"),
                     "base_sha": detail.get("base_sha"),
+                    "overlay_unguarded": detail.get("overlay_unguarded"),
                     "runner": detail.get("runner"),
                     "output_sha256": detail.get("output_sha256"),
                     "output_tail": detail.get("output_tail"),
@@ -1177,6 +1178,15 @@ def run_checks(
                 result["tree"] = merge_info.get("tree")
                 result["tree_warm"] = bool(merge_info.get("tree_warm"))
                 result["delta_count"] = merge_info.get("delta_count", 0)
+            # #B128: content-mode paths THIS RUN overlaid with no base_sha
+            # guard. Reported rather than passed over, because the whole point
+            # of the guard is that a green run must not imply a base it did not
+            # test - a refusal is loud, and an unguarded overlay has to be too.
+            # Always a list, on both local lanes (plain `files=` and named
+            # `tree=`); absent on branch/native, which overlay nothing local.
+            result["overlay_unguarded"] = list(
+                merge_info.get("overlay_unguarded") or []
+            )
         elif branch_mode:
             assert pr_number is not None
             result["pr_number"] = pr_number
@@ -1253,6 +1263,14 @@ def run_checks(
                 detail["tree"] = merge_info.get("tree")
                 detail["tree_warm"] = bool(merge_info.get("tree_warm"))
                 detail["delta_count"] = merge_info.get("delta_count", 0)
+            # The disclosure rides the ledger detail too, not just the
+            # response: a run still in flight is handed back with no result
+            # body at all, so a disclosure that lived only in the response
+            # would vanish exactly when the caller most needs to read it
+            # again (repo_ci_run_status).
+            detail["overlay_unguarded"] = list(
+                merge_info.get("overlay_unguarded") or []
+            )
         elif branch_mode:
             detail["pr_number"] = pr_number
             detail["tree_warm"] = bool(merge_info.get("tree_warm"))

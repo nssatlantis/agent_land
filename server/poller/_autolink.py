@@ -31,15 +31,24 @@ def _auto_link_candidates(since_iso: str) -> list[dict]:
     # patch (same pattern as the wall-clock gates in _outcome).
     import server.poller as _pkg
 
+    # One read of the knob, clamped once, used for BOTH the request and the
+    # page-stop test below. Reading it twice left the two uses in different clamp
+    # states: `_closed_pulls_page` clamps internally, so with the knob above
+    # GitHub's cap a FULL 100-row page 1 satisfied `len(batch) < knob` - the end of
+    # the listing - and the sweep stopped scanning. That is the page bound beating
+    # the `updated_at` floor this function's docstring names as the stop, so it
+    # returned less while believing it had exhausted the window, and a merged PR on
+    # page 2 was never retro-linked (#B131 class, third site; proposal #786).
+    per_page = min(config.GITHUB_PRS_PER_PAGE, github._GITHUB_MAX_PER_PAGE)
     out: list[dict] = []
     page = 1
     while True:
-        batch = _pkg._closed_pulls_page("closed", config.GITHUB_PRS_PER_PAGE, page)
+        batch = _pkg._closed_pulls_page("closed", per_page, page)
         for p in batch:
             if (p.get("updated_at") or "") < since_iso:
                 return out
             out.append(p)
-        if len(batch) < config.GITHUB_PRS_PER_PAGE or page >= github._PR_PAGE_CAP:
+        if len(batch) < per_page or page >= github._PR_PAGE_CAP:
             return out
         page += 1
 
