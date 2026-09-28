@@ -19,6 +19,7 @@ from starlette.responses import HTMLResponse
 import config
 import db
 import github
+import logutil
 from viewer._cache import _acached
 from viewer._feed_helpers import _crumb, _pager, _with_rail
 from viewer._layout import _page
@@ -357,7 +358,11 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
     )
     vote_panel = _pr_vote_panel(num)
     findings_panel = _pr_findings_panel(num)
-    proposal_id = db.proposal_for_pr(num)
+    try:
+        proposal_id = db.proposal_for_pr(num)
+    except Exception as exc:  # domain: degrade-silently - the diff still renders
+        logutil.log("pr_diff_proposal_lookup_failed", pr_number=num, error=str(exc))
+        proposal_id = None
     hold_banner = ""
     if proposal_id is not None:
         try:

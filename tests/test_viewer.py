@@ -1243,6 +1243,21 @@ def test_docket_card_shows_findings_chip():
         for label in quiet:
             assert label not in html, f"empty board minted a chip: {label}"
 
+    # #776 D1: the chip is the PROPOSAL-wide total (one proposal can carry
+    # several PRs), so its tooltip has to say so - otherwise it reads as a
+    # per-PR count and disagrees confusingly with the panel on /prs/{n}.
+    row = dict(
+        base,
+        findings_summary={
+            "open_findings": 2,
+            "verified_findings": 0,
+            "open_blockers": 1,
+        },
+    )
+    html = _docket_card(row)
+    assert "blocking finding" in html, html
+    assert "every PR on this proposal" in html, html
+
     # Blockers lead over the open count they are a subset of.
     html = _docket_card(
         dict(
@@ -1270,6 +1285,12 @@ def test_docket_card_shows_findings_chip():
         )
     )
     assert "1 open finding</span>" in one, "one open finding reads singular"
+    # D1 is the scope label, so the label is the thing under test: the open
+    # branch says "across all its PRs" like the blocking one does.  Without
+    # this the branch could drop the scope wording and the suite stays green -
+    # two thirds of D1's deliverable unpinned.  (Carried forward from #1500's
+    # pin so this stacked PR is a superset, not a regression.)
+    assert "across all its PRs" in one, one
     many = _docket_card(
         dict(
             base,
@@ -1296,6 +1317,253 @@ def test_docket_card_shows_findings_chip():
     assert "2 verified findings</span>" in ver, "a cleared board still reads"
     assert "verdict-chip vc-ok" in ver, "verified renders in the ok colour"
     assert "verdict-chip vc-warn" not in ver, "a cleared board does not warn"
+    # The third scope label.  The apostrophe in "this proposal's" is escaped by
+    # esc (html.escape defaults to quote=True), so the entity is what lands in
+    # the attribute - asserting the raw apostrophe would fail for a reason that
+    # has nothing to do with the label.  (Carried forward from #1500's pin so
+    # this stacked PR is a superset, not a regression.)
+    assert "across all this proposal&#x27;s PRs" in ver, ver
+
+
+def test_pr_findings_panel_renders_proof_meta_and_empty_state():
+    """The per-PR findings panel itself: what a row shows, what a clean board
+    shows, and what a board that could not be read shows.
+
+    Split out of test_docket_card_shows_findings_chip, which tests the
+    proposal-wide CHIP on the docket.  Both surfaces read the same board, and
+    both were pinned in one function named for only the first - so a panel
+    regression reported as a chip failure, on a merge-gating surface.  Named
+    separately in #776 review.
+    """
+    # #776 D8: a failed board read must be VISIBLE.  Returning "" makes a
+    # broken panel indistinguishable from a clean board - the fail-silent
+    # class in #B134, on a surface that gates merges.
+    import db as _db
+    from viewer import _pr_helpers as _prh
+
+    _real_lookup = _db.proposal_for_pr
+
+    def _boom(_n):
+        raise RuntimeError("simulated board read failure")
+
+    _db.proposal_for_pr = _boom
+    try:
+        degraded = _prh._pr_findings_panel(999999)
+    finally:
+        _db.proposal_for_pr = _real_lookup
+    assert degraded, "a failed board read rendered nothing - reads as clean"
+    assert "not a clean board" in degraded, degraded
+    assert "999999" in degraded, degraded
+    # The degraded panel carries the same scope label the healthy one has -
+    # two headers for one surface is how they drift apart again.
+    assert "Review findings on this PR" in degraded, degraded
+
+    # #776 D4: provenance metadata. Fixture-free, and it pins the
+    # singular/plural and the two "omit a zero" branches.
+    _meta = _prh._finding_meta
+    assert _meta({"finder_agent_id": 3, "corroborations": 0}) == "filed by agent 3"
+    # `in` is not enough for the singular: "1 corroboration" is a SUBSTRING of
+    # "1 corroborations", so always pluralising the ternary would stay green.
+    # Assert the whole rendered line instead.
+    assert _meta({"finder_agent_id": 3, "corroborations": 1}) == (
+        "filed by agent 3 / 1 corroboration"
+    ), _meta({"finder_agent_id": 3, "corroborations": 1})
+    assert "2 corroborations" in _meta({"finder_agent_id": 3, "corroborations": 2})
+    assert "verified by agent 9" in _meta(
+        {"finder_agent_id": 3, "state": "resolved", "verified_by_agent_id": 9}
+    )
+    # #776 D4 review fix: a `stale` row keeps verified_by_agent_id (the staling
+    # update rewrites only `state`) and still buckets as OPEN in the panel, so
+    # the old id-only test advertised a verification the panel was simultaneously
+    # counting as unresolved.  The pair below is only satisfiable if the gate
+    # really tests `state` - neither assertion can pass on the id-only version.
+    assert "lapsed" in _meta(
+        {"finder_agent_id": 3, "state": "stale", "verified_by_agent_id": 9}
+    ), _meta({"finder_agent_id": 3, "state": "stale", "verified_by_agent_id": 9})
+    assert "lapsed" not in _meta(
+        {"finder_agent_id": 3, "state": "resolved", "verified_by_agent_id": 9}
+    )
+    # A DISPUTED row also keeps its verifier id, and it is reachable: verify
+    # (resolved+verifier) -> a push stales it (state only) -> the opener
+    # disputes it, which finding_dispute refuses ONLY while the row is still
+    # `resolved`.  The hardcoded "(row is stale)" then printed a false fact on
+    # a row the same <li> badges as [disputed].  All three assertions below are
+    # unsatisfiable by a version that hardcodes "stale".
+    _disputed = _meta(
+        {"finder_agent_id": 3, "state": "disputed", "verified_by_agent_id": 9}
+    )
+    assert "lapsed" in _disputed, _disputed
+    assert "row is disputed" in _disputed, _disputed
+    assert "row is stale" not in _disputed, _disputed
+    # And the four legal states are the ones db.FINDING_STATES enumerates, so
+    # name the state rather than a hardcoded subset of it.
+    assert "row is open" in _meta(
+        {"finder_agent_id": 3, "state": "open", "verified_by_agent_id": 9}
+    )
+
+    # #776 D4: an empty board renders a visible state, not "". #1500 made
+    # a FAILED read visible; without this a clean board and a missing
+    # channel were the same pixels.
+    _saved_list = _db.findings_list
+    _db.proposal_for_pr = lambda _n: 4242
+    _db.findings_list = lambda *a, **k: []
+    try:
+        _empty = _prh._pr_findings_panel(4242)
+    finally:
+        _db.proposal_for_pr = _real_lookup
+        _db.findings_list = _saved_list
+    assert _empty, "an empty board rendered nothing"
+    assert "No findings filed" in _empty, _empty
+    # D8's observability half: the tag is the only thing that makes a
+    # failed read diagnosable, so assert it fires rather than assuming it.
+    import logutil as _log
+
+    _events = []
+    _real_log = _log.log
+
+    def _spy(event, **fields):
+        _events.append((event, fields))
+
+    _log.log = _spy
+    _db.proposal_for_pr = _boom
+    try:
+        _prh._pr_findings_panel(999999)
+    finally:
+        _log.log = _real_log
+        _db.proposal_for_pr = _real_lookup
+    assert any(
+        e == "pr_findings_panel_lookup_failed" and f.get("pr_number") == 999999
+        for e, f in _events
+    ), _events
+
+    # #776 D4, and the pin Lyra-Quill asked for on this PR: the panel
+    # must render the one-line proof, and the row must be shaped like the
+    # row db.findings_list actually returns.  The column is `check_text`
+    # (schema.sql; finding_add refuses an empty one); the MCP *tool*
+    # parameter is named `check`.  A view that takes the name from the
+    # tool schema instead of the row renders an empty div on every row in
+    # production and stays green - which is exactly what happened here.
+    # So: build the row with the real column name, render it through the
+    # PANEL (not the helper), and assert the proof text is in the HTML.
+    _row = {
+        "id": 7,
+        "category": "bug",
+        "class": "wire-shape",
+        "state": "open",
+        "flip_path": "rename the key",
+        "check_text": "the panel read a key no row carries",
+        "finder_agent_id": 3,
+        "verified_by_agent_id": None,
+        "corroborations": 0,
+    }
+    _saved_list2 = _db.findings_list
+    _saved_verdict = _db.finding_verdict
+    _saved_bounty = _db.finding_bounty_map
+    _db.proposal_for_pr = lambda _n: 4242
+    _db.findings_list = lambda *a, **k: [dict(_row)]
+    _db.finding_verdict = lambda *a, **k: {"open_auto_flip_by_voter": []}
+    _db.finding_bounty_map = lambda *a, **k: {}
+    try:
+        _panel = _prh._pr_findings_panel(4242)
+    finally:
+        _db.proposal_for_pr = _real_lookup
+        _db.findings_list = _saved_list2
+        _db.finding_verdict = _saved_verdict
+        _db.finding_bounty_map = _saved_bounty
+    assert _row["check_text"] in _panel, _panel
+    assert "filed by agent 3" in _panel, _panel
+
+    # A long proof must announce that it was cut.  Nothing upstream caps
+    # check_text (finding_add validates only non-empty), and D4's entire
+    # payload is that sentence - a bare [:400] rendered it looking complete.
+    _long_row = dict(_row, check_text="x" * 500)
+    _saved_ls = _db.findings_list
+    _db.proposal_for_pr = lambda _n: 4242
+    _db.findings_list = lambda *a, **k: [dict(_long_row)]
+    try:
+        _long_panel = _prh._pr_findings_panel(4242)
+    finally:
+        _db.proposal_for_pr = _real_lookup
+        _db.findings_list = _saved_ls
+    assert "x" * 400 in _long_panel, "the 400-char bound was not applied"
+    assert "x" * 401 not in _long_panel, "the proof was not actually cut"
+    assert "..." in _long_panel, "a cut proof must say so, or it reads as whole"
+    # The escape happens AFTER the cut, so the cut can never split an entity.
+    _esc_row = dict(_row, check_text="<b>&amp;</b> " + "y" * 400)
+    _db.proposal_for_pr = lambda _n: 4242
+    _db.findings_list = lambda *a, **k: [dict(_esc_row)]
+    try:
+        _esc_panel = _prh._pr_findings_panel(4242)
+    finally:
+        _db.proposal_for_pr = _real_lookup
+        _db.findings_list = _saved_ls
+    assert "&lt;b&gt;&amp;amp;&lt;/b&gt;" in _esc_panel, _esc_panel
+
+    # The degraded panel's two wordings are a claim about WHICH FACT the caller
+    # has, so each is pinned on its own.  This branch used to be
+    # `reason.startswith("proposal")` - control flow over a human-facing
+    # string - and the else-branch had no pin at all, so rewording the lookup
+    # reason would have silently flipped which direction the panel lies in
+    # (under-reporting a clean board vs claiming findings may exist) with
+    # nothing to fail.
+    _lookup = _prh._findings_panel_degraded(
+        7, "proposal lookup failed", board_may_exist=False
+    )
+    _read = _prh._findings_panel_degraded(7, "board read failed", board_may_exist=True)
+    assert "may or may not exist" in _lookup, _lookup
+    assert "may or may not exist" not in _read, _read
+    assert "board read failed" in _read, _read
+    # The reason is useful detail only where a board is known to exist; the
+    # lookup path states the uncertainty instead of naming the failure mode.
+    assert "proposal lookup failed" not in _lookup, _lookup
+    assert "not a clean board" in _lookup and "not a clean board" in _read
+
+    # The two asserts above call _findings_panel_degraded DIRECTLY with the
+    # values this test supplies, so they pin the helper and not the WIRING.
+    # Flipping `board_may_exist` at both production call sites - making the
+    # lookup path over-report, the exact false-alarm direction the comment
+    # above names - leaves every assertion here green.  So drive the panel
+    # itself and read the wording each path actually renders.
+    _real_pfr = _db.proposal_for_pr
+    _real_ls = _db.findings_list
+
+    def _read_boom(*_a, **_k):
+        raise RuntimeError("simulated board read failure")
+
+    # Path 1: the LOOKUP fails, so no board is known to exist.
+    _db.proposal_for_pr = _boom
+    try:
+        _lookup_panel = _prh._pr_findings_panel(999999)
+    finally:
+        _db.proposal_for_pr = _real_pfr
+    assert "may or may not exist" in _lookup_panel, _lookup_panel
+    assert "Findings may exist" not in _lookup_panel, _lookup_panel
+
+    # Path 2: the lookup succeeds, so a board exists, and then the READ fails.
+    _db.proposal_for_pr = lambda _n: 4242
+    _db.findings_list = _read_boom
+    try:
+        _read_panel = _prh._pr_findings_panel(4242)
+    finally:
+        _db.proposal_for_pr = _real_pfr
+        _db.findings_list = _real_ls
+    assert "Findings may exist" in _read_panel, _read_panel
+    assert "may or may not exist" not in _read_panel, _read_panel
+    assert "board read failed" in _read_panel, _read_panel
+
+    # `finder_agent_id` is the one branch of _finding_meta that INVENTS a value
+    # instead of passing one through, so it is the one a regression would
+    # hide: a row that lost the key rendered "agent None" and still looked
+    # like provenance.
+    assert _meta({}) == "filed by agent unknown", _meta({})
+    assert "unknown" in _meta({"corroborations": 2}), _meta({"corroborations": 2})
+
+    # corroborations is a COUNT(*) alias in practice, but the int() sat outside
+    # every try in a panel whose other reads all degrade - the one branch that
+    # could 500 the page.  Asserted here so the guard is pinned, not assumed.
+    _odd = _meta({"finder_agent_id": 3, "corroborations": "not-a-number"})
+    assert "filed by agent 3" in _odd, _odd
+    assert "corroboration" not in _odd, _odd
 
 
 def test_docket_summary_strip():
@@ -2914,6 +3182,7 @@ if __name__ == "__main__":
     test_todos_panel_list_mode_shows_list_level_claims()
     test_docket_card_shows_list_claim_summary()
     test_docket_card_shows_findings_chip()
+    test_pr_findings_panel_renders_proof_meta_and_empty_state()
     test_docket_summary_strip()
     test_collaborative_page_removed()
     test_lineage_families_group_chains()

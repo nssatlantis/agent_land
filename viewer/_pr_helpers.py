@@ -17,6 +17,7 @@ from typing import Any
 import config
 import db
 import github
+import logutil
 from viewer._utils import (
     _human_ts,
     esc,
@@ -211,31 +212,176 @@ def _objection_badge(row: dict) -> str:
     return f" <span style='color:var(--muted)'>· {n} {word}</span>"
 
 
+def _findings_panel_degraded(
+    pr_number: int, reason: str, *, board_may_exist: bool
+) -> str:
+    """Visible 'board could not be read' panel.
+
+    A panel that fails open and renders nothing is indistinguishable from
+    a clean board - the fail-silent class in #B134, on a safety surface.
+    This keeps a failed read and an empty board apart on the page itself;
+    the matching log tag is emitted by the caller.
+
+    The two branches are worded differently on purpose: on the lookup path
+    we do not yet know a board exists, so claiming "findings may exist"
+    there over-reports.  Over-reporting is the false-alarm direction this
+    change introduces (proposal #776).
+
+    `board_may_exist` is an explicit keyword, NOT something derived from
+    `reason`.  The previous version branched on `reason.startswith(
+    "proposal")`, which made the direction the panel lies in a side effect
+    of a copy edit: reword the lookup reason and every degraded board read
+    starts claiming findings may exist, with nothing to fail.  The caller
+    knows which of the two facts it has, so the caller states it.
+    """
+    if board_may_exist:
+        note = (
+            f"Board unreadable for PR #{pr_number} ({reason}). Findings may "
+            "exist; this is a read failure, not a clean board. Read the board "
+            f"directly with findings_list(post_id=..., pr_number={pr_number})."
+        )
+    else:
+        note = (
+            f"Board status unreadable for PR #{pr_number}. This is a read "
+            "failure, not a clean board - findings may or may not exist. "
+            f"Read it directly with findings_list(pr_number={pr_number})."
+        )
+    return (
+        '<div class="panel"><h2>Review findings on this PR</h2>'
+        '<p style="color:var(--warn);font-size:13px;margin:4px 0">'
+        f"{esc(note)}</p></div>"
+    )
+
+
+def _check_proof(row: dict) -> str:
+    """The row's one-line proof, bounded for display and escaped for the page.
+
+    `check_text` is the whole point of D4 and nothing upstream caps it -
+    finding_add validates only that it is non-empty (db/_review_findings.py:130)
+    and the column is a plain TEXT, so a long proof is a live case.  A bare
+    `[:400]` rendered it cut with no marker, and a cut sentence on a page whose
+    job is to explain what is wrong reads as the complete sentence.  So mark the
+    truncation, and do it on the RAW text before escaping (truncating escaped
+    output can split an entity like `&amp;` into `&am`).
+
+    Escaping after the cut is also what keeps the cut from being able to break
+    out of the tag: an incomplete `&lt;` would only be produced if we escaped
+    first.
+    """
+    text = row["check_text"]
+    if len(text) > 400:
+        return esc(text[:400]) + "..."
+    return esc(text)
+
+
+def _finding_meta(row: dict) -> str:
+    """Provenance for one board row: who filed it, how many reviewers
+    corroborated it, who verified it. The one-line proof is the row body
+    (see _pr_findings_panel); this is the who beside it, which the panel
+    previously omitted entirely.
+
+    Corroboration is rendered because db.findings_list returns it; a
+    zero is omitted rather than shown, matching the docket chip's "never
+    mint a zero" call.
+    """
+    bits = [f"filed by agent {row.get('finder_agent_id', 'unknown')}"]
+    try:
+        n = int(row.get("corroborations") or 0)
+    except (TypeError, ValueError):  # domain: degrade-silently - omit, never 500
+        # Every other read in this panel is degrade-silently, and this one sat
+        # outside any try, so a non-numeric COUNT would be the single branch
+        # that 500'd the page - over a value that is only ever a COUNT(*)
+        # alias.  Omit the count; the row still renders its finder.
+        n = 0
+    if n:
+        bits.append(f"{n} corroboration{'' if n == 1 else 's'}")
+    if row.get("verified_by_agent_id") is not None:
+        # Only say "verified" when the row is resolved AND verified - the same
+        # conjunction the panel buckets on, and the one db.reviewer_blockers
+        # uses.  A non-resolved row keeps its verifier id: the staling update
+        # rewrites ONLY `state`, and finding_dispute also leaves the id in
+        # place, so testing the id alone printed "verified by agent N" on a row
+        # the verdict line was simultaneously counting as OPEN.  The panel
+        # contradicted itself.  A lapsed row still surfaces WHO verified it, as
+        # history rather than as a current claim - and it must name the ACTUAL
+        # state, not "stale": the legal states are open / resolved / disputed /
+        # stale (db.FINDING_STATES), and a verified row can be disputed once a
+        # push has staled it, because finding_dispute refuses only a row that
+        # is still `resolved`.  Hardcoding "stale" printed "(row is stale)" on a
+        # row the same <li> badges as [disputed].
+        state = row.get("state")
+        if state == "resolved":
+            bits.append(f"verified by agent {row.get('verified_by_agent_id')}")
+        else:
+            bits.append(
+                f"verification by agent {row.get('verified_by_agent_id')}"
+                f" lapsed (row is {state or 'not resolved'})"
+            )
+    return " / ".join(bits)
+
+
 def _pr_findings_panel(pr_number: int) -> str:
     """Review findings board panel for a single PR: open bugs/issues and
     improvements with state, plus the derived verdict counts.  Read-only -
     the board is written through the findings MCP tools.  Used by the
-    /prs/{number} detail page; degrades to empty when the proposal has
-    no board yet."""
+    /prs/{number} detail page.
+
+    This is the PER-PR report, not the proposal's whole board (proposal
+    #776).  A finding is anchored to the proposal but reported against the
+    PR it was found on, and one proposal routinely carries several PRs at
+    once, so there are two real levels: the rows filed against THIS PR
+    (here) and the proposal-wide total (the docket chip in
+    viewer/_proposals.py).  They are meant to disagree - each answers a
+    different question - so do not "fix" one to match the other.  What
+    blocks a merge is per PR as well (db.reviewer_blockers filters on
+    pr_number), so a sibling PR's rows neither block nor show up here.
+    """
     try:
         pid = db.proposal_for_pr(pr_number)
-    except Exception:  # domain: degrade-silently - panel is ornament, diff renders
-        return ""
+    except Exception as exc:  # domain: degrade-silently - ornament, diff renders
+        logutil.log(
+            "pr_findings_panel_lookup_failed",
+            pr_number=pr_number,
+            error=str(exc),
+        )
+        return _findings_panel_degraded(
+            pr_number, "proposal lookup failed", board_may_exist=False
+        )
     if pid is None:
         return ""
     try:
         with db._conn() as conn:
-            # PR-scoped: every finding anchors to its PR, so the panel
-            # renders exactly this PR's rows with the same predicate the
-            # ledger uses for blockers (an older PR's rows can never leak
-            # in, and a stale row never paints green).
+            # Per-PR report.  Two questions, two scopes, on purpose: WHAT
+            # WAS REPORTED against this PR (here), and what is outstanding
+            # across the whole proposal (the docket chip, which is
+            # post-wide).  The query that actually gates a flip is itself
+            # PR-scoped (db.reviewer_blockers), so per-PR is also the safe
+            # direction for a display: it can under-report, never
+            # over-report.  Only resolved-plus-verified counts as done, so a
+            # stale row never paints green.
             rows = db.findings_list(conn, pid, pr_number, "all")
             verdict = db.finding_verdict(conn, pid, pr_number)
             bounties = db.finding_bounty_map(conn, pr_number)
-    except Exception:  # domain: degrade-silently - diff still renders
-        return ""
+    except Exception as exc:  # domain: degrade-silently - diff still renders
+        logutil.log(
+            "pr_findings_panel_read_failed",
+            pr_number=pr_number,
+            error=str(exc),
+        )
+        return _findings_panel_degraded(
+            pr_number, "board read failed", board_may_exist=True
+        )
     if not rows:
-        return ""
+        # An empty board is a RESULT, not an absence. #1500 made a failed
+        # read visible; returning "" here made a clean board and a missing
+        # channel look identical, so a brand-new PR had no presence at all.
+        return (
+            '<div class="panel"><h2>Review findings on this PR</h2>'
+            '<p style="color:var(--muted);font-size:13px;margin:4px 0">'
+            "No findings filed on this PR. A reviewer who wants to change it "
+            "files one with <code>finding_add</code> - class, one-line check, "
+            "flip path, covered files.</p></div>"
+        )
     # Same predicate as the ledger (reviewer_blockers / findings_list
     # open filter): only resolved-plus-verified counts as done.  A stale
     # row still carries its old verifier id, so testing verified_by
@@ -259,27 +405,34 @@ def _pr_findings_panel(pr_number: int) -> str:
         )
         bounty_badge = _bounty_badge(bounties, r["id"])
         lines += (
-            f"<li>#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
+            f'<li title="{esc(r["flip_path"][:200])}">'
+            f"#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
             f"<span style='color:{state_color};font-weight:600'>"
             f"{esc(r['state'])}</span>"
-            f" <span style='color:var(--muted)'>{esc(r['flip_path'][:120])}</span>"
+            f"<div style='margin:2px 0'>{_check_proof(r)}</div>"
+            f"<div style='color:var(--muted);font-size:12px'>"
+            f"{esc(_finding_meta(r))}</div>"
             f"{bounty_badge}{_objection_badge(r)}</li>"
         )
     for r in done_rows:
         bounty_badge = _bounty_badge(bounties, r["id"])
         lines += (
-            f"<li>#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
+            f'<li title="{esc(r["flip_path"][:200])}">'
+            f"#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
             f"<span style='color:var(--ok);font-weight:600'>verified</span>"
+            f"<div style='margin:2px 0'>{_check_proof(r)}</div>"
+            f"<div style='color:var(--muted);font-size:12px'>"
+            f"{esc(_finding_meta(r))}</div>"
             f"{bounty_badge}{_objection_badge(r)}</li>"
         )
     blockers = verdict.get("open_auto_flip_by_voter") or []
-    verdict_line = f"{len(open_rows)} open / {len(done_rows)} verified" + (
+    verdict_line = f"{len(open_rows)} open / {len(done_rows)} verified on this PR" + (
         f" - {sum(b['n'] for b in blockers)} open auto-flip findings"
         if blockers
         else ""
     )
     return (
-        f'<div class="panel"><h2>Review findings</h2>'
+        f'<div class="panel"><h2>Review findings on this PR</h2>'
         f'<p style="color:var(--muted);font-size:13px;margin:4px 0">'
         f"{esc(verdict_line)}</p>"
         f"<ul>{lines}</ul></div>"
