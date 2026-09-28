@@ -220,6 +220,21 @@ def test_legacy_rebuild_widens_check_preserves_rows_and_indexes():
 
 def test_three_confirmations_resolve_the_report():
     rep, bug = _fixed_bug("resolve3")
+    # The reporter is barred - checked HERE, while the report is still 'fixed'.
+    # It used to sit at the end of this test, after 3/3 had resolved it, and
+    # the status gate refused first with a different message, so the assert saw
+    # that instead of the reporter refusal.  Third masking bug in this one file,
+    # all the same shape: a file that raises on its FIRST failure reports one
+    # error and hides every assertion after it, and this runner sorts
+    # alphabetically, so which assertion you see is decided by its name.
+    msg = expect_error(
+        db.verify_bug_fix,
+        rep["token"],
+        bug["id"],
+        "confirmed_fixed",
+        head_sha="a" * 40,
+    )
+    assert "own bug" in msg, f"the reporter must be barred, got: {msg}"
     v = [_karmaed(f"res-{i}") for i in range(3)]
     # The first two must NOT resolve - that is the whole point of a bar, and
     # the prior version looped over all three and asserted `resolved is False`
@@ -240,16 +255,15 @@ def test_three_confirmations_resolve_the_report():
     full = db.get_bug_report(bug["id"])
     assert full["status"] == "resolved", f"3/3 must resolve: {full['status']}"
     assert full["verified_at"] is not None, "resolved must stamp verified_at"
-    assert full["fix_round"]["confirmed"] == 3
-    assert len(full["fix_verifiers"]) == 3
+    assert full["fix_round"]["confirmed"] == 3, (
+        f"the round must read 3/3, got {full['fix_round']}"
+    )
+    assert len(full["fix_verifiers"]) == 3, (
+        f"all three verdicts must be retained, got {full['fix_verifiers']}"
+    )
     assert all(f["head_sha"] == "a" * 40 for f in full["fix_verifiers"]), (
         "every verdict must carry the tree it judged"
     )
-    # The reporter cannot be the one who confirmed it.
-    msg = expect_error(
-        db.verify_bug_fix, rep["token"], bug["id"], "confirmed_fixed", head_sha="a" * 40
-    )
-    assert "own bug" in msg
 
 
 def test_two_not_fixed_reopen_and_clear_the_false_claim():
@@ -720,7 +734,26 @@ if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
     ]
+    # Collect failures instead of dying on the first one.  A runner that raises
+    # on the first failure reports exactly ONE defect per CI cycle and hides
+    # every assertion after it - and because the list above is sorted by NAME,
+    # which defect you see is decided by alphabetical order rather than by
+    # anything about the code under test.  Three separate masking bugs in this
+    # file were each discovered one 4-minute CI cycle apart for exactly that
+    # reason, each one hiding a different real defect behind the previous.
+    # Caveat, stated rather than assumed: a test that fails partway can leave
+    # shared DB state behind, so a FAIL line may occasionally be a consequence
+    # of an earlier one rather than an independent defect.  The FAIL line names
+    # the test, which is the information the bare traceback withheld.
+    failed = []
     for fn in fns:
-        fn()
-        print(f"PASS {fn.__name__}")
-    print(f"{len(fns)}/{len(fns)} bug-fix-verification tests passed")
+        try:
+            fn()
+        except Exception as exc:
+            failed.append(fn.__name__)
+            print(f"FAIL {fn.__name__}: {type(exc).__name__}: {exc}")
+        else:
+            print(f"PASS {fn.__name__}")
+    print(f"{len(fns) - len(failed)}/{len(fns)} bug-fix-verification tests passed")
+    if failed:
+        raise SystemExit(1)
