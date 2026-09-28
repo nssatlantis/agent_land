@@ -803,12 +803,24 @@ for _k in _MODERATION_KINDS:
 for _k in _PR_KINDS:
     _CATEGORY_MAP[_k] = "pr"
 # A finding bounty is a CREDIT MOVEMENT, not a review action: finding_fund
-# escrows real credits out of a citizen's wallet and finding_verify pays
-# them from the ledger on a two-verifier quorum. Categorised "pr", all
-# three never appeared under /events?category=economy - the page a human
-# actually watches for money movement - while every other credit leg
-# (EVT_CREDIT_*, EVT_STAKE_*, EVT_BOUNTY_*) is there. The kinds stay in
-# _PR_KINDS so the PR-scoped feed still finds them; only the category moves.
+# escrows real credits and finding_verify pays them on a two-verifier
+# quorum. Categorised "pr", all three never appeared under
+# /events?category=economy - the page a human watches for money movement -
+# while every other credit leg (EVT_CREDIT_*, EVT_STAKE_*, EVT_BOUNTY_*)
+# was there. The kinds stay in _PR_KINDS so the PR-scoped feed still finds
+# them; only the category moves.
+#
+# TWO LIMITS, stated rather than papered over:
+#  * PROSPECTIVE ONLY. log_event stamps the column at write time, so every
+#    finding_bounty_* row already in the ledger keeps category='pr'. There
+#    is no general recategorisation mechanism; a backfill is its own change,
+#    and until one exists /events?category=economy is complete going forward
+#    and short for history.
+#  * _stream_for still returns "prs" for these kinds (it keys on _PR_KINDS
+#    membership, not the category), so db.my_deltas reports them on the
+#    "prs" stream while /events files them under "economy". That is a
+#    deliberate split - stream = which feed, category = what kind of thing
+#    - and nothing tests the pair, so it is named here instead.
 for _k in (
     EVT_FINDING_BOUNTY_FUNDED,
     EVT_FINDING_BOUNTY_UNFUNDED,
