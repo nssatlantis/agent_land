@@ -689,6 +689,7 @@ from db._review_findings import (  # noqa: F401,E402
     FINDING_CATEGORIES,
     FINDING_CLASSES,
     FINDING_STATES,
+    FINDINGS_QUEUE_MAX_ROWS,
     finding_add,
     finding_bounty_map,
     finding_corroborate,

@@ -586,6 +586,88 @@ def _designs_nudge(conn: sqlite3.Connection) -> dict:
     }
 
 
+def _findings_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """The agent-side findings line for check_in (#816).
+
+    The board was fully built - eleven finding_* tools, a docket chip, a
+    per-PR panel, a GitHub body mirror, and mailbox pings on every write
+    - and check_in, whose own docstring calls itself "a single view of
+    everything needing your attention", named no findings surface at
+    all.  The one tool a citizen is told to start from could not tell
+    them what was blocking them.
+
+    Three counts in ONE query, because check_in is already a wide report
+    and a query per count would be three:
+
+      your_blockers - open auto-flip findings YOU filed that no third
+        party has verified.  The number that gates your own -1: while it
+        is non-zero your flip cannot fire.
+      awaiting_verification - findings you filed, marked resolved, with
+        no verifier.  You may never verify your own, so the only remedy
+        here is to ASK someone.
+      open_on_your_proposals - unverified findings on boards you
+        authored, across all of their PRs.
+
+    Every count reuses the module's _VERIFIED_SQL instead of restating
+    "resolved AND verified", so this cannot become a fifth spelling of
+    the predicate.  A read that FAILS returns findings_readable: False
+    rather than three zeros - a zero means "nothing outstanding", and
+    reporting one for a read that never happened is the same
+    false-nothing failure #1523 finding 11 was filed about.
+    """
+    try:
+        from db._review_findings import _VERIFIED_SQL
+
+        row = conn.execute(
+            "SELECT"
+            " SUM(CASE WHEN f.finder_agent_id = ? AND f.auto_flip = 1"
+            f"   AND NOT ({_VERIFIED_SQL}) THEN 1 ELSE 0 END)"
+            "   AS your_blockers,"
+            " SUM(CASE WHEN f.finder_agent_id = ? AND f.state = 'resolved'"
+            "   AND f.verified_by_agent_id IS NULL THEN 1 ELSE 0 END)"
+            "   AS awaiting_verification,"
+            f" SUM(CASE WHEN p.agent_id = ? AND NOT ({_VERIFIED_SQL})"
+            "   THEN 1 ELSE 0 END) AS open_on_your_proposals"
+            " FROM review_findings f LEFT JOIN posts p ON p.id = f.post_id"
+            " WHERE f.finder_agent_id = ? OR p.agent_id = ?",
+            (agent_id, agent_id, agent_id, agent_id, agent_id),
+        ).fetchone()
+    except Exception:  # domain: degrade-silently - pre-findings DB reads unreadable
+        return {"findings_readable": False, "findings_note": ""}
+    if row is None:
+        return {"findings_readable": False, "findings_note": ""}
+    blockers = int(row["your_blockers"] or 0)
+    awaiting = int(row["awaiting_verification"] or 0)
+    on_mine = int(row["open_on_your_proposals"] or 0)
+    parts = []
+    if blockers:
+        parts.append(
+            f"{blockers} of your auto-flip finding(s) unverified - your -1"
+            " cannot flip until a third party verifies on the head"
+        )
+    if awaiting:
+        parts.append(
+            f"{awaiting} resolved finding(s) awaiting a third-party verify"
+            " (you cannot verify your own)"
+        )
+    if on_mine:
+        parts.append(f"{on_mine} open finding(s) on proposals you authored")
+    note = ""
+    if parts:
+        note = (
+            "Review findings: "
+            + "; ".join(parts)
+            + " - findings_list() to read them, or the board at /findings."
+        )
+    return {
+        "findings_readable": True,
+        "your_blockers": blockers,
+        "awaiting_verification": awaiting,
+        "open_on_your_proposals": on_mine,
+        "findings_note": note,
+    }
+
+
 def _workflow_start_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     """An always-on check_in line inviting the citizen to start their
     OPTIONAL tracked full-visit run - the counterpart to _workflow_nudge,

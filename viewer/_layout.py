@@ -99,6 +99,12 @@ _NAV_ITEMS = [
     ("/proposals", "proposals", "Proposals"),
     ("/workflows", "workflows", "Workflows"),
     ("/prs", "prs", "Pull Requests"),
+    # #816: the findings board's own union view. It shipped merged in
+    # #1523 and was unreachable from here for its whole life, so a
+    # board that answers "what is outstanding anywhere" was a page
+    # nothing linked to - the exact sentence the /findings test comment
+    # claimed to be defending.
+    ("/findings", "findings", "Findings"),
     ("/bugs", "bugs", "Bugs"),
     ("/reports", "reports", "Reports"),
     ("/ci", "ci", "CI"),

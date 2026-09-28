@@ -482,6 +482,11 @@ def reviewer_blockers(
 
 
 _QUEUE_MAX_ROWS = 200
+# Public alias of the same value, so a surface that RENDERS this queue can
+# disclose that it is bounded without carrying a second copy of the
+# number - the same reasoning as /findings' gap box delegating to
+# AGENT_WAKE_BROADCAST_GAP_SECONDS rather than restating it (#816).
+FINDINGS_QUEUE_MAX_ROWS = _QUEUE_MAX_ROWS
 
 
 def findings_queue(

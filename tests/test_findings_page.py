@@ -34,6 +34,44 @@ def main():
     assert "/findings" in paths, "/findings route is not registered"
     print("  route registered: ok")
 
+    # --- #816: the route is REGISTERED and must also WORK --------------
+    # The pin above is the shallowest check available - the route is in a
+    # list. It stayed green for a whole merged PR lifetime while the
+    # handler raised on every request, because every other pin in this
+    # file calls _findings_body() and never the handler. So call it.
+    from starlette.requests import Request
+    from starlette.responses import HTMLResponse
+
+    from viewer._findings import findings_page
+
+    _scope: dict = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/findings",
+        "raw_path": b"/findings",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [],
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 80),
+        "app": None,
+    }
+    resp = findings_page(Request(_scope))
+    assert isinstance(resp, HTMLResponse), type(resp)
+    assert resp.status_code == 200, resp.status_code
+    _page_html = bytes(resp.body).decode("utf-8", "replace")
+    assert "Open findings queue" in _page_html, _page_html[:400]
+    # The discriminating half: _findings_body() alone carries no nav, so
+    # this asserts the PAGE composed rather than that nothing raised.
+    # /proposals is in _NAV_ITEMS and the findings table links only to
+    # /prs/{n} and /posts/{n}, so this href can only come from _page()'s
+    # frame - which is exactly the layer that was broken.
+    assert 'href="/proposals"' in _page_html, "the page frame did not render"
+    print("  handler returns a real page: ok")
+
     # --- empty state: an empty board is not an invisible board ---
     html = _findings_body()
     assert "Open findings queue" in html, html
@@ -97,6 +135,84 @@ def main():
     _healthy = _findings_body()
     assert "open finding(s) across every board" in _healthy, _healthy
     print("  count line is discriminating: ok")
+
+    # --- #816: the URL answers all three scopes ------------------------
+    from viewer._findings import proposal_findings_panel
+
+    def _req(qs: str = ""):
+        return Request({**_scope, "query_string": qs.encode()})
+
+    html = _findings_body(_req(f"proposal={pid}"))
+    assert f"finding #{fid}" in html, html
+    assert f"Review findings on proposal #{pid}" in html, html
+
+    html = _findings_body(_req("pr=4242"))
+    assert "Review findings on PR #4242" in html, html
+
+    # A scope the reader cannot have meant is refused BY NAME, and renders
+    # no table - a refusal that still prints rows is a wrong answer.
+    html = _findings_body(_req("proposal=abc"))
+    assert "proposal must be a whole number" in html, html
+    assert "abc" in html, html
+    assert "<table>" not in html, "a refused scope must render no table"
+
+    html = _findings_body(_req("proposal=1&pr=2"))
+    assert "different scopes" in html, html
+
+    html = _findings_body(_req("state=bogus"))
+    assert "state must be open, closed or all" in html, html
+
+    # ?state=closed with no scope SAYS SO rather than answering the open
+    # question under a closed-looking URL - the #1534 shape, where a
+    # silently-ignored parameter has the reader believing something the
+    # server never said.
+    html = _findings_body(_req("state=closed"))
+    assert "needs a scope" in html, html
+    assert "open finding(s) across every board" in html, html
+    print("  three scopes + refusals + no-silent-ignore: ok")
+
+    # The capped read discloses the cap. Lowering the module constant is
+    # the only way to reach the branch without seeding 200 rows, and it
+    # proves the page READS the cap rather than carrying its own copy -
+    # the second-copy-of-the-number defect. The second arm is the control:
+    # under the cap the note must be absent, or the first arm proves
+    # nothing.
+    _real_cap = db.FINDINGS_QUEUE_MAX_ROWS
+    try:
+        db.FINDINGS_QUEUE_MAX_ROWS = 1
+        html = _findings_body()
+        assert "the cross-board queue is bounded" in html, html
+        assert "Showing the oldest 1 open" in html, html
+        db.FINDINGS_QUEUE_MAX_ROWS = 99
+        html = _findings_body()
+        assert "the cross-board queue is bounded" not in html, html
+    finally:
+        db.FINDINGS_QUEUE_MAX_ROWS = _real_cap
+    print("  cap disclosed at the cap, silent below it: ok")
+
+    # --- the proposal panel shares the one table renderer --------------
+    rows = [
+        {
+            "id": fid,
+            "post_id": pid,
+            "pr_number": 4242,
+            "category": "bug",
+            "class": "other",
+            "state": "open",
+            "finder_agent_id": int(agents["beta"]["agent_id"]),
+            "created_at": "2026-09-27T00:00:00.000Z",
+            "post_title": "a board",
+        }
+    ]
+    panel = proposal_findings_panel({"id": pid, "findings_rows": rows})
+    assert "Review findings on this proposal" in panel, panel
+    assert f'href="/findings?proposal={pid}&amp;state=all"' in panel, panel
+    assert "nothing blocks a merge" in panel, panel
+    # An empty board renders nothing at all - the same call the docket
+    # chip makes, so the two surfaces agree about silence.
+    assert proposal_findings_panel({"id": pid, "findings_rows": []}) == ""
+    assert proposal_findings_panel({"id": pid}) == ""
+    print("  proposal panel + empty board: ok")
 
     print("test_findings_page: all assertions passed")
     import shutil

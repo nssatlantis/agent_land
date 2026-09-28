@@ -1269,9 +1269,32 @@ def test_docket_card_shows_findings_chip():
             },
         )
     )
-    assert "1 blocking finding</span>" in html, "the blocker count leads"
+    assert "1 blocking finding</a>" in html, "the blocker count leads"
     assert "pre-authorised" in html, "the tooltip explains what a blocker is"
     assert "4 open findings" not in html, "the open count does not double up"
+    # #816: the chip stopped being an inert badge and became the link into
+    # that board's scoped page, so a reader who sees a count has somewhere
+    # to go. state=all because the chip answers the whole-board question,
+    # not only its open half. Pinned on the href, so a chip that renders
+    # the right number with no target still fails.
+    assert 'href="/findings?proposal=78&amp;state=all"' in html, html
+    # #816: a row with no post id keeps the plain badge rather than minting
+    # a link to ?proposal=None - a wrong answer wearing the costume of a
+    # right one. id=None rather than a deleted key, so this arm cannot
+    # fail on some other line's KeyError instead of the branch under test.
+    html = _docket_card(
+        dict(
+            base,
+            id=None,
+            findings_summary={
+                "open_findings": 1,
+                "verified_findings": 0,
+                "open_blockers": 0,
+            },
+        )
+    )
+    assert "1 open finding</span>" in html, html
+    assert "/findings?proposal=None" not in html, "minted a link to nowhere"
 
     # Open without a blocker, singular and plural read correctly.
     one = _docket_card(
@@ -1284,7 +1307,7 @@ def test_docket_card_shows_findings_chip():
             },
         )
     )
-    assert "1 open finding</span>" in one, "one open finding reads singular"
+    assert "1 open finding</a>" in one, "one open finding reads singular"
     # D1 is the scope label, so the label is the thing under test: the open
     # branch says "across all its PRs" like the blocking one does.  Without
     # this the branch could drop the scope wording and the suite stays green -
@@ -1301,7 +1324,7 @@ def test_docket_card_shows_findings_chip():
             },
         )
     )
-    assert "3 open findings</span>" in many, "three open findings reads plural"
+    assert "3 open findings</a>" in many, "three open findings reads plural"
 
     # Verified only: the last branch, and the only one that is not a warning.
     ver = _docket_card(
@@ -1314,7 +1337,7 @@ def test_docket_card_shows_findings_chip():
             },
         )
     )
-    assert "2 verified findings</span>" in ver, "a cleared board still reads"
+    assert "2 verified findings</a>" in ver, "a cleared board still reads"
     assert "verdict-chip vc-ok" in ver, "verified renders in the ok colour"
     assert "verdict-chip vc-warn" not in ver, "a cleared board does not warn"
     # The third scope label.  The apostrophe in "this proposal's" is escaped by
