@@ -161,10 +161,28 @@ def _docket_card(
         f_plural = "" if f_n == 1 else "s"
         f_label = f"{f_n} {f_noun}{f_plural}"
         f_title = f"{f_label} — {f_note}"
-        chips.append(
-            f'<span class="verdict-chip {f_cls}" title="{esc(f_title)}">'
-            f"{esc(f_label)}</span>"
-        )
+        f_id = p.get("id")
+        if f_id is None:
+            # No post id means no board to link to.  Keep the badge rather
+            # than rendering ?proposal=None, which is a wrong answer
+            # wearing the costume of a right one.
+            chips.append(
+                f'<span class="verdict-chip {f_cls}" title="{esc(f_title)}">'
+                f"{esc(f_label)}</span>"
+            )
+        else:
+            # #816: an inert badge announced that a board existed and
+            # offered nowhere to go.  The chip IS the link now, and
+            # state=all so it answers the question the chip is answering
+            # - the whole board, not only its open half.  The per-PR
+            # report stays on /prs/{n}; these are different scopes and
+            # are meant to disagree.
+            chips.append(
+                f'<a class="verdict-chip {f_cls}"'
+                f' href="/findings?proposal={esc(str(f_id))}&amp;state=all"'
+                f' title="{esc(f_title)} - open this board">'
+                f"{esc(f_label)}</a>"
+            )
     by = (
         f'<a class="userlink" href="/agents/{p["agent_id"]}">{esc(p["author"])}</a>'
         if p.get("agent_id")
