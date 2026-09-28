@@ -490,13 +490,74 @@ def main():
         db.finding_thread = _real_thread  # type: ignore[assignment]
     assert f"finding #{fid3}" in html, "a trail read failure cost the reader the row"
     assert "could not be read" not in html, html
-    assert "reasoned contest" not in html, (
-        "a failed trail read rendered as 'no objections exist'"
+    # THE DISCRIMINATING HALF, and the reason this block was a FALSE GREEN
+    # until now: "reasoned contest" absent is true of BOTH the fix and the
+    # bug.  Pre-fix _read_trail swallowed the failure and returned {}, so a
+    # failed read rendered as "no objections exist" and every assertion in
+    # this block passed on the defect it was written to catch.  What
+    # separates them is that a failure must SAY SO - a reader cannot tell
+    # "nobody objected" from "we could not ask", and the second is a lie
+    # about a contested board.
+    assert "contest trail unreadable" in html, (
+        "a failed trail read is still rendered as an empty contest - the "
+        "absence of the contest block cannot tell a failure from a zero"
     )
-    assert "reasoned contest" in _findings_body(_req(f"finding={fid3}")), (
-        "the control did not restore the trail - the assertion above is vacuous"
+    # ...and it falls back to the reader's own count rather than to a zero,
+    # so the row keeps a number the reader can trust more than a bare zero.
+    assert ">1 objected</span>" in html, (
+        f"a failed trail read dropped the count instead of falling back: {html}"
     )
-    print("  a failed trail read degrades the trail, not the row: ok")
+    # The control, in both directions: restored, the row is a normal contest
+    # and the unreadable marker is gone - so the marker above is not simply
+    # always-on decoration.
+    _ctl = _findings_body(_req(f"finding={fid3}"))
+    assert "reasoned contest" in _ctl, "the control did not restore the trail"
+    assert "contest trail unreadable" not in _ctl, (
+        "the unreadable marker outlived the failed read"
+    )
+    print("  a failed trail read says so, and keeps the row: ok")
+
+    # --- the objection count has ONE authority, and it is the trail ------
+    # Two sources disagreed by construction: the row carries a COUNT from
+    # findings_queue, the trail carries the objections themselves, and they
+    # were read on two connections. Nothing could ever make them disagree
+    # (no DELETE exists against either table) - which is exactly why a test
+    # that only reads a consistent board proves nothing.  So this
+    # deliberately makes them disagree, by handing the renderer a trail
+    # whose count is not the row's, and pins WHICH ONE WINS.
+    _real_thread2 = db.finding_thread
+
+    def _doctored_thread(_conn, ids, *_a3, **_k3):
+        out = _real_thread2(_conn, ids)
+        for _fid, _row in out.items():
+            if _row["objections"]:
+                _row["objections"] = (
+                    list(_row["objections"])
+                    + [{"agent_id": _a, "body": "synthetic", "created_at": "z"}] * 6
+                )
+        return out
+
+    try:
+        db.finding_thread = _doctored_thread  # type: ignore[assignment]
+        html = _findings_body(_req(f"finding={fid3}"))
+    finally:
+        db.finding_thread = _real_thread2  # type: ignore[assignment]
+    # 1 real objection + 6 synthetic = 7 from the trail, against the row's
+    # stored 1.  Pre-fix the row's COUNT won and this page said "1 objected"
+    # while rendering seven - the self-contradicting row, one line under the
+    # code that says it "could only ever UNDER-count".
+    assert ">7 objected</span>" in html, (
+        f"the objection count did not follow the trail: {html}"
+    )
+    assert ">1 objected</span>" not in html, (
+        "the row's stored count won over the trail - two sources for one fact"
+    )
+    # The control: with the doctoring gone the row's own count is back, so
+    # the assertion above is discriminating rather than a constant.
+    assert ">1 objected</span>" in _findings_body(_req(f"finding={fid3}")), (
+        "the control did not restore the real trail"
+    )
+    print("  one authority for the objection count, and it is the trail: ok")
 
     # --- the SCOPED reader carries the board title (found in review) ----
     # The panel and both scoped URLs render a Board cell from
@@ -531,6 +592,216 @@ def main():
 
     assert db.FINDINGS_QUEUE_MAX_ROWS == _rf._QUEUE_MAX_ROWS
     print("  the disclosed cap is the enforced cap: ok")
+
+    # --- a SCOPED page with no rows must not describe the whole board ---
+    # Found in review, and it is the same defect as a wrong answer wearing
+    # a confident sentence: the empty-state copy was chosen by whether the
+    # SCOPED read returned rows, so ?proposal=<a real proposal with an
+    # empty board> rendered "Every filed finding is open for review
+    # somewhere in AgentLand" - a claim about the entire society, on a page
+    # whose URL names one proposal. A reader forwarded that link is told
+    # something true and completely beside the point.
+    _scoped_empty = _findings_body(_req(f"proposal={pid + 9000}"))
+    assert "across every board" not in _scoped_empty, _scoped_empty
+    assert "Every filed finding" not in _scoped_empty, _scoped_empty
+    # ...and it NAMES the scope it searched, so "nothing here" is
+    # distinguishable from "everything".
+    assert f"proposal #{pid + 9000}" in _scoped_empty, _scoped_empty
+    # The control, in both directions: the global page still makes the
+    # global claim, and the real proposal - which HAS rows - still renders
+    # them. So the assertion above is about scoping, not about the copy
+    # having been deleted everywhere.
+    _global_now = _findings_body()
+    assert "across every board" in _global_now, _global_now
+    assert f"finding #{fid}" in _findings_body(_req(f"proposal={pid}")), (
+        "the scoped read stopped returning its own rows"
+    )
+    print("  a scoped empty state names its scope, not the whole board: ok")
+
+    # --- hostile numbers cannot 500 the page (F5) -----------------------
+    # objections/paths reach the renderer straight from a row dict, and a
+    # non-numeric one reached int() unguarded: ValueError out of a render
+    # path is a 500 on a page whose whole job is to be readable when the
+    # board is unhealthy. Cheap, total, and it makes the page's other
+    # degradation paths (unreadable trail, unrenderable table) consistent
+    # with it.
+    from viewer._findings import _safe_int
+
+    assert _safe_int(None) == 0
+    assert _safe_int("") == 0
+    assert _safe_int("not a number") == 0
+    assert _safe_int("3") == 3, "a numeric STRING from SQLite must still count"
+    assert _safe_int(2) == 2
+    # The positive control: a real row's own value still comes through, or
+    # the guard is just zeroing everything.
+    with db._conn() as conn:
+        _rows = db.findings_list(conn)
+    _real_count = _safe_int(_rows[0]["objections"])
+    assert _real_count == 0, "a real row is not the all-zero shape assumed here"
+    print("  hostile counts degrade to zero, real ones still count: ok")
+
+    # ...and if the table itself cannot render, the PAGE still does. This
+    # is the other half: every other failure on this page degrades with a
+    # sentence, and a raising renderer was the one path that took the page
+    # down with it.
+    import viewer._findings as _vf
+
+    _real_table = _vf._findings_table
+
+    def _boom_table(*_a4, **_k4):
+        raise RuntimeError("renderer unavailable")
+
+    try:
+        _vf._findings_table = _boom_table  # type: ignore[assignment]
+        _guard = _findings_body()
+    finally:
+        _vf._findings_table = _real_table  # type: ignore[assignment]
+    assert "could not be rendered" in _guard, (
+        f"a raising renderer took the page down instead of degrading: {_guard}"
+    )
+    assert "across every board" in _guard, (
+        "the guard dropped the count line too - the page now lies by omission"
+    )
+    assert "Open findings queue" in _guard, _guard
+    # The control: restored, the page renders rows again, so the assertion
+    # above is about the guard and not about an empty board.
+    assert f"finding #{fid}" in _findings_body(), "the control did not restore"
+    # The SAME guard, on the other surface that draws a findings table. This
+    # is the half that matters most: the panel is embedded in /posts/{id},
+    # so an unguarded renderer there 500s a page far busier than /findings -
+    # the same failure mode this PR was opened for, in the one place a
+    # second copy of the render was still unguarded. Both surfaces route
+    # through ONE helper so there is one place to be wrong, and this pair
+    # is what stops a third copy appearing.
+    try:
+        _vf._findings_table = _boom_table  # type: ignore[assignment]
+        _panel = _vf.proposal_findings_panel({"id": pid, "findings_rows": _rows})
+    finally:
+        _vf._findings_table = _real_table  # type: ignore[assignment]
+    assert "could not be rendered" in _panel, (
+        f"the embedded proposal panel is not render-guarded: {_panel}"
+    )
+    assert f"({len(_rows)} matched" in _panel, (
+        f"the notice dropped the row count, so it reads as empty: {_panel}"
+    )
+    # And the control on this surface too: with rows the panel really does
+    # draw the table, so the notice above is the guard and not a constant.
+    _panel_ok = _vf.proposal_findings_panel({"id": pid, "findings_rows": _rows})
+    assert "<table" in _panel_ok, _panel_ok
+    assert "could not be rendered" not in _panel_ok, _panel_ok
+    print("  a raising renderer degrades both surfaces, not either page: ok")
+
+    # --- attribute values are escaped (F9) ------------------------------
+    # A DEFENSIVE pin, labelled as one: fid/pr/post are INTEGER columns, so
+    # the real reader never hands the renderer a string here. It is pinned
+    # anyway because the row dict is a plain dict - a fixture, a future
+    # reader, or a widened column reaches it without a type check - and
+    # because the visible text on the same line WAS escaped, which is what
+    # makes the gap a pure oversight rather than a decision.
+    _hostile = {
+        "id": '7"><script>alert(1)</script>',
+        "post_id": '3"><img src=x>',
+        "pr_number": '4242" onmouseover="x',
+        "finder_agent_id": 7,
+        "category": "bug",
+        "class": "scope",
+        "check_text": "a check",
+        "flip_path": "a flip",
+        "paths": None,
+        "auto_flip": 0,
+        "state": "open",
+        "corroborations": 0,
+        "objections": 0,
+        "verified_by_agent_id": None,
+        "created_at": "2026-09-27T00:00:00.000Z",
+    }
+    _esc_row = _vf._finding_row(_hostile)
+    # What matters is not the substring "onmouseover=" - an inert escaped
+    # attribute is fine and its presence proves the value was escaped at
+    # all. What matters is the attacker's RAW payload, quote included:
+    # a raw " is what breaks out of href="..." and starts a new attribute.
+    for _payload in (
+        '"><script>',
+        '"><img',
+        '4242" onmouseover="x',
+        "<script>alert(1)</script>",
+    ):
+        assert _payload not in _esc_row, (
+            f"an unescaped value reached the row: {_payload!r} in {_esc_row}"
+        )
+    # ...and the escaped forms are there, so this is a defence and not a
+    # deletion of the data.
+    assert "&lt;script&gt;" in _esc_row, _esc_row
+    assert "&quot; onmouseover=&quot;" in _esc_row, _esc_row
+    print("  attribute values are escaped like the visible text: ok")
+
+    # --- a count assertion must not match inside a longer count (F10) ---
+    # The badge pins here are all of the form ">N objected</span>". Without
+    # the leading ">" a row with ELEVEN corroborations satisfies an
+    # assertion written for one, so the pin passes on the wrong number -
+    # the substring class this file has already been bitten by twice. This
+    # checks the CHECK: the delimited form must not match the longer count,
+    # or every delimited pin in this file is weaker than it reads.
+    _row11 = _vf._finding_row(
+        {**_hostile, "id": 7, "objections": 0, "corroborations": 11}
+    )
+    assert ">11 corroborated</span>" in _row11, _row11
+    assert ">1 corroborated</span>" not in _row11, (
+        "the delimited form still matches inside a longer count - every "
+        "delimited pin in this file is weaker than it reads"
+    )
+    _row1 = _vf._finding_row(
+        {**_hostile, "id": 7, "objections": 0, "corroborations": 1}
+    )
+    assert ">1 corroborated</span>" in _row1, _row1
+    assert ">11 corroborated</span>" not in _row1, _row1
+    print("  a count pin cannot match inside a longer count: ok")
+
+    # --- finding_thread is chunked, and stays total across chunks (F4) ---
+    # The one IN-builder in db/ that could exceed SQLite's variable
+    # ceiling, on a PUBLIC reader whose parameter is uncapped. The pin is
+    # the ceiling itself - not "the helper was called" - and the second
+    # half is completeness, because a chunked read that drops a chunk is
+    # silent: the row would just show fewer objections.
+    import config as _cfg
+
+    _cap = int(_cfg.DB_ID_CHUNK_SIZE)
+    _asked = list(range(9000, 9000 + (_cap * 2 + 37)))
+    _seen_marks: list[int] = []
+
+    class _Spy:
+        """Delegating proxy: records the size of every IN built."""
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *a, **k):
+            if " IN (" in sql:
+                _seen_marks.append(sql.count("?"))
+            return self._inner.execute(sql, *a, **k)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    with db._conn() as _c2:
+        _out = db.finding_thread(_Spy(_c2), _asked)  # type: ignore[arg-type]
+    assert _seen_marks, "finding_thread built no IN clause to measure"
+    assert max(_seen_marks) <= _cap, (
+        f"a single IN carried {max(_seen_marks)} placeholders, over the "
+        f"{_cap}-id chunk ceiling"
+    )
+    # More than one statement, i.e. it really chunked rather than happening
+    # to fit - otherwise the ceiling above could pass on a single small IN.
+    assert len(_seen_marks) >= 2, (
+        f"expected the ids to be chunked, got {len(_seen_marks)} IN clause(s)"
+    )
+    # Total over the ids asked for - the other half of "chunked", and the
+    # half a silent bug would take: a dropped chunk is not an error, it is
+    # a row showing fewer objections than exist.
+    assert len(_out) == len(_asked), (len(_out), len(_asked))
+    with db._conn() as _c3:
+        assert db.finding_thread(_Spy(_c3), []) == {}  # type: ignore[arg-type]
+    print("  the trail reader is chunked, and total across chunks: ok")
 
     print("test_findings_page: all assertions passed")
     import shutil
