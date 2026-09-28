@@ -650,6 +650,33 @@ def test_dead_proposal_release_and_supersede():
             (out2["stake_id"],),
         ).fetchone()[0]
     assert status2 == "withdrawn", status2
+    # The refunded row above is the sharpest arm, and it is the one
+    # status here that arrives through ORDINARY OPERATION rather than a
+    # direct write: supersede released a guild stake and already
+    # returned the pool's money, so a second withdrawal would be a
+    # DOUBLE refund. Before #B68 the guild branch ran
+    #   UPDATE proposal_stakes SET status = 'withdrawn'
+    # straight past its status guards for exactly this row. Re-patching
+    # the same liveness read this test already uses keeps the guard
+    # reachable deterministically, so the assertion discriminates on the
+    # guard rather than passing on whichever error liveness happens to
+    # raise first.
+    _status_mod._proposal_status_for = lambda conn, p: "merged"
+    try:
+        db.withdraw_stake(founder["token"], out["stake_id"])
+    except Exception as exc:
+        refund_msg = str(exc)
+    else:
+        raise AssertionError("refunded guild stake accepted a second withdrawal")
+    finally:
+        _status_mod._proposal_status_for = real_status
+    assert "has status 'refunded'" in refund_msg, refund_msg
+    with db._conn() as conn:
+        status3 = conn.execute(
+            "SELECT status FROM proposal_stakes WHERE id = ?",
+            (out["stake_id"],),
+        ).fetchone()[0]
+    assert status3 == "refunded", status3
 
 
 def _sponsor_token(pid: int) -> str:
@@ -789,6 +816,11 @@ def test_guild_withdraw_status_guards():
     guard red on its own: delete the 'completed' guard and that arm now
     falls through to the generic one and stops saying 'fully paid';
     delete the generic guard and the other three reach the UPDATE.
+
+    Each status here is written directly, so this pins the GUARD. The
+    TRIGGER for 'refunded' - that ordinary operation actually produces
+    this row - is pinned separately, by the real supersede path, in
+    test_dead_proposal_release_and_supersede.
     """
     import db._proposal_status as _status_mod
 
