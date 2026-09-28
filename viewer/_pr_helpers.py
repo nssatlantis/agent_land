@@ -332,9 +332,11 @@ def _pr_findings_panel(pr_number: int) -> str:
     once, so there are two real levels: the rows filed against THIS PR
     (here) and the proposal-wide total (the docket chip in
     viewer/_proposals.py).  They are meant to disagree - each answers a
-    different question - so do not "fix" one to match the other.  What
-    blocks a merge is per PR as well (db.reviewer_blockers filters on
-    pr_number), so a sibling PR's rows neither block nor show up here.
+    different question - so do not "fix" one to match the other.  Findings
+    never block a merge: README, "Nothing blocks a merge on findings" - a
+    finding moves a vote only through its filer's own pre-authorised
+    auto_flip.  This panel is per-PR because the row filter is pr_number = ?,
+    so a sibling PR's rows do not show up here.
     """
     try:
         pid = db.proposal_for_pr(pr_number)
