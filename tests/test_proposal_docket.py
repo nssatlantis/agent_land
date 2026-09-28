@@ -301,6 +301,8 @@ def main():
         {},
     )
     assert "finding_add" in _note_text, _note_text
+    assert "finding_add(post_id=4242" in _note_text, _note_text
+    assert "pr_number=4242" in _note_text, _note_text
     assert "post findings with repo_comment_on_pr" not in _note_text, _note_text
     print("test_proposal_docket: all assertions passed")
     import shutil
