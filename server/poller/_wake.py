@@ -8,7 +8,7 @@ path, that latency is the whole cost. This module closes it by sending a
 short prompt to the opener's own agent chat through the OpenCode server
 API - opt-in per citizen, off by default, and gated hard on spend.
 
-THE FOUR CORRECTIONS THIS MODULE IS BUILT ON
+THE FIVE CORRECTIONS THIS MODULE IS BUILT ON
 -------------------------------------------
 Each was measured against a live OpenCode server; each would be a silent
 bug if taken at face value.
@@ -42,6 +42,26 @@ bug if taken at face value.
    one orphan session per eligible finding, forever, and every prompt
    landed in a session the citizen never opens. `AGENT_WAKE_CREATE_SESSION`
    defaults to 0, so a miss defers and is named in the log instead.
+
+5. `GET /api/session` DOES NOT FILTER. This is the one that kept the
+   feature dark, and the only correction here whose wrong answer looks
+   like a right one. `session.list` documents four ways to narrow the list;
+   measured against a live server, ONE of them filters:
+
+     directory=<path>          500  - and its spec promises 400, not 500
+     location[directory]=...   200, every row returned  - SILENTLY IGNORED
+     location.directory=...    200, every row returned  - SILENTLY IGNORED
+     parentID=null             200, every row returned  - SILENTLY IGNORED
+     project=global            200, 83 of 84           - the only one
+
+   The three silent cases are the dangerous ones. A 500 is at least loud. A
+   filter that returns the whole machine with HTTP 200 is a wrong-answer
+   generator, and the caller cannot tell it apart from having worked - so
+   "fixing" the query to the nested shape would have handed this poller a
+   session out of another citizen's workspace on every wake, silently, with
+   nothing red anywhere. `_session_rows` therefore asks for no filter at all
+   and `select_session` matches the directory itself, which is also correct
+   against a build where these are eventually repaired.
 
 Compaction goes through `POST /session/{id}/summarize`, the AI-summarise
 endpoint (measured live: 200 `true` in ~2s, occupancy read back after). It
@@ -224,12 +244,69 @@ def derive_directory(agent_id: int, name: str) -> str:
     return f"AgentLand_Agent{int(agent_id)}_{name}"
 
 
-def _session_rows(endpoint: dict, directory: str) -> list[dict]:
-    from urllib.parse import quote
+def _norm_dir(value: object) -> str:
+    """A directory reduced to the one form two hosts will agree on.
 
-    path = f"/api/session?directory={quote(directory)}&limit=100"
-    rows = _data(_json_call(endpoint, path))
-    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+    The registry's stored value and the `location.directory` the server
+    reports differ three ways, and a plain string compare misses all three
+    SILENTLY - a non-match reads as "this citizen has no session", which is
+    exactly the symptom that kept this feature dark.
+
+      - QUOTES. `_check_directory` tests `raw[1] == ":"` for a drive
+        letter, so a single leading quote walks an absolute path past the
+        guard and is stored with it. That is how every real registry row
+        got its value: the quotes are a workaround for the guard refusing
+        the only form that works, not a typo.
+      - SEPARATORS. `_check_directory` returns "/".join(parts), so the
+        stored value carries forward slashes while a Windows server reports
+        backslashes.
+      - CASE. Windows treats "New folder" and "New Folder" as one
+        directory. Both spellings are present in the measured data, and a
+        string compare calls them different.
+
+    Deliberately NOT a basename compare. Two real directories on the
+    measured host end in the same component - AgentLand_Agent1_CitizenOne
+    under both S:/AgentLand_Agents and S:/New folder - so a basename match
+    would hand a citizen the stale workspace. One pin holds that line, and
+    another holds that a bare convention name matches nothing at all.
+    """
+    text = str(value or "").strip().strip('"').strip()
+    return text.replace("/", "\\").casefold()
+
+
+def _row_dir(row: dict) -> str:
+    """The directory a session belongs to, or "" when it names none.
+
+    A row with no location is unidentifiable, not universal: it must not
+    satisfy a request for a specific workspace. `select_session` fails
+    closed on that, which is why the pre-existing fixtures had to learn to
+    carry a location rather than the gate learning to tolerate their
+    absence.
+    """
+    loc = row.get("location")
+    if isinstance(loc, dict):
+        return str(loc.get("directory") or "")
+    return str(loc or "")
+
+
+def _session_rows(endpoint: dict) -> list[dict]:
+    """Every session the server will admit to knowing.
+
+    No filter is requested, and that is the point - see correction 5. The
+    one documented filter that functions is `project`, and it cannot help:
+    the measured rows carry projectID `global`, so it does not discriminate
+    between citizens. Treating the server as a paginated list is correct
+    both today and against a build where the filters are repaired.
+    """
+    rows = _data(_json_call(endpoint, "/api/session?limit=100"))
+    if not isinstance(rows, list):
+        # A 500 here once read as "no answer" through `_json_call`'s bare
+        # `return None`, and surfaced as `no-session` - which is how a broken
+        # query masqueraded as a quiet citizen for a day. A distinct tag is
+        # the cheapest tripwire available.
+        logutil.log("agent_wake_session_list_unreadable", endpoint=endpoint.get("id"))
+        return []
+    return [r for r in rows if isinstance(r, dict)]
 
 
 def _created_session(endpoint: dict, directory: str) -> dict | None:
@@ -252,6 +329,12 @@ def select_session(endpoint: dict, directory: str) -> dict | None:
     in a project directory are subagent children, and the most recently
     updated row is very often one of them.
 
+    Correction 5: the directory gate is OURS, not the server's - the server
+    cannot filter by it. So this is the only thing standing between a wake
+    and another citizen's workspace, which is why it fails closed on a
+    blank directory instead of treating an unidentifiable row as a
+    candidate.
+
     CREATION IS OFF BY DEFAULT (`AGENT_WAKE_CREATE_SESSION` = 0). Creating a
     session is unbounded: with 32 of 36 rows in a real directory being
     subagent children, "nothing qualifies in the first 100" is a plausible
@@ -263,11 +346,19 @@ def select_session(endpoint: dict, directory: str) -> dict | None:
     """
     now_ms = int(time.time() * 1000)
     max_age_ms = int(config.AGENT_WAKE_SESSION_MAX_AGE_SECONDS) * 1000
+    want_dir = _norm_dir(directory)
+    if not want_dir:
+        # No directory means no workspace, so no row can be in the right
+        # one. Failing closed here is what stops a blank registry value
+        # from matching every row that happens to carry no location.
+        return None
     best: dict | None = None
-    for row in _session_rows(endpoint, directory):
+    for row in _session_rows(endpoint):
         if row.get("parentID"):
             continue
         if row.get("agent") not in PRIMARY_AGENTS:
+            continue
+        if _norm_dir(_row_dir(row)) != want_dir:
             continue
         updated = (row.get("time") or {}).get("updated") or 0
         if max_age_ms and now_ms - int(updated) > max_age_ms:
