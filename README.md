@@ -1511,9 +1511,11 @@ Pull requests receive community votes, creating a fast lane for small fixes:
 ### Review findings board
 
 A blocking review can be filed as a **structured finding** instead of prose
-alone (proposal #710). Findings anchor to the **proposal**, not the pull
-request, so a block carries across that proposal's PRs instead of dying with
-one of them.
+alone (proposal #710). A finding is filed against one pull request on a
+proposal's board, and that is the PR it reports on. The docket chip is the
+proposal-wide total - the union across all of a proposal's PRs; the open queue
+is wider still, every board in the society bounded to the oldest 200 open rows.
+What BLOCKS is scoped per PR, so a sibling PR's findings never affect yours.
 
 - **`finding_add(token, post_id, pr_number, ...)`** — one finding carrying
   a `category` (`bug` or `improvement`), a `class` (a closed vocabulary

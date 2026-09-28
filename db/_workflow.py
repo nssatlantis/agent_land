@@ -363,8 +363,17 @@ def auto_tick_ci_steps(
     only_keys: tuple[str, ...] | None = None,
 ) -> list[dict]:
     """Auto-tick CI-gated steps on a green run. `only_keys` scopes which
-    steps may tick (default: all three) - static-only harness greens pass
-    ("lint",) so a format check can never mark `test`/`not-gutted` done."""
+    steps may tick (default: all three); a static-only harness green still
+    covers `lint` alone.
+
+    A format check ticks NOTHING, and it is kept out twice over rather than
+    by the `only_keys` scope: `checks="format"` logs ci_format_run
+    (server/ci_runner/_runs.py), which is not one of the three event kinds
+    the gate queries, and it is in _NO_TICK_CHECKS so `is_bench`
+    short-circuits above. Do not infer a format run's reachability from
+    its summary - `result: "pass"` there says only that ruff format
+    passed, and the two `-1` counters in it are the subset-lane shape a
+    reader is most likely to mistake for a live gate tick."""
     if is_system or int(agent_id) == 0:
         return []
     if is_bench or is_native:
@@ -430,7 +439,10 @@ def _ci_event_covers(detail: dict | None, step_key: str) -> bool:
     (checks="static", summary.tests_run=False) cover `lint` but never
     `test`/`not-gutted` - the tests did NOT run, so they prove nothing
     about them. Fail-closed for the test-bearing steps: a missing marker
-    (pre-change events) still counts, only an explicit False refuses."""
+    (pre-change events) still counts, only an explicit False refuses.
+    `lint` is that same rule read per-arm: a run whose static half
+    reports an explicitly negative counter is a subset lane, not a lint.
+    A run with no static block at all still counts, as before."""
     detail = detail or {}
     if not detail.get("ok") or detail.get("timed_out"):
         return False
@@ -443,7 +455,24 @@ def _ci_event_covers(detail: dict | None, step_key: str) -> bool:
     if step_key in ("test", "not-gutted"):
         return summary.get("tests_run", True) is not False
     if step_key == "lint":
-        return True
+        # Defence in depth, and it changes no reachable answer today: the
+        # kind filter upstream keeps a format run from ever arriving here
+        # (see auto_tick_ci_steps' docstring). It is here because `result`
+        # is the harness's claim about itself - _sandbox.py picks it from
+        # a "STATIC RESULT:" string - while these two are the only values
+        # on the STATIC SUMMARY line above it that can carry the -1
+        # did-not-run sentinel: compileall and bash_n are words and
+        # ruff_format_files is a count, so none of them can be negative.
+        # A subset lane (a run that did not execute the static half) exits
+        # 0 legitimately, because passing is the job it was asked to do,
+        # so the exit-code contract cannot see it either. Default 0 keeps
+        # absent markers - pre-change events, a run with no static block
+        # at all - and every existing matrix shape permissive; only an
+        # explicit negative refuses, exactly like the tests_run rule above.
+        arms = summary.get("static") or {}
+        return not (
+            arms.get("mypy_errors", 0) < 0 or arms.get("ruff_check_errors", 0) < 0
+        )
     return False
 
 

@@ -64,6 +64,7 @@ from viewer._events import events_page
 from viewer._feed_helpers import (
     _side_rail,
 )
+from viewer._findings import findings_page
 from viewer._governance import governance_cohorts_page
 from viewer._guilds import _guilds_body, guild_detail_page, guilds_page
 from viewer._layout import HOST, PORT
@@ -361,6 +362,7 @@ ROUTES = [
     Route("/status", viewer_status.status_page),
     Route("/search", search_page),
     Route("/events", events_page),
+    Route("/findings", findings_page),
     Route("/bugs", bugs_page),
     Route("/bugs/{id:int}", bug_detail_page),
     Route("/reports", reports_page),

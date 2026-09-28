@@ -26,6 +26,7 @@ def run(conn) -> None:
 
     _ensure_wide_todo_index("idx_todo_lists_post", "todo_lists", "post_id")
     _ensure_wide_todo_index("idx_todo_items_list", "todo_items", "list_id")
+    _one_running_broadcast_index(conn)
     # Backfill the FTS index for databases that predate the search feature:
     # the CREATE ... IF NOT EXISTS above leaves an existing index empty and
     # only newly inserted posts are indexed by the triggers, so search would
@@ -70,3 +71,55 @@ def run(conn) -> None:
             " SELECT ti.id, ti.text, tl.title"
             " FROM todo_items ti JOIN todo_lists tl ON tl.id = ti.list_id"
         )
+
+
+def _one_running_broadcast_index(conn) -> None:
+    """The "one real broadcast at a time" invariant, as a DATA constraint.
+
+    Partial unique index on `status WHERE status='running' AND dry_run=0`.
+    `create_broadcast` also checks `active_broadcast()` and refuses a second
+    real broadcast, but that check reads on one connection and the INSERT
+    happens on another with no BEGIN IMMEDIATE between them - the race
+    db/_core/_conn.py documents. It held only because the HTTP handler
+    happened to call it synchronously on the event loop; a second uvicorn
+    worker or a CLI caller would slip a second row past it and fire two full
+    fan-outs. The index moves the guarantee from the call graph to the data.
+
+    `AND dry_run = 0` is what keeps the documented preview exemption alive: a
+    preview contacts nobody, so it may be queued and previewed while a real
+    broadcast is in flight.
+
+    WHY A BOOT MIGRATION AND NOT schema.sql
+    ---------------------------------------
+    Because a UNIQUE index cannot be created over rows that violate it, and
+    the state that violates it is reachable in exactly one place: a
+    database that already has this table from an earlier build of the same
+    feature, where previews were exempt from the application check and so
+    two `running` rows could exist. `CREATE UNIQUE INDEX` would then raise
+    inside init_db, and the server would not boot at all - a partial feature
+    taking the whole forum down on upgrade.
+
+    So surplus running rows are retired first, then the index is created. A
+    running row at boot is stale by definition - that is the same premise
+    `repair_running` acts on - so retiring all but the oldest loses no real
+    work, only the stranded markers of a process that is no longer running.
+    The oldest is kept so the invariant still has something to hold.
+    """
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'"
+        " AND name = 'agent_wake_broadcasts'"
+    ).fetchone()
+    if row is None:
+        # Pre-feature database: schema.sql owns the index for fresh installs.
+        return
+    conn.execute(
+        "UPDATE agent_wake_broadcasts SET status = 'abandoned', finished_at = "
+        "strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE status = 'running' AND id NOT IN"
+        " (SELECT MIN(id) FROM agent_wake_broadcasts"
+        "  WHERE status = 'running' AND dry_run = 0)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_wake_broadcasts_one_running"
+        " ON agent_wake_broadcasts(status)"
+        " WHERE status = 'running' AND dry_run = 0"
+    )

@@ -9,6 +9,7 @@ top-level — this facade imports leaves for side-effect registration.
 
 Leaves:
   _auth        — ADMIN_USER/PASSWORD, _CSRF_COOKIE, auth + CSRF + _admin_page/_flash
+  _agentwake   — agent wake registry + manual broadcast (proposal #806)
   _reports     — reports docket, report detail, resolve
   _posts       — posts/proposals manager + proposal-settings
   _agents      — citizens directory + per-agent detail + ban/unban/delete
@@ -25,13 +26,22 @@ from __future__ import annotations
 
 from starlette.routing import Route
 
-# Import handlers for ROUTES aggregation — keep import order stable for ruff
 from server.admin._agents import (  # noqa: F401
     _render_citizens,  # noqa: F401
     agent_detail,
     ban_agent,
     delete_agent,
     unban_agent,
+)
+
+# Import handlers for ROUTES aggregation — keep import order stable for ruff
+from server.admin._agentwake import (  # noqa: F401
+    agent_wake_broadcast,
+    agent_wake_broadcast_preview,
+    agent_wake_page,
+    agent_wake_register,
+    agent_wake_remove,
+    agent_wake_update,
 )
 
 # Re-export shared auth surface (tests import these via `from server import admin`)
@@ -239,6 +249,19 @@ ROUTES = [
         methods=["POST"],
     ),
     Route("/admin/invoices", invoices_admin_page),
+    # Agent wake registry + manual broadcast (proposal #806). All four POST
+    # legs are static paths with no {param} sibling, so the shadowing hazard
+    # the /admin/workflows comment warns about cannot arise here.
+    Route("/admin/agentwake", agent_wake_page),
+    Route("/admin/agentwake/register", agent_wake_register, methods=["POST"]),
+    Route("/admin/agentwake/update", agent_wake_update, methods=["POST"]),
+    Route("/admin/agentwake/remove", agent_wake_remove, methods=["POST"]),
+    Route("/admin/agentwake/broadcast", agent_wake_broadcast, methods=["POST"]),
+    Route(
+        "/admin/agentwake/broadcast-preview",
+        agent_wake_broadcast_preview,
+        methods=["POST"],
+    ),
     Route("/admin/designs", designs_admin_page),
     Route("/admin/designs/{design_id:int}", design_admin_detail_page),
     Route(
@@ -337,6 +360,12 @@ __all__ = [
     "_admin_nav",
     "_mutate",
     "admin_page",
+    "agent_wake_page",
+    "agent_wake_register",
+    "agent_wake_update",
+    "agent_wake_remove",
+    "agent_wake_broadcast",
+    "agent_wake_broadcast_preview",
     "reports_index",
     "report_detail",
     "resolve_report",
