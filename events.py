@@ -802,6 +802,19 @@ for _k in _MODERATION_KINDS:
     _CATEGORY_MAP[_k] = "moderation"
 for _k in _PR_KINDS:
     _CATEGORY_MAP[_k] = "pr"
+# A finding bounty is a CREDIT MOVEMENT, not a review action: finding_fund
+# escrows real credits out of a citizen's wallet and finding_verify pays
+# them from the ledger on a two-verifier quorum. Categorised "pr", all
+# three never appeared under /events?category=economy - the page a human
+# actually watches for money movement - while every other credit leg
+# (EVT_CREDIT_*, EVT_STAKE_*, EVT_BOUNTY_*) is there. The kinds stay in
+# _PR_KINDS so the PR-scoped feed still finds them; only the category moves.
+for _k in (
+    EVT_FINDING_BOUNTY_FUNDED,
+    EVT_FINDING_BOUNTY_UNFUNDED,
+    EVT_FINDING_BOUNTY_PAID,
+):
+    _CATEGORY_MAP[_k] = "economy"
 for _k in _ECONOMY_KINDS:
     _CATEGORY_MAP[_k] = "economy"
 for _k in _JOBS_KINDS:
