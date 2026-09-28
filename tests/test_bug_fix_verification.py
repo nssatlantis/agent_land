@@ -96,7 +96,11 @@ def _fixed_bug(name, *, fix_pr=4242, reporter=None):
     # report is a frozen record and update_bug_report refuses to touch it.
     db.update_bug_report(rep["token"], bug["id"], fix_pr=fix_pr)
     db.fix_bug_report(bug["id"], admin="testadmin")
-    assert db.get_bug_report(bug["id"])["fix_pr"] == fix_pr
+    got = db.get_bug_report(bug["id"])["fix_pr"]
+    assert got == fix_pr, (
+        f"_fixed_bug('{name}') must leave a fixed report carrying its fix PR;"
+        f" expected {fix_pr}, got {got}"
+    )
     return rep, bug
 
 
@@ -528,7 +532,11 @@ def test_deny_quorum_excludes_the_reporter():
     (they withdraw their own), so a filer's deny must not count here
     either - otherwise they help close their own report as the community's
     'invalid'."""
-    rep = _karmaed("deny-rep")
+    # Distinct from the "deny-rep" that test_three_denies_close_as_not_a_bug
+    # registers: agent names are globally unique, and this runner collects
+    # failures rather than stopping, so a colliding name is a real collision
+    # and not something a later crash happens to hide.
+    rep = _karmaed("deny-reporter")
     bug = db.file_bug_report(rep["token"], "deny rep bug", "body")
     why = "this is a configuration misunderstanding, not a defect at all"
     db.remark_bug_report(rep["token"], bug["id"], why, kind="deny")
@@ -655,13 +663,32 @@ def test_fix_nudge_survives_an_empty_open_queue():
     # empty AND _top_critical_bug has nothing to route on - otherwise this
     # passes for the wrong reason (the `if top is not None` arm never reaches
     # the return at all, and the pin would be vacuous).
+    #
+    # This rewrites rows belonging to OTHER tests, so it snapshots and restores
+    # them.  Without the restore it happened to be safe only because the runner
+    # sorts by name and the one row it really changed belonged to a test that
+    # had already finished - order luck, not a property of the test.  The
+    # `status != 'fixed'` predicate is load-bearing in the other direction too:
+    # this test's own report was created above and MUST survive as 'fixed',
+    # or the nudge has nothing to route on.
     with db._conn(immediate=True) as conn:
+        before = conn.execute(
+            "SELECT id, status FROM bug_reports WHERE status != 'fixed'"
+        ).fetchall()
         conn.execute("UPDATE bug_reports SET status = 'closed' WHERE status != 'fixed'")
-    with db._conn() as conn:
-        zero_open = conn.execute(
-            "SELECT COUNT(*) FROM bug_reports WHERE status = 'open'"
-        ).fetchone()[0]
-        out = nudges_mod._bug_nudge(conn)
+    try:
+        with db._conn() as conn:
+            zero_open = conn.execute(
+                "SELECT COUNT(*) FROM bug_reports WHERE status = 'open'"
+            ).fetchone()[0]
+            out = nudges_mod._bug_nudge(conn)
+    finally:
+        with db._conn(immediate=True) as conn:
+            for row in before:
+                conn.execute(
+                    "UPDATE bug_reports SET status = ? WHERE id = ?",
+                    (row["status"], row["id"]),
+                )
     assert zero_open == 0, "precondition: the open queue must be empty"
     assert "fix_verify_note" in out, (
         "an empty open queue must not swallow the second-bar nudge; the "
