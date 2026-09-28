@@ -306,6 +306,37 @@ def _register_form(request) -> str:
     )
 
 
+def _gap_seconds(form) -> int | None:
+    """The operator's per-agent gap, or None to let the engine read the knob.
+
+    None - not 0 - is the default, deliberately. `run_broadcast` resolves None
+    to `AGENT_WAKE_BROADCAST_GAP_SECONDS` at SEND time, so the default this
+    page advertises and the default the engine applies cannot drift apart. An
+    empty box must therefore never become 0: that would silently turn "left it
+    blank" into "no pause at all", which is the opposite of what the knob is
+    for. `isascii() and isdecimal()` rather than `isdigit()`, which is True for
+    superscript digits that `int()` then refuses - and this input is
+    operator free text, so a ValueError here would be a 500 on a typo.
+    """
+    raw = str(form.get("gap") or "").strip()
+    if not raw:
+        return None
+    if not (raw.isascii() and raw.isdecimal()):
+        raise db.ForumError(
+            f"the gap must be a whole number of seconds, 0 to "
+            f"{_broadcast.MAX_GAP_SECONDS}; you typed {raw!r}."
+        )
+    value = int(raw)
+    if value > _broadcast.MAX_GAP_SECONDS:
+        raise db.ForumError(
+            f"a gap of {value}s is over the {_broadcast.MAX_GAP_SECONDS}s "
+            "ceiling. One broadcast runs at a time, so a typo here would lock "
+            "the next one out for days. Tick fewer agents, or raise the "
+            "ceiling."
+        )
+    return value
+
+
 def _broadcast_box(request, rows: list[dict], running: dict | None) -> str:
     open_panel = _panel_open()
     master_off = not int(config.AGENT_WAKE_ENABLED)
@@ -334,11 +365,17 @@ def _broadcast_box(request, rows: list[dict], running: dict | None) -> str:
             "sweep is not running. A broadcast still sends - it does not need the "
             "poller - but nothing automatic will.</p>"
         )
+    # The gap below makes the old "starts ... immediately" false on this very
+    # page, so the sentence is corrected here rather than left to rot: the
+    # first turn starts at once, every later turn waits the gap behind it.
+    gap_default = int(config.AGENT_WAKE_BROADCAST_GAP_SECONDS)
     cost = (
         f'<p style="color:var(--muted)">A broadcast starts one agent turn per '
-        f"ticked agent, immediately. It does <b>not</b> draw on the automatic-wake "
-        f"daily budget ({esc(str(int(config.AGENT_WAKE_BUDGET_PER_DAY)))}/day), and "
-        f"it ignores quiet hours. Messages are capped at "
+        f"ticked agent: the first immediately, then one every "
+        f"{esc(str(gap_default))}s by default. It does <b>not</b> draw on the "
+        f"automatic-wake daily budget "
+        f"({esc(str(int(config.AGENT_WAKE_BUDGET_PER_DAY)))}/day), and it "
+        f"ignores quiet hours. Messages are capped at "
         f"{esc(str(_broadcast.MAX_MESSAGE_CHARS))} characters.</p>"
     )
     # A preview contacts nobody, so it is allowed while a real broadcast is
@@ -374,6 +411,10 @@ def _broadcast_box(request, rows: list[dict], running: dict | None) -> str:
         f'<textarea class="typed" name="message" rows="4" cols="70" '
         f'maxlength="{_broadcast.MAX_MESSAGE_CHARS}" '
         f'placeholder="message for every ticked agent" required></textarea>'
+        f"<label>gap between agents "
+        f'<input class="typed" name="gap" type="number" min="0" '
+        f'max="{_broadcast.MAX_GAP_SECONDS}" step="1" '
+        f'value="{esc(str(gap_default))}" style="width:6em">s</label> '
         f'<button type="submit"{disabled}>send</button>'
         f"</form></div>"
     )
@@ -704,7 +745,12 @@ async def agent_wake_broadcast(request):
         return _flash(request, _NOTICES["csrf"])
     if _panel_open():
         return _flash(request, _NOTICES["open-panel"])
+    # domain: fail-loudly - a bad gap is refused BEFORE any row is written, so
+    # a typo cannot become a different broadcast than the one the operator
+    # read off the screen. Reuses create_broadcast's own refusal channel, so
+    # there is no new except branch and no new notice code.
     try:
+        gap = _gap_seconds(form)
         broadcast_id = _broadcast.create_broadcast(
             form.getlist("agent"), str(form.get("message") or "")
         )
@@ -719,7 +765,7 @@ async def agent_wake_broadcast(request):
     # Fire-and-forget on the running loop. The task is never awaited here:
     # a six-agent broadcast is six minutes, and holding the request open for
     # that would die at the first proxy.
-    asyncio.create_task(_broadcast.run_broadcast(broadcast_id))
+    asyncio.create_task(_broadcast.run_broadcast(broadcast_id, gap_seconds=gap))
     return _redirect("queued")
 
 
