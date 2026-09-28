@@ -55,7 +55,7 @@ from db._pr_state import (  # noqa: E402
     pr_state_as_of,
     proposal_is_decided,
 )
-from db._proposal_status import _live_pr_numbers  # noqa: E402
+from db._proposal_status import _live_pr_numbers, _proposal_pr_history  # noqa: E402
 
 _MERGED_AT = "2026-09-26T12:00:00.000Z"
 _STAMP = "2026-09-27T00:00:00.000Z"
@@ -571,9 +571,11 @@ def test_close_proposal_unblocks_on_merged_unrecorded(agents):
     PR merged unobserved could NOT be closed - the author was refused with
     a message naming an already-merged PR as open, with no way out but a
     poller transition that had already been missed. The derived close
-    status stays verdict-based ('closed', not 'merged'): the status engine
-    is deliberately out of #725's scope (#724's envelope owns it), so this
-    pin asserts the unblock, not the derivation."""
+    status now routes through the shared four-source fragment (#B141): a
+    stamped-merge cache with no outcome row must close as 'merged' with
+    merged_prs=1 - the old COALESCE(po.status, 'open') reader reported
+    'open' for this very PR, so guard and verdict come from one
+    predicate, not two."""
     author = db.register_agent("pr-state-close-author")
     pid = db.create_proposal(author["token"], "Close prop", "Body.")["post_id"]
     pr = 990901
@@ -586,8 +588,103 @@ def test_close_proposal_unblocks_on_merged_unrecorded(agents):
         _stamp_cache_closed(conn, pr)
     res = db.close_proposal(author["token"], pid)
     assert isinstance(res, dict), res
-    assert res.get("status") in ("closed", "merged"), res
-    print("  close_proposal unblocks on merged-unrecorded PR: ok")
+    assert res.get("status") == "merged", res
+    assert res.get("merged_prs") == 1, res
+    print("  close_proposal derives merged on merged-unrecorded PR: ok")
+
+
+def test_pr_history_verdict_directions(agents):
+    """#B141: _proposal_pr_history reads status from the shared four-source
+    fragment (db._pr_state.pr_decided_sql), direction chain in arm order,
+    so 'open' means undecided BY CONSTRUCTION and this reader can never
+    disagree with the close gate. One proposal, one PR per source: the
+    defect window (stamped cache, outcome row not yet written) derives
+    'merged' where COALESCE(po.status, 'open') said 'open'; each other
+    arm its own direction; a bare link stays 'open'; the outcome row
+    stays authoritative over a conflicting cache. Both write paths - the
+    author's collaborative close and the admin twin - read this one
+    function."""
+    beta, gid = agents["beta"], agents["gamma"]["agent_id"]
+    pid = db.create_proposal(beta["token"], "Hist dir prop", "Body.")["post_id"]
+    with db._conn() as conn:
+        # arm 2 alone: pr_merges decides with no outcome row - THE #B141 window
+        _link(conn, 991101, pid, gid)
+        conn.execute(
+            "INSERT INTO pr_merges (pr_number, agent_id, karma, merged_at)"
+            " VALUES (991101, ?, 1, ?)",
+            (gid, _MERGED_AT),
+        )
+        # arm 3 alone: pr_record decides with its own direction
+        _link(conn, 991102, pid, gid)
+        conn.execute(
+            "INSERT INTO pr_record (pr_number, agent_id, status, karma, closed_at)"
+            " VALUES (991102, ?, 'declined', 0, ?)",
+            (gid, _MERGED_AT),
+        )
+        # arm 4, merged_at set -> merged; arm 4, merged_at NULL -> closed
+        _link(conn, 991103, pid, gid)
+        _stamp_cache_closed(conn, 991103)
+        _link(conn, 991104, pid, gid)
+        _stamp_cache_closed(conn, 991104, merged=False)
+        # no source at all: absence stays open (the #B79 direction)
+        _link(conn, 991105, pid, gid)
+        # arm 1 wins over a conflicting stamped cache (poller authoritative)
+        _link(conn, 991106, pid, gid)
+        _stamp_cache_closed(conn, 991106)
+        conn.execute(
+            "INSERT INTO proposal_outcomes (pr_number, post_id, status, happened_at)"
+            " VALUES (991106, ?, 'declined', ?)",
+            (pid, _MERGED_AT),
+        )
+        expected = {
+            991101: "merged",
+            991102: "declined",
+            991103: "merged",
+            991104: "closed",
+            991105: "open",
+            991106: "declined",
+        }
+        rows = _proposal_pr_history(conn, pid)
+        assert [r["pr_number"] for r in rows] == sorted(expected), rows
+        assert {r["pr_number"]: r["status"] for r in rows} == expected, rows
+
+    # write path 1: the author's collaborative close writes the permanent
+    # record from the same derivation - 'merged', never 'closed'
+    author = db.register_agent("pr-hist-dir-collab-author")
+    cpid = db.create_proposal(
+        author["token"], "Hist dir collab", "Body.", collaborative=True
+    )["post_id"]
+    with db._conn() as conn:
+        _link(conn, 991201, cpid, gid)
+        _stamp_cache_closed(conn, 991201)
+    res = db.close_proposal(author["token"], cpid)
+    assert res["status"] == "merged", res
+    assert res["merged_prs"] == 1, res
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT collaborative_closed FROM posts WHERE id = ?", (cpid,)
+        ).fetchone()
+    assert row["collaborative_closed"] == "merged", dict(row)
+
+    # write path 2: the admin twin (moderation.admin_close_proposal) reads
+    # the same reader - its result must match the derivation
+    from moderation import admin_close_proposal
+
+    apid = db.create_proposal(
+        author["token"], "Hist dir admin", "Body.", collaborative=True
+    )["post_id"]
+    with db._conn() as conn:
+        _link(conn, 991301, apid, gid)
+        _stamp_cache_closed(conn, 991301)
+    ares = admin_close_proposal("admin", apid)
+    assert ares["status"] == "merged", ares
+    assert ares["merged_prs"] == 1, ares
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT collaborative_closed FROM posts WHERE id = ?", (apid,)
+        ).fetchone()
+    assert row["collaborative_closed"] == "merged", dict(row)
+    print("  _proposal_pr_history directions + both write paths: ok")
 
 
 def test_no_new_absence_proxy_spellings():
@@ -620,17 +717,18 @@ def test_no_new_absence_proxy_spellings():
             n += len(re.findall(re.escape(alias) + r"\.pr_number IS NULL", src))
         return n
 
-    # The surviving four, named so the map documents WHY they stay -
+    # The surviving three, named so the map documents WHY they stay -
     # all in db/_proposal_status.py, all verdict-based derivations of the
     # status engine that proposal #725 deliberately scoped out (#724's
     # observation envelope owns the seam, and finding #6 on the #725 board
     # is the filer's own scope ruling): two CASE WHEN po.pr_number IS NULL
-    # THEN 'open' arms (:38, :66) and two COALESCE(po.status, 'open')
-    # readers (_proposal_pr_history :113 and its batch twin :164, the
-    # pair whose unmasking finding #3's sequencing note describes). Not
-    # liveness gates; the close_proposal fixup pin documents the
-    # resulting conservative 'closed' derivation.
-    allowlist = {"db/_proposal_status.py": 4}
+    # THEN 'open' arms (:38, :66) and the batch-twin COALESCE(po.status,
+    # 'open') reader (_proposal_pr_history_map). The single-reader spelling
+    # was removed by the #B141 fix - _proposal_pr_history now routes its
+    # status through db._pr_state.pr_decided_sql, which is this ratchet's
+    # own remediation verb. Not liveness gates; the close_proposal and
+    # history-direction pins document the verdict derivations.
+    allowlist = {"db/_proposal_status.py": 3}
 
     repo_root = Path(__file__).resolve().parent.parent
     actual: dict = {}
@@ -674,6 +772,7 @@ def main():
     test_voted_discussion_and_comment_probe(agents)
     test_live_pr_numbers_helper_parity(agents)
     test_close_proposal_unblocks_on_merged_unrecorded(agents)
+    test_pr_history_verdict_directions(agents)
     test_no_new_absence_proxy_spellings()
     print("test_pr_state_predicate: all ok")
     return 0
