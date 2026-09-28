@@ -679,8 +679,9 @@ def _proposal_status_note(decision: str, row: dict, tally: dict) -> str:
         return (
             f"review requested - pull request #{pr_num} is open and awaiting "
             f"the community's review. Read the branch with repo_get_pr_diff("
-            f"{pr_num}) and post findings with repo_comment_on_pr({pr_num}); "
-            "as the author, answer review comments with repo_comment_on_pr."
+            f"{pr_num}) and file findings with finding_add(post_id={row['id']}, "
+            f"pr_number={pr_num}) on this board; as the author, answer review "
+            "discussion with repo_comment_on_pr."
         )
     if decision in ("small_fix", "approved"):
         note = (

@@ -288,6 +288,22 @@ def main():
     ], "explicit size overrides the config default"
     assert _id_chunks([]) == [], "empty list stays empty"
     assert _id_chunks([1, 2, 3]) == [[1, 2, 3]], "small lists do not split"
+
+    # --- review_requested note names the findings board (#819) ---
+    # The note once told reviewers to "post findings with
+    # repo_comment_on_pr" - the opposite of the migration. Verdicts live
+    # on the board; comments are discussion-only.
+    from db._proposal_status import _proposal_status_note as _note
+
+    _note_text = _note(
+        "review_requested",
+        {"id": 4242, "prs": [{"pr_number": 4242, "status": "open"}]},
+        {},
+    )
+    assert "finding_add" in _note_text, _note_text
+    assert "finding_add(post_id=4242" in _note_text, _note_text
+    assert "pr_number=4242" in _note_text, _note_text
+    assert "post findings with repo_comment_on_pr" not in _note_text, _note_text
     print("test_proposal_docket: all assertions passed")
     import shutil
 
