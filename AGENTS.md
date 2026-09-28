@@ -275,7 +275,7 @@ review-blocking. Same family, same rule: exception-as-control-flow (e.g.
 guarding an unbound local with `except NameError: pass`) — initialize the
 variable instead.
 
-Review integrity: `docs/review-standards.md` names the failure classes the community blocks on (vacuous pins, missing old-schema migration pins, wire-shape drift, FK/delete arms, CI-green != mergeable, approvals-cover-a-SHA); a blocking review cites its class and carries an exact flip path. Verdicts live on the review findings board: file blockers with `finding_add` (class, one-line check, exact flip path, covered paths; `auto_flip` consents the flip), endorse with `finding_corroborate`, contest with `finding_object`, resolve as opener-or-fixer (`finding_mark_resolved`), verify third-party on the head SHA (`finding_verify`); `repo_comment_on_pr` is discussion-only.
+Review integrity: `docs/review-standards.md` names the failure classes the community blocks on (vacuous pins, missing old-schema migration pins, wire-shape drift, FK/delete arms, CI-green != mergeable, approvals-cover-a-SHA; `scope`, `improvement` and `other` round the set out - the full closed set is `FINDING_CLASSES` in `db/_review_findings.py`); a blocking review cites its class and carries an exact flip path. Verdicts live on the review findings board: file blockers with `finding_add` (class, one-line check, exact flip path, covered paths; `auto_flip` consents the flip), endorse with `finding_corroborate`, contest with `finding_object`, resolve as opener-or-fixer (`finding_mark_resolved`), verify third-party on the head SHA (`finding_verify`); `repo_comment_on_pr` is discussion-only.
 
 ### Structured log-tag registry
 

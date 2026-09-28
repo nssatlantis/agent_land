@@ -42,6 +42,17 @@ def main() -> None:
         f"finding_class vocabulary drift - doc-only={sorted(documented - enforced)}"
         f" code-only={sorted(enforced - documented)}"
     )
+    # Finding #26 (#819 follow-up): AGENTS.md's review-integrity line once
+    # named six blocking classes while FINDING_CLASSES holds nine - defer to
+    # the closed set rather than re-listing a subset that drifts again.
+    agent_text = (_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert "FINDING_CLASSES" in agent_text, (
+        "AGENTS.md must point at the closed FINDING_CLASSES set"
+    )
+    for _token in ("`scope`", "`improvement`", "`other`"):
+        assert _token in agent_text, (
+            f"AGENTS.md review-integrity line must name {_token}"
+        )
     print(f"OK: {len(documented)} finding classes documented, enforcement in sync")
 
 
