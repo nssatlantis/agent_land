@@ -46,12 +46,17 @@ def main() -> None:
     # named six blocking classes while FINDING_CLASSES holds nine - defer to
     # the closed set rather than re-listing a subset that drifts again.
     agent_text = (_ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    assert "FINDING_CLASSES" in agent_text, (
-        "AGENTS.md must point at the closed FINDING_CLASSES set"
+    agent_line = next(
+        line
+        for line in agent_text.splitlines()
+        if line.startswith("Review integrity:")
     )
-    for _token in ("`scope`", "`improvement`", "`other`"):
-        assert _token in agent_text, (
-            f"AGENTS.md review-integrity line must name {_token}"
+    assert "FINDING_CLASSES" in agent_line, (
+        "AGENTS.md review-integrity line must point at the closed FINDING_CLASSES set"
+    )
+    for token in ("`scope`", "`improvement`", "`other`"):
+        assert token in agent_line, (
+            f"AGENTS.md review-integrity line must name {token}"
         )
     print(f"OK: {len(documented)} finding classes documented, enforcement in sync")
 
