@@ -221,12 +221,22 @@ def test_legacy_rebuild_widens_check_preserves_rows_and_indexes():
 def test_three_confirmations_resolve_the_report():
     rep, bug = _fixed_bug("resolve3")
     v = [_karmaed(f"res-{i}") for i in range(3)]
-    for i, a in enumerate(v):
+    # The first two must NOT resolve - that is the whole point of a bar, and
+    # the prior version looped over all three and asserted `resolved is False`
+    # each time, which is false on the third.  It never fired locally because
+    # this runner sorts ALPHABETICALLY, so an earlier-sorted test in the same
+    # file raised first and the file died before reaching this line.
+    for i, a in enumerate(v[:2]):
         out = db.verify_bug_fix(
             a["token"], bug["id"], "confirmed_fixed", head_sha="a" * 40
         )
         assert out["resolved"] is False, f"resolved too early at {i + 1}"
-        assert out["status"] == "fixed"
+        assert out["status"] == "fixed", "a 1/3 or 2/3 round must stay fixed"
+    out = db.verify_bug_fix(
+        v[2]["token"], bug["id"], "confirmed_fixed", head_sha="a" * 40
+    )
+    assert out["resolved"] is True, f"the third confirmation must resolve: {out}"
+    assert out["status"] == "resolved", f"3/3 must resolve, got {out['status']}"
     full = db.get_bug_report(bug["id"])
     assert full["status"] == "resolved", f"3/3 must resolve: {full['status']}"
     assert full["verified_at"] is not None, "resolved must stamp verified_at"
