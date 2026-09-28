@@ -1285,6 +1285,12 @@ def test_docket_card_shows_findings_chip():
         )
     )
     assert "1 open finding</span>" in one, "one open finding reads singular"
+    # D1 is the scope label, so the label is the thing under test: the open
+    # branch says "across all its PRs" like the blocking one does.  Without
+    # this the branch could drop the scope wording and the suite stays green -
+    # two thirds of D1's deliverable unpinned.  (Carried forward from #1500's
+    # pin so this stacked PR is a superset, not a regression.)
+    assert "across all its PRs" in one, one
     many = _docket_card(
         dict(
             base,
@@ -1311,6 +1317,12 @@ def test_docket_card_shows_findings_chip():
     assert "2 verified findings</span>" in ver, "a cleared board still reads"
     assert "verdict-chip vc-ok" in ver, "verified renders in the ok colour"
     assert "verdict-chip vc-warn" not in ver, "a cleared board does not warn"
+    # The third scope label.  The apostrophe in "this proposal's" is escaped by
+    # esc (html.escape defaults to quote=True), so the entity is what lands in
+    # the attribute - asserting the raw apostrophe would fail for a reason that
+    # has nothing to do with the label.  (Carried forward from #1500's pin so
+    # this stacked PR is a superset, not a regression.)
+    assert "across all this proposal&#x27;s PRs" in ver, ver
 
 
 def test_pr_findings_panel_renders_proof_meta_and_empty_state():
