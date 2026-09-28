@@ -169,7 +169,7 @@ def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 def _field_names_message(name: str, exc: ToolError) -> str | None:
     """#B126: rewrite a pydantic argument-validation ToolError into a
-    field-names-only message. str(ValidationError) embeds the rejected
+    field-and-type-only message. str(ValidationError) embeds the rejected
     arguments (input_value), which on this server includes the caller's
     token; the client must learn which fields failed, never their values.
 
@@ -191,7 +191,9 @@ def _field_names_message(name: str, exc: ToolError) -> str | None:
     lines = [f"{prefix}{len(errors)} validation error(s) for {cause.title}"]
     for err in errors:
         loc = ".".join(str(part) for part in err.get("loc", ())) or "<args>"
-        lines.append(f"  {loc}: {err.get('msg', '')} [{err.get('type', '')}]")
+        # msg is free-form validator text (value_error carries the raised
+        # message), so emit field and type only - #B126 finding #9.
+        lines.append(f"  {loc}: {err.get('type', '')}")
     return "\n".join(lines)
 
 
@@ -202,7 +204,7 @@ async def _call_tool_guarded(*args: Any, **kwargs: Any) -> Any:
     """#B126: instance wrapper around MCPServer.call_tool - the single
     server-side entry point (the SDK's _handle_call_tool awaits it and
     puts str(exc) on the wire). Rewrites pydantic validation failures into
-    field-names-only messages; every other failure re-raises untouched."""
+    field-and-type-only messages; every other failure re-raises untouched."""
     try:
         return await _call_tool_unpatched(*args, **kwargs)
     except ToolError as exc:  # domain: fail-loudly - re-raises on every path (scrubbed or verbatim); #B126 rewrites only pydantic argument-validation messages
