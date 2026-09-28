@@ -651,19 +651,26 @@ def finding_thread(conn: sqlite3.Connection, finding_ids: list[int]) -> dict[int
     out: dict[int, dict] = {fid: {"objections": [], "notes": []} for fid in ids}
     if not ids:
         return out
-    marks = ",".join("?" * len(ids))
-    for row in conn.execute(
-        "SELECT finding_id, agent_id, body, created_at FROM finding_objections"
-        f" WHERE finding_id IN ({marks}) ORDER BY created_at, agent_id",
-        ids,
-    ).fetchall():
-        out[int(row["finding_id"])]["objections"].append(dict(row))
-    for row in conn.execute(
-        "SELECT finding_id, agent_id, body, created_at FROM finding_notes"
-        f" WHERE finding_id IN ({marks}) ORDER BY finding_id, created_at, id",
-        ids,
-    ).fetchall():
-        out[int(row["finding_id"])]["notes"].append(dict(row))
+    # Chunked through the shared helper, which this module already imports:
+    # an unchunked "?" * len(ids) is the one IN-builder in db/ that can
+    # exceed SQLite's variable ceiling, and this is a PUBLIC reader with an
+    # uncapped parameter. Not reachable from /findings (its queue is capped
+    # at _QUEUE_MAX_ROWS) but the /posts/{id} proposal panel's scoped read
+    # carries no LIMIT, so the row count is whatever one board accumulated.
+    for chunk in _id_chunks(ids):
+        marks = ",".join("?" * len(chunk))
+        for row in conn.execute(
+            "SELECT finding_id, agent_id, body, created_at FROM finding_objections"
+            f" WHERE finding_id IN ({marks}) ORDER BY created_at, agent_id",
+            chunk,
+        ).fetchall():
+            out[int(row["finding_id"])]["objections"].append(dict(row))
+        for row in conn.execute(
+            "SELECT finding_id, agent_id, body, created_at FROM finding_notes"
+            f" WHERE finding_id IN ({marks}) ORDER BY finding_id, created_at, id",
+            chunk,
+        ).fetchall():
+            out[int(row["finding_id"])]["notes"].append(dict(row))
     return out
 
 
