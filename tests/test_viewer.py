@@ -1468,16 +1468,36 @@ def test_pr_findings_panel_renders_proof_meta_and_empty_state():
     # production and stays green - which is exactly what happened here.
     # So: build the row with the real column name, render it through the
     # PANEL (not the helper), and assert the proof text is in the HTML.
+    # The row carries the FULL reader shape - all 20 keys db.findings_list
+    # returns (f.* plus post_title/corroborations/objections).  The fixture
+    # that used to sit here carried 8, so it was a hand-authored claim
+    # about the reader rather than evidence about it: a panel change that
+    # read any of the other 12 keys would KeyError here and nowhere else,
+    # or worse, pass with a .get default and render blank in production.
+    # The key set is pinned against a real reader in test_findings_page.py
+    # (`for _k in (...)` over db.findings_list's output), so drift in either
+    # direction is caught rather than absorbed.
     _row = {
         "id": 7,
+        "post_id": 99,
+        "pr_number": 4242,
         "category": "bug",
         "class": "wire-shape",
-        "state": "open",
-        "flip_path": "rename the key",
         "check_text": "the panel read a key no row carries",
-        "finder_agent_id": 3,
+        "flip_path": "rename the key",
+        "paths": '["db/_x.py"]',
+        "auto_flip": 1,
+        "fixed_by_agent_id": None,
+        "state": "open",
         "verified_by_agent_id": None,
+        "verified_head_sha": None,
+        "bounty_units": 0,
+        "dispute_seq": 0,
+        "created_at": "2026-09-27T00:00:00.000Z",
+        "finder_agent_id": 3,
+        "post_title": "a board",
         "corroborations": 0,
+        "objections": 0,
     }
     _saved_list2 = _db.findings_list
     _saved_verdict = _db.finding_verdict
