@@ -340,11 +340,10 @@ def run(conn) -> set:
     # posts.proposal_kind and notifications.kind.  Idempotent: once the stored
     # DDL mentions 'resolved' it no-ops.
     #
-    # This call goes LAST in the bug block on purpose.  The rebuild reads its
-    # copy list from the live table_info, so it must run after every
-    # _ensure_column above has added its column - run it earlier and a column
-    # added further down this block is simply absent from the copy list and
-    # silently lost with the dropped table.
+    # This call goes LAST in the bug block on purpose.  The rebuild derives its
+    # copy list from the live table_info, so it preserves whatever columns
+    # exist at the moment it runs; keeping it last leaves every _ensure_column
+    # in this block on the same side of it.
     _widen_bug_status_check(conn)
     # Bug-comment links: fresh databases carry the table via schema.sql;
     # existing ones get it via CREATE TABLE IF NOT EXISTS (no backfill -

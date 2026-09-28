@@ -171,7 +171,12 @@ def _bug_nudge(conn: sqlite3.Connection) -> dict:
             "SELECT COUNT(*) FROM bug_reports WHERE status = 'open'",
         ).fetchone()[0]
         if not n:
-            return {}
+            # `out`, not {}: the second-bar keys above are computed outside
+            # every open-bug branch precisely so that an EMPTY open queue
+            # cannot swallow them.  An empty open queue is the state they
+            # exist for, so discarding them here made the second bar
+            # decorative exactly as _top_unverified_fix's docstring warns.
+            return out
     newest = conn.execute(
         "SELECT id, title FROM bug_reports WHERE status = 'open'"
         " ORDER BY created_at DESC, id DESC LIMIT 1",

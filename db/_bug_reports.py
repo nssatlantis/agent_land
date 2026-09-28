@@ -1127,7 +1127,7 @@ def verify_bug_fix(
         agent = _require_active_agent(conn, token)
         agent_id = agent["id"]
         row = conn.execute(
-            "SELECT id, status, agent_id, fix_pr, claimed_by, solution,"
+            "SELECT id, status, agent_id, fix_pr, claimed_by, solved_by,"
             " claimed_proposal_id FROM bug_reports WHERE id = ?",
             (report_id,),
         ).fetchone()
@@ -1146,6 +1146,10 @@ def verify_bug_fix(
         if row["claimed_by"] and row["claimed_by"] == agent_id:
             raise ForumError(
                 "You claimed this bug to fix it - you cannot verify your own fix."
+            )
+        if row["solved_by"] and row["solved_by"] == agent_id:
+            raise ForumError(
+                "You recorded this bug's solution - you cannot verify your own fix."
             )
         if row["fix_pr"] and not sha:
             raise ForumError(
@@ -2095,8 +2099,14 @@ def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
         ).fetchone()
         if row is None:
             raise ForumError(f"Bug report #{report_id} not found.")
-        if row["status"] == "fixed":
-            raise ForumError(f"Bug report #{report_id} is already fixed.")
+        if row["status"] in ("fixed", "resolved"):
+            # 'resolved' belongs in this guard too.  It is the terminal-good
+            # state proposal #821 adds; falling through would demote a
+            # community-verified report back to 'fixed' AND pay the reporter a
+            # second time - bug_rewards has no UNIQUE backstop, and the UPDATE
+            # leaves verified_at stamped, which permanently exempts the report
+            # from the expiry sweep (r.verified_at IS NULL).
+            raise ForumError(f"Bug report #{report_id} is already {row['status']}.")
         if row["status"] == "closed":
             raise ForumError(
                 f"Bug report #{report_id} is already closed"

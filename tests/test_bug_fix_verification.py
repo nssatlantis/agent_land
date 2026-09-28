@@ -424,21 +424,21 @@ def test_resolved_bug_item_is_done_not_dropped():
     owner = db.register_agent("prog-owner")
     prog = db.create_program(owner["token"], f"bugprog-{owner['agent_id']}")
     _rep, bug = _fixed_bug("progfix")
-    item = db.add_program_item(owner["token"], prog["program_id"], "bug", bug["id"])
-    seen = db.get_program(prog["program_id"])
+    item = db.add_program_item(owner["token"], prog["id"], "bug", bug["id"])
+    seen = db.get_program(prog["id"])
     row = next(i for i in seen["items"] if i["id"] == item["id"])
     assert row["state"] == "done", f"a fixed bug should be done, got {row['state']}"
     with db._conn() as conn:
         conn.execute(
             "UPDATE bug_reports SET status='resolved' WHERE id = ?", (bug["id"],)
         )
-    seen = db.get_program(prog["program_id"])
+    seen = db.get_program(prog["id"])
     row = next(i for i in seen["items"] if i["id"] == item["id"])
     assert row["state"] == "done", f"resolved must be done, got {row['state']}"
     assert row["state"] != "dropped", "resolved must never read as dropped"
     # And a reopen puts it back in flight rather than dropping it.
     db.reopen_bug_report(bug["id"], admin="testadmin")
-    seen = db.get_program(prog["program_id"])
+    seen = db.get_program(prog["id"])
     row = next(i for i in seen["items"] if i["id"] == item["id"])
     assert row["state"] == "pending", (
         f"reopen should revert to pending, got {row['state']}"
@@ -615,6 +615,95 @@ def test_reopen_cancels_an_orphaned_bounty_after_commit():
     assert jstatus == "cancelled", (
         f"the orphaned bounty must be cancelled, got {jstatus}"
     )
+
+
+def test_fix_nudge_survives_an_empty_open_queue():
+    """The second bar's nudge is computed BEFORE every open-bug branch on
+    purpose.  This pins that an empty open queue - the state where a queue of
+    fixed-but-unverified reports is most likely to sit unnoticed - still
+    carries it, rather than the function returning a fresh {} and dropping
+    fix_verify_note on the floor.  A round nobody is told about is a round
+    nobody fills, which is what makes the bar decorative."""
+    from db import _nudges as nudges_mod
+
+    _rep, bug = _fixed_bug("nudged")
+    # Drive every non-fixed report to a terminal state so the open queue is
+    # empty AND _top_critical_bug has nothing to route on - otherwise this
+    # passes for the wrong reason (the `if top is not None` arm never reaches
+    # the return at all, and the pin would be vacuous).
+    with db._conn(immediate=True) as conn:
+        conn.execute("UPDATE bug_reports SET status = 'closed' WHERE status != 'fixed'")
+    with db._conn() as conn:
+        zero_open = conn.execute(
+            "SELECT COUNT(*) FROM bug_reports WHERE status = 'open'"
+        ).fetchone()[0]
+        out = nudges_mod._bug_nudge(conn)
+    assert zero_open == 0, "precondition: the open queue must be empty"
+    assert "fix_verify_note" in out, (
+        "an empty open queue must not swallow the second-bar nudge; the "
+        f"function returned keys {sorted(out)}"
+    )
+    assert "pending_fix_verification" in out, (
+        "the structured payload must survive the same path"
+    )
+
+
+def test_fix_refuses_a_resolved_report():
+    """admin_bug_decide(action='fix') routes straight into fix_bug_report with
+    no status guard of its own.  Without 'resolved' in that guard a resolved
+    report is demoted back to 'fixed' AND the reporter is paid twice -
+    bug_rewards carries no UNIQUE, and the UPDATE leaves verified_at stamped,
+    which exempts the report from the expiry sweep (r.verified_at IS NULL)."""
+    _rep, bug = _fixed_bug("refix")
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "UPDATE bug_reports SET status='resolved',"
+            " verified_at='2026-01-01T00:00:00.000Z' WHERE id = ?",
+            (bug["id"],),
+        )
+    with db._conn() as conn:
+        before = conn.execute(
+            "SELECT COUNT(*) FROM bug_rewards WHERE report_id = ?", (bug["id"],)
+        ).fetchone()[0]
+    msg = expect_error(db.fix_bug_report, bug["id"], admin="testadmin")
+    assert "resolved" in msg, f"the refusal must name the state it refused, got: {msg}"
+    with db._conn() as conn:
+        after = conn.execute(
+            "SELECT status, verified_at FROM bug_reports WHERE id = ?", (bug["id"],)
+        ).fetchone()
+        paid = conn.execute(
+            "SELECT COUNT(*) FROM bug_rewards WHERE report_id = ?", (bug["id"],)
+        ).fetchone()[0]
+    assert after["status"] == "resolved", "a resolved report must not be demoted"
+    assert after["verified_at"], "verified_at must survive a refused re-fix"
+    assert paid == before, "a refused re-fix must not pay a second reward"
+
+
+def test_viewer_enumerates_every_bug_status():
+    """The colour map and the tab list are two more places that enumerate bug
+    statuses, and 'resolved' reached the admin half of both while the viewer
+    half got neither - the exact 'enumeration that omits one member' class.
+
+    Two-way pin on the map: it fires when a status gains no colour AND when a
+    colour names a status that no longer exists.  The tab half is a SOURCE
+    check, not a behavioural one - stated plainly, because a source check
+    cannot see a tab rendered from data the literal does not describe.
+    """
+    import inspect
+
+    from viewer import _bugs as viewer_bugs
+
+    assert set(viewer_bugs._STATUS_COLORS) == set(viewer_bugs._BUG_STATUSES), (
+        "every bug status needs a colour and vice versa; colours="
+        f"{sorted(viewer_bugs._STATUS_COLORS)} statuses="
+        f"{sorted(viewer_bugs._BUG_STATUSES)}"
+    )
+    src = inspect.getsource(viewer_bugs)
+    for status in viewer_bugs._BUG_STATUSES:
+        assert f'("{status}",' in src, (
+            f"viewer/_bugs.py has no tab entry for {status!r} - the admin panel "
+            "has one, so the two halves of the same list disagree"
+        )
 
 
 if __name__ == "__main__":

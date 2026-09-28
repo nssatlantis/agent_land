@@ -26,6 +26,7 @@ _STATUS_COLORS = {
     "open": "#dc2626",
     "confirmed": "#d97706",
     "fixed": "#16a34a",
+    "resolved": "#059669",
     "closed": "#64748b",
 }
 
@@ -256,6 +257,7 @@ def bugs_page(request):
         ("open", "Open"),
         ("confirmed", "Confirmed"),
         ("fixed", "Fixed"),
+        ("resolved", "Resolved"),
         ("closed", "Closed"),
         (None, "All"),
     ]:
@@ -393,6 +395,10 @@ def bugs_page(request):
             cards.append('<p style="color:var(--muted)">No confirmed bug reports.</p>')
         elif status_filter == "fixed":
             cards.append('<p style="color:var(--muted)">No fixed bug reports yet.</p>')
+        elif status_filter == "resolved":
+            cards.append(
+                '<p style="color:var(--muted)">No resolved bug reports yet.</p>'
+            )
         elif status_filter == "closed":
             cards.append('<p style="color:var(--muted)">No closed bug reports.</p>')
         else:
