@@ -650,6 +650,33 @@ def test_dead_proposal_release_and_supersede():
             (out2["stake_id"],),
         ).fetchone()[0]
     assert status2 == "withdrawn", status2
+    # The refunded row above is the sharpest arm, and it is the one
+    # status here that arrives through ORDINARY OPERATION rather than a
+    # direct write: supersede released a guild stake and already
+    # returned the pool's money, so a second withdrawal would be a
+    # DOUBLE refund. Before #B68 the guild branch ran
+    #   UPDATE proposal_stakes SET status = 'withdrawn'
+    # straight past its status guards for exactly this row. Re-patching
+    # the same liveness read this test already uses keeps the guard
+    # reachable deterministically, so the assertion discriminates on the
+    # guard rather than passing on whichever error liveness happens to
+    # raise first.
+    _status_mod._proposal_status_for = lambda conn, p: "merged"
+    try:
+        db.withdraw_stake(founder["token"], out["stake_id"])
+    except Exception as exc:
+        refund_msg = str(exc)
+    else:
+        raise AssertionError("refunded guild stake accepted a second withdrawal")
+    finally:
+        _status_mod._proposal_status_for = real_status
+    assert "has status 'refunded'" in refund_msg, refund_msg
+    with db._conn() as conn:
+        status3 = conn.execute(
+            "SELECT status FROM proposal_stakes WHERE id = ?",
+            (out["stake_id"],),
+        ).fetchone()[0]
+    assert status3 == "refunded", status3
 
 
 def _sponsor_token(pid: int) -> str:
@@ -761,6 +788,76 @@ def test_disband_voids_stranded_arrears():
         ).fetchone()[0]
     # Founder paid through withhold (settled); zero-net mate voids.
     assert left == 0 and voided == 1, (left, voided)
+
+
+def test_guild_withdraw_status_guards():
+    """A guild-backed stake in ANY non-active status refuses withdrawal.
+
+    The guild branch of withdraw_stake carried no status guard at all:
+    past the liveness / lock / staker checks it fell straight into the
+    UPDATE. The non-guild branch has held both guards since the split,
+    so the two paths disagreed about the same row.
+
+    The table is the *reachable* non-active statuses rather than
+    'completed' alone, because that is where a guild stake actually
+    lands in normal operation:
+
+    - 'refunded'   supersede auto-release / refund_proposal_stakes.
+                   The sharpest one: the money is already back, so a
+                   successful second withdrawal double-refunds it.
+    - 'abandoned'  the settle path's under-funded-wallet abandon, whose
+                   UPDATE filters on id+status only - no currency
+                   predicate, no guild link - so a guild stake is not
+                   exempt. It also stops holding an exposure slot.
+    - 'withdrawn'  a second withdraw over an already-released row.
+    - 'completed'  fully paid out.
+
+    Pinning the table rather than one guard's message string makes each
+    guard red on its own: delete the 'completed' guard and that arm now
+    falls through to the generic one and stops saying 'fully paid';
+    delete the generic guard and the other three reach the UPDATE.
+
+    Each status here is written directly, so this pins the GUARD. The
+    TRIGGER for 'refunded' - that ordinary operation actually produces
+    this row - is pinned separately, by the real supersede path, in
+    test_dead_proposal_release_and_supersede.
+    """
+    import db._proposal_status as _status_mod
+
+    for status in ("completed", "refunded", "abandoned", "withdrawn"):
+        founder, guild, _mate = _rich_guild()
+        pid = _open_proposal(f"wdguard{status}")
+        out = db.guild_stake(founder["token"], pid, 2.5, 1)
+        sid = out["stake_id"]
+        real_status = _status_mod._proposal_status_for
+        # Force the liveness read dead (merge/decline is poller-side) so
+        # the branch gets past it and reaches the status guards, then
+        # park the row in the status under test.
+        _status_mod._proposal_status_for = lambda conn, p: "merged"
+        try:
+            with db._conn() as conn:
+                conn.execute(
+                    "UPDATE proposal_stakes SET status = ? WHERE id = ?",
+                    (status, sid),
+                )
+            try:
+                db.withdraw_stake(founder["token"], sid)
+            except Exception as exc:
+                msg = str(exc)
+            else:
+                raise AssertionError(f"withdraw accepted on status {status!r}")
+        finally:
+            _status_mod._proposal_status_for = real_status
+        if status == "completed":
+            assert "fully paid" in msg, (status, msg)
+        else:
+            assert f"has status '{status}'" in msg, (status, msg)
+        # Refused before any write: the row still carries its own status.
+        with db._conn() as conn:
+            left = conn.execute(
+                "SELECT status FROM proposal_stakes WHERE id = ?", (sid,)
+            ).fetchone()[0]
+        assert left == status, (status, left)
 
 
 if __name__ == "__main__":
