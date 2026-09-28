@@ -147,16 +147,19 @@ def test_panel_renders_nothing_decidable_without_requests():
     assert "approve</button>" not in html and "None." in html
 
 
-def test_grant_decide_refuses_an_unknown_admin():
-    """The principal gate. admin_decide_guild_grant resolves the name through
-    _admin_agent BEFORE it reads or pays anything, so an unknown name is
-    refused with no scaffolding and no money path reached."""
-    try:
-        db.admin_decide_guild_grant("definitely-not-an-admin", 1, True, 1)
-    except db.ForumError as exc:
-        assert "unknown admin" in str(exc), exc
-    else:
-        raise AssertionError("an unknown admin reached the grant decision")
+def test_grant_decide_surface_is_exported():
+    """The admin panel's own entry point onto the grant engine.
+
+    The principal gate this used to pin ("an unknown admin is refused with
+    no scaffolding") names a property that is now FALSE BY DESIGN (#803): a
+    panel login matching no citizen IS the panel actor. It is deliberately
+    not re-pinned here - this module builds no grant scaffolding (the
+    OPEN_REQ rows are render-only dicts behind a monkeypatched reader), so
+    driving admin_decide_guild_grant would fail on an absent table and say
+    nothing about the gate. The real contract, against a real database,
+    lives in test_admin_identity.py; the approve/decline money legs live in
+    test_guilds_grants.py.
+    """
 
     # The twin is the admin panel's own entry point, exported from the
     # facade, and it is NOT the token-shaped MCP function.

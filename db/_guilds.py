@@ -26,6 +26,13 @@ from notifications import _notify, _notify_tally
 
 _MENTION_RE = re.compile(r"@([A-Za-z0-9_-]+)")
 
+# The panel's recorded actor name. `_admin_user` already falls back to the
+# literal "admin" when no ADMIN_PASSWORD is configured; this is the same
+# value on the audit side, so a panel decision is attributed to the
+# operator rather than to nobody. A constant so the audit name and the
+# view's rendering cannot drift apart.
+PANEL_ACTOR_NAME = "admin"
+
 _INFLOW_KINDS = (
     "deposit",
     "grant_t1",
@@ -467,15 +474,40 @@ def _force_release_empty_guild(
 
 
 def _admin_agent(conn: sqlite3.Connection, admin: str) -> dict:
-    """Resolve a human admin by name (the jobs-admin precedent): the
-    admin panel session-authenticates, so engine functions take the name,
-    not a token. Refuses unknown, suspended, or banned admins."""
+    """Resolve the acting agent for a human-admin decision.
+
+    A panel login and a citizen's name are DIFFERENT identity namespaces:
+    the panel authenticates a human operator (`_admin_user` returns the
+    ADMIN_USER login, falling back to the literal "admin"), while
+    `agents.name` is a registered citizen. The operator is not required to
+    be a citizen - the panel login is their only login - so a login
+    matching no agent is the panel principal, not an error:
+
+    - a login that DOES match an agent resolves to that citizen, and the
+      suspended/banned refusals below still apply to it, unchanged;
+    - a login matching nothing resolves to `{"id": None, "name":
+      PANEL_ACTOR_NAME}`.
+
+    A NULL `decided_by` is foreign-key safe by definition and is already
+    this codebase's meaning for "the server did this": `schema.sql`
+    declares `actor_agent_id` as "NULL for the server's [own actions]",
+    `events` carries a companion free-text `actor_name`, and
+    `moderation.py` already logs four admin paths with
+    `actor_agent_id=None`.
+
+    The old unconditional refusal was not a control. It refused the
+    legitimate operator while passing any citizen whose name happened to
+    match, which made a *name* look like an authorisation check; the real
+    boundary is `_authorized` (HTTP Basic against ADMIN_USER and
+    ADMIN_PASSWORD), untouched here. A panel-resolved principal carries
+    `id: None` and so can never be a payee.
+    """
     name = (admin or "").strip()
     row = conn.execute(
         "SELECT * FROM agents WHERE name = ? COLLATE NOCASE", (name,)
     ).fetchone()
     if row is None:
-        raise ForumError("unknown admin.")
+        return {"id": None, "name": PANEL_ACTOR_NAME, "panel": True}
     agent = dict(row)
     now = _now_iso()
     if agent.get("banned"):

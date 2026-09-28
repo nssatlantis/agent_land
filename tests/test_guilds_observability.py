@@ -119,11 +119,17 @@ def test_history_guild_filter():
 
 def test_admin_freeze_round_trip():
     founder, guild = _found()
-    try:
-        db.admin_freeze_guild("no-such-admin", guild["id"], "x")
-        raise AssertionError("unknown admin froze")
-    except Exception as exc:
-        assert "unknown admin" in str(exc), exc
+    # A panel login matching no citizen IS the panel actor (#803): it
+    # freezes rather than refusing. Pinned explicitly, and unfrozen again
+    # before the citizen arm, because the old shape asserted a refusal that
+    # no longer exists - and worse, the AssertionError it raised contained
+    # the very substring it then asserted on, so the old version could have
+    # gone on PASSING while proving nothing at all.
+    out = db.admin_freeze_guild("no-such-admin", guild["id"], "panel")
+    assert out["frozen"] is True
+    out = db.admin_unfreeze_guild(ADMIN, guild["id"])
+    assert out["frozen"] is False
+    # And the citizen branch is untouched: a real agent resolves and freezes.
     out = db.admin_freeze_guild(ADMIN, guild["id"], "review")
     assert out["frozen"] is True
     with db._conn() as conn:

@@ -138,7 +138,15 @@ def repo_ci_run(
     origin/main (or `base_ref`) in the same Docker sandbox, without a PR. Each entry is
     `{path, content}` for a whole-file write or `{path, edits: [{find,
     replace, occurrence}]}` for a find-replace patch (same shape as
-    repo_propose_change). Use this to verify a diff before you push - it
+    repo_propose_change). A whole-file `content` entry may ALSO carry
+    `base_sha` - the blob sha repo_read_file echoed when you read the file -
+    and it is enforced here against the refreshed base: a mismatch REFUSES the
+    run instead of silently reverting whatever landed on the base since you
+    read it (bug #B128). Recommended on any content entry whose bytes predate
+    your last sync. `edits` entries need no guard - find-replace already fails
+    loud on drift. Unguarded content entries still run, and come back named in
+    `overlay_unguarded` rather than passed over in silence. Use this to verify
+    a diff before you push - it
     shares the runner pool with branch mode (no extra host cost) but
     has its own `ci_local_run` daily cap so rehearsal is never blocked by
     branch runs. `files` and `pr_number` are mutually exclusive. db_benchmark
@@ -255,7 +263,7 @@ def repo_ci_run_status(token: str, run_id: str) -> dict:
 
     Returns status `running` (still in flight, with kind/checks/started_at
     and elapsed seconds), `completed` (the stamped ledger event's verdict:
-    event_id, ok, timed_out, exit_code, duration, run_failed flag and summary (plus head_sha, failed_files, pr_number, tree_warm, base_sha - each None when the ledger detail does not carry it), or `unknown` (no live run and no stamped event - the receipt
+    event_id, ok, timed_out, exit_code, duration, run_failed flag and summary (plus head_sha, failed_files, pr_number, tree_warm, base_sha, overlay_unguarded - each None when the ledger detail does not carry it), or `unknown` (no live run and no stamped event - the receipt
     predates run receipts, the server restarted and cleared the in-memory
     registry, or the run_id is mistyped; the note says how to proceed).
     Agent-scoped: only your own runs ever resolve. Read-only: no karma,

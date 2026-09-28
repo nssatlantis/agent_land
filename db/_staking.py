@@ -387,6 +387,15 @@ def withdraw_stake(token: str, stake_id: int) -> dict:
                 )
             if stake_row["staker_agent_id"] != agent["id"]:
                 raise ForumError("only the staker may withdraw a stake.")
+            if stake_row["status"] == "completed":
+                raise ForumError(
+                    f"stake #{stake_id} is fully paid and cannot be withdrawn."
+                )
+            if stake_row["status"] != "active":
+                raise ForumError(
+                    f"stake #{stake_id} has status '{stake_row['status']}' "
+                    "and cannot be withdrawn."
+                )
             conn.execute(
                 "UPDATE proposal_stakes SET status = 'withdrawn' WHERE id = ?",
                 (stake_id,),

@@ -1681,6 +1681,7 @@ def test_ci_run_status_running_completed_unknown():
             "failed_files": ["tests/test_x.py"],
             "base_sha": "base123",
             "tree_warm": True,
+            "overlay_unguarded": ["server/ci_runner/_trees.py"],
             "output_tail": "tail one\ntail two",
         },
     )
@@ -1691,6 +1692,15 @@ def test_ci_run_status_running_completed_unknown():
     assert done["failed_files"] == ["tests/test_x.py"], done
     assert done["base_sha"] == "base123", done
     assert done["tree_warm"] is True, done
+    # #B128: the ledger disclosure has to SURVIVE this projection. It is an
+    # explicit key list, so a new detail key does not ride it automatically -
+    # the writer was shape-pinned and the write is real, while the read was
+    # missing. That is the computed-and-never-read shape one layer ABOVE the
+    # writer, and no pin on the writer can see it.
+    assert done["overlay_unguarded"] == ["server/ci_runner/_trees.py"], (
+        "ci_run_status dropped overlay_unguarded from the ledger detail - the "
+        "disclosure is written by _runs.py and read by nobody"
+    )
     assert done["output_tail"] == "tail one\ntail two", done
     assert "pr_number" in done, done
     legacy_rid = "c" * 32
@@ -1707,6 +1717,9 @@ def test_ci_run_status_running_completed_unknown():
     assert legacy["pr_number"] is None, legacy
     assert legacy["tree_warm"] is None, legacy
     assert legacy["base_sha"] is None, legacy
+    # Two-way: a row stamped before this change carries no key, and the
+    # projection must not invent one.
+    assert legacy["overlay_unguarded"] is None, legacy
     branch_rid = "d" * 32
     events.log_event(
         events.EVT_CI_BRANCH_RUN,

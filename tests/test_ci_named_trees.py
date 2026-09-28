@@ -296,6 +296,90 @@ def main():
             config.CI_RUN_DAILY_CAP = _old_cap
             config.CI_RUN_COOLDOWN_SECONDS = _old_cd
         print("  tree-only budget bucket: ok")
+        # 12. #B128: the named-tree lane must DISCLOSE unguarded content-mode
+        # entries (not merely refuse guarded ones), and its replay recovery
+        # must catch a raise that is NOT a ForumError. Inside the try, on the
+        # stubbed _git/_ensure_clone: the rehearsal sandbox is network-off, so
+        # the real _ensure_clone cannot clone. None of these pins needs a
+        # correct `rev-parse HEAD:<path>` - arm 1 is unguarded (the guard never
+        # runs), arm 2 is edits mode, arm 3 stubs _apply_local_changes, arm 4
+        # reads a source file - so the stubs are sufficient.
+        import json as _json_b128
+        from pathlib import Path as _PathB128
+
+        _t, _h, _info = trees._prepare_named_tree(
+            aid, "b128", [{"path": "p.py", "content": "X = 1\n"}]
+        )
+        assert _info["overlay_unguarded"] == ["p.py"], (
+            f"unguarded content entry not disclosed by the named-tree lane: {_info}"
+        )
+        # Two-way: edits mode resolves against the on-disk file and already
+        # fails loud on drift, so a guard there is redundant and it is not
+        # reported.
+        _t, _h, _info2 = trees._prepare_named_tree(
+            aid,
+            "b128",
+            [{"path": "p.py", "edits": [{"find": "X = 1", "replace": "X = 2"}]}],
+        )
+        assert _info2["overlay_unguarded"] == [], (
+            f"edits mode must not be reported as unguarded: {_info2}"
+        )
+        assert _info2["delta_count"] == 2, _info2
+
+        # The replay recovery: force a base move, then make the replay raise
+        # something that is NOT a ForumError. Production's instance is
+        # RepoError (github._writes._assert_base_blob), which the old
+        # `except db.ForumError` did not catch, so _clear_deltas never ran and
+        # the tree kept the poisoned store to replay again. RuntimeError rather
+        # than the production RepoError deliberately: it also reds a future
+        # narrowing to `except (ForumError, RepoError)`.
+        _ntdir = trees._named_dir(aid, "b128")
+        _man = os.path.join(_ntdir, ".ci-tree.json")
+        with open(_man, encoding="utf-8") as _fh:
+            _m = _json_b128.load(_fh)
+        _m["base_sha"] = "f" * 40
+        with open(_man, "w", encoding="utf-8") as _fh:
+            _json_b128.dump(_m, _fh)
+        _real_apply = trees._apply_local_changes
+
+        def _raise_non_forum(_tree, _changes):
+            raise RuntimeError("stale base for 'p.py' - simulated guard refusal")
+
+        trees._apply_local_changes = _raise_non_forum
+        try:
+            _msg = _expect_error(
+                trees._prepare_named_tree,
+                aid,
+                "b128",
+                [{"path": "p.py", "content": "Z = 3\n"}],
+            )
+        finally:
+            trees._apply_local_changes = _real_apply
+        assert "stored deltas were cleared" in _msg, (
+            f"a non-ForumError replay failure escaped the recovery handler: {_msg}"
+        )
+        assert trees._stored_deltas(_ntdir) == [], (
+            "replay failure left the poisoned delta store intact - the next "
+            "call would replay it again over a base it no longer matches"
+        )
+
+        # The disclosure has to REACH the agent. A shape pin on purpose: the
+        # defect is "the key is computed and never read", which no behavioural
+        # pin on _prepare_named_tree can see - and which is what my own first
+        # cut of this change shipped (the list existed in merge_info and was
+        # named in the tool docstring, and nothing in _runs.py read it).
+        _runs_src = (_PathB128(ci_runner.__file__).parent / "_runs.py").read_text(
+            encoding="utf-8"
+        )
+        assert 'result["overlay_unguarded"]' in _runs_src, (
+            "the result assembly in _runs.py never reads overlay_unguarded - "
+            "the disclosure is computed and then dropped"
+        )
+        assert 'detail["overlay_unguarded"]' in _runs_src, (
+            "the ledger detail assembly never reads overlay_unguarded - an "
+            "in-flight run's repo_ci_run_status would lose the disclosure"
+        )
+        print("  #B128 named-tree disclosure + replay recovery: ok")
     finally:
         trees._git = real_git
         trees._ensure_clone = real_clone
