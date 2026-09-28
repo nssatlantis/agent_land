@@ -220,10 +220,13 @@ def _findings_panel_degraded(pr_number: int, reason: str) -> str:
     This keeps a failed read and an empty board apart on the page itself;
     the matching log tag is emitted by the caller.
     """
-    # The two branches are worded differently on purpose: on the lookup
-    # path we do not yet know a board exists, so claiming "findings may
-    # exist" there over-reports.  Over-reporting is the false-alarm
-    # direction this change introduces (proposal #776).
+    # The two branches are worded differently on purpose, and the LOOKUP
+    # branch is the cautious one: on the lookup path we do not yet know a
+    # board exists, so it states the uncertainty ("may or may not exist")
+    # rather than naming a failure mode.  The read branch knows a board
+    # exists, so it can say "findings may exist" and echo the reason.  Getting
+    # this backwards is the false-alarm direction this change could introduce
+    # (proposal #776).
     if reason.startswith("proposal"):
         note = (
             f"Board status unreadable for PR #{pr_number}. This is a read "
@@ -251,13 +254,15 @@ def _pr_findings_panel(pr_number: int) -> str:
 
     This is the PER-PR report, not the proposal's whole board (proposal
     #776).  A finding is anchored to the proposal but reported against the
-    PR it was found on, and one proposal routinely carries several PRs at
+    # PR it was found on, and one proposal routinely carries several PRs at
     once, so there are two real levels: the rows filed against THIS PR
     (here) and the proposal-wide total (the docket chip in
     viewer/_proposals.py).  They are meant to disagree - each answers a
-    different question - so do not "fix" one to match the other.  What
-    blocks a merge is per PR as well (db.reviewer_blockers filters on
-    pr_number), so a sibling PR's rows neither block nor show up here.
+    different question - so do not "fix" one to match the other.  A sibling
+    PR's rows can neither move your tally nor show up here: the only path
+    that moves a vote is db.flip_pr_vote_to_approve, reached solely from
+    finding_verify and scoped to the finding's own PR.  Nothing here gates a
+    merge - see the README's "Nothing blocks a merge on findings".
     """
     try:
         pid = db.proposal_for_pr(pr_number)
