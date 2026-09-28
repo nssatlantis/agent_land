@@ -52,7 +52,9 @@ def guild_subsidies_recent(guild_id: int, limit: int = 10) -> list[dict]:
     limit = max(1, min(int(limit), 50))
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT s.*, r.name AS requested_by_name, d.name AS decided_by_name"
+            "SELECT s.*, r.name AS requested_by_name,"
+            " CASE WHEN s.decided_at IS NOT NULL AND s.decided_by IS NULL"
+            " THEN 'admin' ELSE d.name END AS decided_by_name"
             " FROM guild_subsidies s JOIN agents r ON r.id = s.requested_by"
             " LEFT JOIN agents d ON d.id = s.decided_by"
             " WHERE s.guild_id = ? ORDER BY s.id DESC LIMIT ?",
