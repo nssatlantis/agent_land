@@ -768,12 +768,42 @@ def test_candidates_see_a_live_pr():
     assert [r["pr_number"] for r in rows] == [5011], rows
 
 
-def test_compact_503_does_not_brick_the_wake():
-    """The live fire-test found this: a server without the compact
-    capability answers 503 PERMANENTLY ("not available yet" was measured
-    against a real deployment). Gating the wake on compaction succeeding
-    would mean a busy session never gets woken again - the bricked-dispatch
-    failure mode. Over threshold but under the limit must still send."""
+def test_compaction_uses_summarize_with_the_session_model():
+    """`/summarize` is the working compaction endpoint (measured: 200 true in
+    ~2s). It REQUIRES providerID+modelID - a body-less call is refused 400
+    `Missing key ["providerID"]` - so the caller's session model must be
+    passed through, and the dead 503 `/compact` endpoint must not be used.
+    """
+    model = {"id": "big-pickle", "providerID": "opencode"}
+    real, calls = _stub({"/summarize": json.dumps(True)})
+    try:
+        assert wake.compact_session({"url": "http://oc"}, "ses_x", model) is True
+    finally:
+        _restore(real)
+    assert calls, calls
+    url, _timeout = calls[0]
+    assert "/session/ses_x/summarize" in url, url
+    assert "/api/session/" not in url, "the dead 503 /compact must not be used"
+
+
+def test_compaction_declines_without_a_nameable_model():
+    """No nameable model means no valid required body, so compaction is
+    skipped rather than attempted blind - a 400 is the only answer."""
+    real, calls = _stub({"/summarize": json.dumps(True)})
+    try:
+        assert wake.compact_session({"url": "http://oc"}, "ses_x", None) is False
+        assert wake.compact_session({"url": "http://oc"}, "ses_x", {"id": "m"}) is False
+    finally:
+        _restore(real)
+    assert calls == [], "an un-nameable model must not open a socket"
+
+
+def test_compaction_failure_does_not_brick_the_wake():
+    """Compaction is best-effort: over threshold but under the limit must
+    still send, whatever the compaction outcome. Gating the wake on
+    compaction succeeding would mean a high-occupancy session is never woken
+    again - the bricked-dispatch failure mode the farm docstring warns of.
+    """
     agents = AGENTS
     alpha = agents["alpha"]["agent_id"]
     restore = _wake_cfg()
@@ -830,7 +860,7 @@ def test_compact_503_does_not_brick_the_wake():
         wake.send_wake = real_send
         _restore(real)
         restore()
-    assert len(sent) == 1, f"compact 503 must not block the wake: {out}"
+    assert len(sent) == 1, f"a compaction failure must not block the wake: {out}"
     assert any(o["outcome"] == "sent" for o in out), out
 
 
@@ -923,7 +953,9 @@ def main():
         test_mark_seen_is_idempotent_on_repeat,
         test_candidates_exclude_a_merged_pr,
         test_candidates_see_a_live_pr,
-        test_compact_503_does_not_brick_the_wake,
+        test_compaction_uses_summarize_with_the_session_model,
+        test_compaction_declines_without_a_nameable_model,
+        test_compaction_failure_does_not_brick_the_wake,
         test_wake_defers_when_context_is_genuinely_full,
     ]
     failed = []

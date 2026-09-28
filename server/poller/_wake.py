@@ -34,6 +34,15 @@ bug if taken at face value.
    subagent. select_session() requires parentID is null AND agent is a
    primary one.
 
+Compaction goes through `POST /session/{id}/summarize`, the AI-summarise
+endpoint (measured live: 200 `true` in ~2s, occupancy read back after). It
+requires `providerID` + `modelID` in the body. The sibling
+`POST /api/session/{id}/compact` answers a PERMANENT 503 "Session compact
+is not available yet" on this deployment and is deliberately never called.
+Compaction stays best-effort regardless: a failure must not end a wake,
+because the nudge is a few hundred tokens and still fits - gating on
+compaction would mean a high-occupancy session is never woken again.
+
 THE GATE LADDER
 ---------------
 Cheapest filters first; gates 1-7 cost nothing (no HTTP, no tokens) and
@@ -306,18 +315,36 @@ def session_busy(endpoint: dict, session_id: str) -> bool:
     return entry.get("type") != "idle"
 
 
-def compact_session(endpoint: dict, session_id: str) -> bool:
-    """POST compact. False when unavailable (503) or unreachable.
+def compact_session(endpoint: dict, session_id: str, model: dict | None = None) -> bool:
+    """Compact a session's context via AI summarisation.
 
-    503 is NOT transient: a server that answers "Session compact is not
-    available yet" has no such capability, and would 503 forever. A wake
-    gated on this would therefore never fire again for a busy session -
-    the bricked-dispatch failure mode _farm's docstring warns about. The
-    caller treats a False as advisory and decides on headroom instead.
+    `POST /session/{id}/summarize` is the working compaction endpoint
+    (measured: 200 `true` in ~2s, occupancy read back after). It REQUIRES
+    `providerID` + `modelID` in the body - a body-less call is refused 400
+    with `Missing key ["providerID"]` - so the caller's session model is
+    passed through, and a session whose model we cannot name is not
+    compacted rather than compacted blind.
+
+    Note the sibling `POST /api/session/{id}/compact` answers a PERMANENT
+    `503 "Session compact is not available yet"`; that endpoint is a dead
+    capability on this deployment and is deliberately not called.
+
+    False means "no compaction happened" - the caller treats that as
+    advisory and decides on headroom rather than treating it as fatal.
     """
+    model = model or {}
+    provider_id = str(model.get("providerID") or "")
+    model_id = str(model.get("id") or "")
+    if not provider_id or not model_id:
+        return False
     payload = _json_call(
-        endpoint, f"/api/session/{session_id}/compact", method="POST", payload={}
+        endpoint,
+        f"/session/{session_id}/summarize",
+        method="POST",
+        payload={"providerID": provider_id, "modelID": model_id},
     )
+    # A 400 (unprocessable request) raises HTTPError, so it reads as None
+    # like any other transport failure - both are "no compaction".
     return payload is not None
 
 
@@ -546,21 +573,27 @@ def _wake_one(endpoint: dict, agent_id: int, pr_number: int) -> str:
         occupancy is not None
         and occupancy >= float(config.AGENT_WAKE_CONTEXT_RATIO) * limit
     ):
-        # Best-effort compaction. A server without the capability answers
-        # 503 PERMANENTLY ("not available yet" was measured against a real
-        # deployment), so a False here must not end the wake: gating on it
-        # would mean a busy session never gets woken again - exactly the
-        # bricked-dispatch failure mode the farm docstring warns about.
-        # The nudge is a few hundred tokens and still fits under the limit,
-        # so only a genuinely full context is worth deferring, and that
-        # check stands independently of whether compaction worked.
-        if compact_session(endpoint, session_id):
+        # Compact first so the nudge lands on a compacted context.
+        # Best-effort by design: /summarize needs a model we can name, and
+        # a failure here must NOT end the wake - the nudge is a few
+        # hundred tokens and still fits under the limit, so gating on
+        # compaction succeeding would mean a high-occupancy session simply
+        # never gets woken again. Only a genuinely full context defers,
+        # and that check stands independently of whether compaction ran.
+        if compact_session(endpoint, session_id, session.get("model")):
             time.sleep(int(config.AGENT_WAKE_COMPACT_WAIT_SECONDS))
-            occupancy = context_occupancy(endpoint, session_id)
-            logutil.log("agent_wake_compacted", session=session_id, occupancy=occupancy)
+            after = context_occupancy(endpoint, session_id)
+            logutil.log(
+                "agent_wake_compacted",
+                session=session_id,
+                before=occupancy,
+                after=after,
+                limit=limit,
+            )
+            occupancy = after
         else:
             logutil.log(
-                "agent_wake_compact_unavailable",
+                "agent_wake_compact_skipped",
                 session=session_id,
                 occupancy=occupancy,
                 limit=limit,
