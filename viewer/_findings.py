@@ -238,7 +238,7 @@ def _findings_table(rows: list[dict]) -> str:
     surface can most easily forget to ask for, which is how it stayed
     unreadable for the system's whole life."""
     trail = _read_trail(rows)
-    empty = {"objections": [], "notes": []}
+    empty: dict = {"objections": [], "notes": []}
     head = (
         "<table><thead><tr>"
         "<th>Finding</th><th>Class</th><th>Check / fix</th><th>PR</th>"
