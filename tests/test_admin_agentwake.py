@@ -1115,16 +1115,52 @@ def _record_run_broadcast(calls):
 
 
 def test_the_gap_box_shows_the_live_knob_not_a_literal():
+    import re
+
     saved = config.AGENT_WAKE_BROADCAST_GAP_SECONDS
     config.AGENT_WAKE_BROADCAST_GAP_SECONDS = 137
     try:
         html = _render()
     finally:
         config.AGENT_WAKE_BROADCAST_GAP_SECONDS = saved
-    assert 'name="gap"' in html, "the send form has no gap box"
-    assert 'value="137"' in html, "the box does not show the live knob value"
-    assert f'max="{bc.MAX_GAP_SECONDS}"' in html, html[:400]
-    assert 'type="number"' in html
+    tag = re.search(r'<input[^>]*name="gap"[^>]*>', html)
+    assert tag, "the send form has no gap box"
+    assert 'value="137"' in tag.group(0), tag.group(0)
+    # type=text, NOT type=number, and no min/max/step. A number input's
+    # value-sanitisation algorithm turns an invalid entry into "", so a browser
+    # would submit a typo as BLANK and the server would answer with the
+    # CONFIGURED default - a silent, different broadcast from the one typed,
+    # which is the failure this form exists to prevent. Client constraints are
+    # also only a bubble; the server refusal names the offending value.
+    assert 'type="text"' in tag.group(0), tag.group(0)
+    assert 'inputmode="numeric"' in tag.group(0), tag.group(0)
+    assert "min=" not in tag.group(0), tag.group(0)
+    assert "max=" not in tag.group(0), tag.group(0)
+
+
+def test_an_out_of_range_configured_gap_is_never_pre_filled():
+    """The knob is a live, UNVALIDATED env read, so it can be unsendable.
+
+    `config.__getattr__` applies only `int` and re-reads on every access, so
+    -1 or 99999 is accepted silently. Pre-filling either would make the box's
+    OWN default fail its own parser - and because a cleared box delegates to
+    the knob, the operator would be told they "typed" a figure they never
+    touched. The configured number is still named in the copy, so the page
+    does not quietly lie about it either.
+    """
+    import re
+
+    saved = config.AGENT_WAKE_BROADCAST_GAP_SECONDS
+    try:
+        for bad in (-1, bc.MAX_GAP_SECONDS + 1):
+            config.AGENT_WAKE_BROADCAST_GAP_SECONDS = bad
+            html = _render()
+            tag = re.search(r'<input[^>]*name="gap"[^>]*>', html)
+            assert tag, "the send form has no gap box"
+            assert "value=" not in tag.group(0), (bad, tag.group(0))
+            assert "outside the 0-" in html, (bad, html[:400])
+    finally:
+        config.AGENT_WAKE_BROADCAST_GAP_SECONDS = saved
 
 
 def test_a_blank_gap_means_the_config_default_never_zero():
@@ -1165,6 +1201,7 @@ def test_a_typed_gap_reaches_the_send_and_writes_the_row():
 
 def test_a_bad_gap_is_refused_without_writing_a_row():
     before = _newest_broadcast()
+    bodies = {}
     os.environ["ADMIN_PASSWORD"] = "secret"
     try:
         # chr(0xB2) is U+00B2 SUPERSCRIPT TWO: `isdigit()` calls it True and
@@ -1176,13 +1213,20 @@ def test_a_bad_gap_is_refused_without_writing_a_row():
                 ag.agent_wake_broadcast, {"agent": ["1"], "message": "hi", "gap": bad}
             )
             body = resp.body.decode()
+            bodies[bad] = body
             assert resp.status_code == 200, (bad, resp.status_code)
             assert "gap" in body.lower(), (bad, body[:200])
+            # The message must NAME the value. That is the only thing
+            # separating the two refusal arms, and a ForumError("invalid
+            # gap") would satisfy every assertion above this line.
+            assert str(bad) in body, (bad, body[:200])
     finally:
         os.environ.pop("ADMIN_PASSWORD", None)
     assert (_newest_broadcast() or {}).get("id") == (before or {}).get("id"), (
         "a refused gap still queued a broadcast"
     )
+    # ...and the two arms are not one message wearing different numbers.
+    assert bodies["12.5"] != bodies["99999"], "one refusal text for both arms"
 
 
 def test_the_preview_still_runs_with_no_gap():
@@ -1275,6 +1319,7 @@ def main():
         test_broadcast_surfaces_an_empty_selection,
         test_broadcast_enforces_the_fan_out_cap_at_the_page_too,
         test_the_gap_box_shows_the_live_knob_not_a_literal,
+        test_an_out_of_range_configured_gap_is_never_pre_filled,
         test_a_blank_gap_means_the_config_default_never_zero,
         test_a_typed_gap_reaches_the_send_and_writes_the_row,
         test_a_bad_gap_is_refused_without_writing_a_row,

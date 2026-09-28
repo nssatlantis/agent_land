@@ -369,6 +369,32 @@ def _broadcast_box(request, rows: list[dict], running: dict | None) -> str:
     # page, so the sentence is corrected here rather than left to rot: the
     # first turn starts at once, every later turn waits the gap behind it.
     gap_default = int(config.AGENT_WAKE_BROADCAST_GAP_SECONDS)
+    # The knob is a LIVE, unvalidated env read - config.__getattr__ applies
+    # only `int` and re-reads on every access - so it can sit outside the
+    # range this form accepts. Pre-filling an out-of-range number would make
+    # the box's OWN default un-sendable, and because a cleared box delegates
+    # back to the knob, the operator would be told they "typed" a figure they
+    # never touched. So pre-fill only what the parser accepts, and NAME the
+    # configured figure in the copy when it is not. Empty is the honest path:
+    # it resolves to the same configured default, at send time, in the engine.
+    gap_sendable = 0 <= gap_default <= _broadcast.MAX_GAP_SECONDS
+    gap_attr = f' value="{esc(str(gap_default))}"' if gap_sendable else ""
+    gap_note = (
+        ""
+        if gap_sendable
+        else (
+            " <b>That configured gap is outside the 0-"
+            f"{esc(str(_broadcast.MAX_GAP_SECONDS))}s this box accepts, so the "
+            "box starts empty; leaving it empty uses that configured value.</b>"
+        )
+    )
+    # `type="text"`, NOT `type="number"`: a number input's value-sanitisation
+    # algorithm turns any invalid entry into "", so a browser would submit a
+    # typo as BLANK and the server would answer with the CONFIGURED default -
+    # a silent, different broadcast from the one that was typed, which is the
+    # exact failure this form exists to prevent. min/max/step are absent for
+    # the same reason: they are client-side only, and a bare constraint bubble
+    # is a worse answer than the server's refusal, which names the value.
     cost = (
         f'<p style="color:var(--muted)">A broadcast starts one agent turn per '
         f"ticked agent: the first immediately, then one every "
@@ -376,7 +402,7 @@ def _broadcast_box(request, rows: list[dict], running: dict | None) -> str:
         f"automatic-wake daily budget "
         f"({esc(str(int(config.AGENT_WAKE_BUDGET_PER_DAY)))}/day), and it "
         f"ignores quiet hours. Messages are capped at "
-        f"{esc(str(_broadcast.MAX_MESSAGE_CHARS))} characters.</p>"
+        f"{esc(str(_broadcast.MAX_MESSAGE_CHARS))} characters.{gap_note}</p>"
     )
     # A preview contacts nobody, so it is allowed while a real broadcast is
     # in flight - and the banner says which kind is running, because "a
@@ -412,9 +438,8 @@ def _broadcast_box(request, rows: list[dict], running: dict | None) -> str:
         f'maxlength="{_broadcast.MAX_MESSAGE_CHARS}" '
         f'placeholder="message for every ticked agent" required></textarea>'
         f"<label>gap between agents "
-        f'<input class="typed" name="gap" type="number" min="0" '
-        f'max="{_broadcast.MAX_GAP_SECONDS}" step="1" '
-        f'value="{esc(str(gap_default))}" style="width:6em">s</label> '
+        f'<input class="typed" name="gap" type="text" inputmode="numeric" '
+        f'{gap_attr} style="width:6em">s</label> '
         f'<button type="submit"{disabled}>send</button>'
         f"</form></div>"
     )
