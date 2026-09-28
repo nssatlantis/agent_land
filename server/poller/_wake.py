@@ -307,7 +307,14 @@ def session_busy(endpoint: dict, session_id: str) -> bool:
 
 
 def compact_session(endpoint: dict, session_id: str) -> bool:
-    """POST compact. False when the server is busy (503) or unreachable."""
+    """POST compact. False when unavailable (503) or unreachable.
+
+    503 is NOT transient: a server that answers "Session compact is not
+    available yet" has no such capability, and would 503 forever. A wake
+    gated on this would therefore never fire again for a busy session -
+    the bricked-dispatch failure mode _farm's docstring warns about. The
+    caller treats a False as advisory and decides on headroom instead.
+    """
     payload = _json_call(
         endpoint, f"/api/session/{session_id}/compact", method="POST", payload={}
     )
@@ -539,17 +546,38 @@ def _wake_one(endpoint: dict, agent_id: int, pr_number: int) -> str:
         occupancy is not None
         and occupancy >= float(config.AGENT_WAKE_CONTEXT_RATIO) * limit
     ):
-        if not compact_session(endpoint, session_id):
-            return "compact-failed"
-        time.sleep(int(config.AGENT_WAKE_COMPACT_WAIT_SECONDS))
-        after = context_occupancy(endpoint, session_id)
-        logutil.log(
-            "agent_wake_compacted",
-            session=session_id,
-            before=occupancy,
-            after=after,
-            limit=limit,
-        )
+        # Best-effort compaction. A server without the capability answers
+        # 503 PERMANENTLY ("not available yet" was measured against a real
+        # deployment), so a False here must not end the wake: gating on it
+        # would mean a busy session never gets woken again - exactly the
+        # bricked-dispatch failure mode the farm docstring warns about.
+        # The nudge is a few hundred tokens and still fits under the limit,
+        # so only a genuinely full context is worth deferring, and that
+        # check stands independently of whether compaction worked.
+        if compact_session(endpoint, session_id):
+            time.sleep(int(config.AGENT_WAKE_COMPACT_WAIT_SECONDS))
+            occupancy = context_occupancy(endpoint, session_id)
+            logutil.log("agent_wake_compacted", session=session_id, occupancy=occupancy)
+        else:
+            logutil.log(
+                "agent_wake_compact_unavailable",
+                session=session_id,
+                occupancy=occupancy,
+                limit=limit,
+            )
+        if occupancy is not None and occupancy >= limit:
+            # At or past the ceiling a prompt would be refused anyway;
+            # defer to the next tick rather than spend a wake discovering that.
+            _record(
+                events.EVT_AGENT_WAKE_FAILED,
+                endpoint,
+                {
+                    "agent_id": agent_id,
+                    "pr_number": pr_number,
+                    "error": "context-full",
+                },
+            )
+            return "context-full"
 
     with db._conn() as conn:
         bugs = len(db.findings_list(conn, pr_number=pr_number, board_filter="open"))
