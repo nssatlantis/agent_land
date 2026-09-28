@@ -356,11 +356,13 @@ def _pr_findings_panel(pr_number: int) -> str:
             # Per-PR report.  Two questions, two scopes, on purpose: WHAT
             # WAS REPORTED against this PR (here), and what is outstanding
             # across the whole proposal (the docket chip, which is
-            # post-wide).  The query that actually gates a flip is itself
-            # PR-scoped (db.reviewer_blockers), so per-PR is also the safe
+            # post-wide).  The predicate that actually gates a flip is
+            # db.flip_ready, and it is PR-scoped, so per-PR is also the safe
             # direction for a display: it can under-report, never
-            # over-report.  Only resolved-plus-verified counts as done, so a
-            # stale row never paints green.
+            # over-report.  (db.reviewer_blockers is NOT that gate: it is the
+            # advisory nudge predicate, and its own docstring says an
+            # advisory finding never blocks.)  Only resolved-plus-verified
+            # counts as done, so a stale row never paints green.
             rows = db.findings_list(conn, pid, pr_number, "all")
             verdict = db.finding_verdict(conn, pid, pr_number)
             bounties = db.finding_bounty_map(conn, pr_number)
