@@ -1,7 +1,7 @@
 """Tests for viewer helpers related to PR voting and proposal lifecycle.
 
 Covers the key HTML fragment builders that render proposal votes, PR trails,
-CI status, bounty panels, and lock banners â all pure functions that take
+CI status, bounty panels, and lock banners — all pure functions that take
 dicts and return HTML strings."""
 
 import os
@@ -1258,6 +1258,71 @@ def test_docket_card_shows_findings_chip():
     assert "blocking finding" in html, html
     assert "every PR on this proposal" in html, html
 
+    # Blockers lead over the open count they are a subset of.
+    html = _docket_card(
+        dict(
+            base,
+            findings_summary={
+                "open_findings": 4,
+                "verified_findings": 2,
+                "open_blockers": 1,
+            },
+        )
+    )
+    assert "1 blocking finding</span>" in html, "the blocker count leads"
+    assert "pre-authorised" in html, "the tooltip explains what a blocker is"
+    assert "4 open findings" not in html, "the open count does not double up"
+
+    # Open without a blocker, singular and plural read correctly.
+    one = _docket_card(
+        dict(
+            base,
+            findings_summary={
+                "open_findings": 1,
+                "verified_findings": 0,
+                "open_blockers": 0,
+            },
+        )
+    )
+    assert "1 open finding</span>" in one, "one open finding reads singular"
+    many = _docket_card(
+        dict(
+            base,
+            findings_summary={
+                "open_findings": 3,
+                "verified_findings": 0,
+                "open_blockers": 0,
+            },
+        )
+    )
+    assert "3 open findings</span>" in many, "three open findings reads plural"
+
+    # Verified only: the last branch, and the only one that is not a warning.
+    ver = _docket_card(
+        dict(
+            base,
+            findings_summary={
+                "open_findings": 0,
+                "verified_findings": 2,
+                "open_blockers": 0,
+            },
+        )
+    )
+    assert "2 verified findings</span>" in ver, "a cleared board still reads"
+    assert "verdict-chip vc-ok" in ver, "verified renders in the ok colour"
+    assert "verdict-chip vc-warn" not in ver, "a cleared board does not warn"
+
+
+def test_pr_findings_panel_renders_proof_meta_and_empty_state():
+    """The per-PR findings panel itself: what a row shows, what a clean board
+    shows, and what a board that could not be read shows.
+
+    Split out of test_docket_card_shows_findings_chip, which tests the
+    proposal-wide CHIP on the docket.  Both surfaces read the same board, and
+    both were pinned in one function named for only the first - so a panel
+    regression reported as a chip failure, on a merge-gating surface.  Named
+    separately in #776 review.
+    """
     # #776 D8: a failed board read must be VISIBLE.  Returning "" makes a
     # broken panel indistinguishable from a clean board - the fail-silent
     # class in #B134, on a surface that gates merges.
@@ -1374,59 +1439,38 @@ def test_docket_card_shows_findings_chip():
     assert _row["check_text"] in _panel, _panel
     assert "filed by agent 3" in _panel, _panel
 
-    # Blockers lead over the open count they are a subset of.
-    html = _docket_card(
-        dict(
-            base,
-            findings_summary={
-                "open_findings": 4,
-                "verified_findings": 2,
-                "open_blockers": 1,
-            },
-        )
+    # The degraded panel's two wordings are a claim about WHICH FACT the caller
+    # has, so each is pinned on its own.  This branch used to be
+    # `reason.startswith("proposal")` - control flow over a human-facing
+    # string - and the else-branch had no pin at all, so rewording the lookup
+    # reason would have silently flipped which direction the panel lies in
+    # (under-reporting a clean board vs claiming findings may exist) with
+    # nothing to fail.
+    _lookup = _prh._findings_panel_degraded(
+        7, "proposal lookup failed", board_may_exist=False
     )
-    assert "1 blocking finding</span>" in html, "the blocker count leads"
-    assert "pre-authorised" in html, "the tooltip explains what a blocker is"
-    assert "4 open findings" not in html, "the open count does not double up"
+    _read = _prh._findings_panel_degraded(7, "board read failed", board_may_exist=True)
+    assert "may or may not exist" in _lookup, _lookup
+    assert "may or may not exist" not in _read, _read
+    assert "board read failed" in _read, _read
+    # The reason is useful detail only where a board is known to exist; the
+    # lookup path states the uncertainty instead of naming the failure mode.
+    assert "proposal lookup failed" not in _lookup, _lookup
+    assert "not a clean board" in _lookup and "not a clean board" in _read
 
-    # Open without a blocker, singular and plural read correctly.
-    one = _docket_card(
-        dict(
-            base,
-            findings_summary={
-                "open_findings": 1,
-                "verified_findings": 0,
-                "open_blockers": 0,
-            },
-        )
-    )
-    assert "1 open finding</span>" in one, "one open finding reads singular"
-    many = _docket_card(
-        dict(
-            base,
-            findings_summary={
-                "open_findings": 3,
-                "verified_findings": 0,
-                "open_blockers": 0,
-            },
-        )
-    )
-    assert "3 open findings</span>" in many, "three open findings reads plural"
+    # `finder_agent_id` is the one branch of _finding_meta that INVENTS a value
+    # instead of passing one through, so it is the one a regression would
+    # hide: a row that lost the key rendered "agent None" and still looked
+    # like provenance.
+    assert _meta({}) == "filed by agent unknown", _meta({})
+    assert "unknown" in _meta({"corroborations": 2}), _meta({"corroborations": 2})
 
-    # Verified only: the last branch, and the only one that is not a warning.
-    ver = _docket_card(
-        dict(
-            base,
-            findings_summary={
-                "open_findings": 0,
-                "verified_findings": 2,
-                "open_blockers": 0,
-            },
-        )
-    )
-    assert "2 verified findings</span>" in ver, "a cleared board still reads"
-    assert "verdict-chip vc-ok" in ver, "verified renders in the ok colour"
-    assert "verdict-chip vc-warn" not in ver, "a cleared board does not warn"
+    # corroborations is a COUNT(*) alias in practice, but the int() sat outside
+    # every try in a panel whose other reads all degrade - the one branch that
+    # could 500 the page.  Asserted here so the guard is pinned, not assumed.
+    _odd = _meta({"finder_agent_id": 3, "corroborations": "not-a-number"})
+    assert "filed by agent 3" in _odd, _odd
+    assert "corroboration" not in _odd, _odd
 
 
 def test_docket_summary_strip():
@@ -1850,7 +1894,7 @@ def test_services_shelf_renders_live_paused_and_degraded():
     assert "<script>" not in card and "&lt;script&gt;" in card
     assert "<b>mallory</b>" not in card
     assert "service-424242" in card
-    assert card.count("â¦") >= 1, "long description truncated"
+    assert card.count("…") >= 1, "long description truncated"
 
 
 def test_services_detail_page_and_card_expander():
@@ -2979,7 +3023,7 @@ def test_skill_cell_tooltip_quotes_closed():
         }
     }
     html = _skill_cell(ranked, "building")
-    assert "title='Building: 60/100 (range 75â88) over 3 raters'>" in html, (
+    assert "title='Building: 60/100 (range 75–88) over 3 raters'>" in html, (
         "ranked title opens and closes with a single quote"
     )
     assert 'raters">' not in html, "no double-quote close inside the title"
@@ -3001,10 +3045,10 @@ def test_skill_cell_tooltip_quotes_closed():
     bhtml = _skill_cell(badged, "building")
     assert "over 5 raters; Proven Builder'>" in bhtml, "badge splice keeps the quote"
     assert 'raters">' not in bhtml and 'Builder">' not in bhtml, "no stray close"
-    assert ">B 75â</span>" in bhtml, "badged cell text stays visible"
+    assert ">B 75★</span>" in bhtml, "badged cell text stays visible"
     uhtml = _skill_cell({"skills": {}}, "reviewing")
     assert "title='reviewing: unranked'>" in uhtml, "unranked title stays quoted"
-    assert ">R â</span>" in uhtml, "unranked cell text stays visible"
+    assert ">R –</span>" in uhtml, "unranked cell text stays visible"
 
 
 if __name__ == "__main__":
@@ -3045,6 +3089,7 @@ if __name__ == "__main__":
     test_todos_panel_list_mode_shows_list_level_claims()
     test_docket_card_shows_list_claim_summary()
     test_docket_card_shows_findings_chip()
+    test_pr_findings_panel_renders_proof_meta_and_empty_state()
     test_docket_summary_strip()
     test_collaborative_page_removed()
     test_lineage_families_group_chains()
