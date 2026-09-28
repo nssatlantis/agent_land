@@ -172,27 +172,50 @@ def _trail_cell(trail: dict) -> str:
     )
 
 
-def _table_or_notice(rows: list[dict]) -> str:
-    """The board table, or a notice naming what could not be rendered.
+def _guarded_findings_render(render, *, row_count: int, subject: str, tag: str) -> str:
+    """Run a findings RENDER, degrading a failure to a visible notice.
 
-    ONE guarded render, called by both surfaces that draw a findings table -
-    the /findings union view and the proposal-wide panel embedded on
-    /posts/{id}. Guarding the first and not the second is how the embedded
-    panel would have kept the exact failure this PR exists to fix: a
-    raising renderer taking down a page far busier than /findings, on a
-    board whose own standard is that a degraded read still answers. The
-    row count rides along so the reader is told how much is behind the
-    notice - a bare "could not render" is indistinguishable from an empty
-    board, which is the same lie in a different costume.
+    ONE guard for every surface that draws findings rows. Not one table:
+    the three surfaces carry different columns (the union view shows
+    flip_path/paths/auto_flip and the contest trail; the /prs/{n} panel
+    shows check_text plus provenance and its verdict counts), and they are
+    meant to differ - each answers a different question. What they must
+    NOT differ on is failure behaviour.
+
+    The read was already guarded on all three, and the render was not
+    guarded on any until this PR: a raising renderer 500'd the page, which
+    is the exact failure this PR exists to fix and which had shipped 8/0
+    with CI 5/5 on the union view. Guarding two of three is the same defect
+    wearing a smaller number, so the guard is a function here and the
+    renderers pass their own markup in.
+
+    The row count rides along, because a bare "could not render" is
+    indistinguishable from an empty board - the same lie in a different
+    costume, and the one that authorises a merge.
     """
     try:
-        return _findings_table(rows)
+        return render()
     except Exception:  # domain: degrade-silently - the counts around it stand
-        logutil.log("findings_table_render_failed", error=str(sys.exc_info()[1]))
+        logutil.log(tag, error=str(sys.exc_info()[1]))
         return (
             '<p style="color:var(--warn)">These findings could not be'
-            f" rendered ({len(rows)} matched the filter).</p>"
+            f" rendered ({row_count} {subject}).</p>"
         )
+
+
+def _table_or_notice(rows: list[dict]) -> str:
+    """The union view's table, or a notice naming what could not be rendered.
+
+    Thin wrapper over `_guarded_findings_render`, shared with the other two
+    row-drawing surfaces so there is one place to be wrong. See that
+    function for why the render needs a guard at all.
+    """
+    return _guarded_findings_render(
+        lambda: _findings_table(rows),
+        row_count=len(rows),
+        subject="matched the filter",
+        tag="findings_table_render_failed",
+    )
 
 
 def _finding_row(r: dict, trail: dict | None = None) -> str:
@@ -224,11 +247,31 @@ def _finding_row(r: dict, trail: dict | None = None) -> str:
     else:
         # A failed trail read is NOT an absence of objections. Say so, and
         # fall back to the reader's count rather than to a zero.
+        #
+        # The fallback is the ledger's own COUNT, and it is authoritative by
+        # construction: no DELETE exists against either table, so on the
+        # normal path the two can never disagree, and the badge can only
+        # UNDER-report. Suppressing it instead would render the row as "no
+        # objections" - the same lie as an empty board, wearing silence
+        # instead of prose. The count is marked as from the fallback so the
+        # number's provenance is visible where the number appears, not only
+        # in the neighbouring cell.
         objections = _safe_int(r.get("objections"))
+        # Deliberately NOT the page-level wording. "could not be read" is
+        # pinned to mean the whole BOARD is unreadable, and reusing it here
+        # would give one phrase two meanings - a row-level failure reading
+        # as a page-level one, which is the distinction this cell exists to
+        # keep. This says which number it is and what is wrong with it.
+        count_title = (
+            ' title="counted from the board tally rather than the contest'
+            ' trail: the reasons are unreadable, so this number may be low"'
+        )
         trail_html = (
             '<span class="kind-badge" style="background:var(--warn)">'
             "contest trail unreadable</span>"
         )
+    if isinstance(trail, dict):
+        count_title = ""
     # Escaped ONCE, used by every cell AND every attribute built from these
     # three. The visible text was escaped and the attributes one line away
     # were not - and then the VISIBLE PR cell was the one still built from
@@ -263,8 +306,8 @@ def _finding_row(r: dict, trail: dict | None = None) -> str:
         )
     if objections:
         badges += (
-            f' <span class="kind-badge" style="background:var(--warn)">'
-            f"{objections} objected</span>"
+            f' <span class="kind-badge" style="background:var(--warn)"'
+            f"{count_title}>{objections} objected</span>"
         )
     if r.get("auto_flip"):
         # The one distinction this whole system is built on, and until now
