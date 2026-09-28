@@ -343,24 +343,28 @@ def test_correction_selection_skips_subagent_children():
                 "id": "ses_root",
                 "parentID": None,
                 "agent": "plan",
+                "location": {"directory": "dir"},
                 "time": {"updated": now - 5_000_000},
             },
             {
                 "id": "ses_child",
                 "parentID": "ses_root",
                 "agent": "explore",
+                "location": {"directory": "dir"},
                 "time": {"updated": now},
             },
             {
                 "id": "ses_sub",
                 "parentID": None,
                 "agent": "general",
+                "location": {"directory": "dir"},
                 "time": {"updated": now},
             },
             {
                 "id": "ses_build",
                 "parentID": None,
                 "agent": "build",
+                "location": {"directory": "dir"},
                 "time": {"updated": now - 1_000},
             },
         ]
@@ -384,6 +388,7 @@ def test_selection_honours_session_max_age():
                             "id": "ses_old",
                             "parentID": None,
                             "agent": "plan",
+                            "location": {"directory": "dir"},
                             "time": {"updated": stale},
                         }
                     ]
@@ -572,6 +577,7 @@ def test_sweep_burst_collapses_to_one_wake():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
                         }
@@ -665,6 +671,7 @@ def test_sweep_skips_resolved_during_debounce():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
                         }
@@ -1000,6 +1007,7 @@ def test_deferred_wake_is_retried_on_the_next_tick():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
                         }
@@ -1099,6 +1107,7 @@ def test_quiet_hours_does_not_consume_the_burst():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
                         }
@@ -1170,6 +1179,7 @@ def test_self_filed_finding_does_not_arm_the_debounce():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
                         }
@@ -1619,6 +1629,7 @@ def test_compaction_failure_does_not_brick_the_wake():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
                         }
@@ -1681,6 +1692,7 @@ def test_wake_defers_when_context_is_genuinely_full():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
                         }
@@ -1719,6 +1731,227 @@ def test_wake_defers_when_context_is_genuinely_full():
         restore()
     assert sent == [], f"a full context must not spend a wake: {out}"
     assert any(o["outcome"] == "context-full" for o in out), out
+
+
+# --- correction 5: the directory match is OURS, not the server's -----------
+
+
+def _srow(session_id, directory, *, agent="build", parent=None, updated=None, loc=True):
+    """One session row shaped like the live server's - `location` included.
+
+    The location is not decoration. Correction 5 moved the directory match
+    out of the server and into `select_session`, and the rows stubbed
+    before that carried no location at all - so they were shaped like a
+    response this server does not send. A test that asserts a session IS
+    selected has to carry one now. That is a fixture telling the truth
+    about the wire, not a test being relaxed to fit new code.
+    """
+    row = {
+        "id": session_id,
+        "parentID": parent,
+        "agent": agent,
+        "time": {
+            "updated": int(time.time() * 1000) if updated is None else int(updated)
+        },
+    }
+    if loc:
+        row["location"] = {"directory": directory}
+    return row
+
+
+def test_correction_five_matches_the_directory_itself():
+    """Two real directories on the measured host end in the SAME component.
+
+    Only the full path tells them apart, so a basename match would hand a
+    citizen the stale workspace - here the MORE RECENT session.
+    """
+    now = int(time.time() * 1000)
+    modern = "S:/AgentLand_Agents/AgentLand_Agent1_CitizenOne"
+    legacy = "S:/New folder/AgentLand_Agent1_CitizenOne"
+    real, _ = _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        _srow("ses_legacy", legacy, agent="plan", updated=now),
+                        _srow("ses_modern", modern, updated=now - 1_000),
+                    ]
+                }
+            )
+        }
+    )
+    try:
+        got = wake.select_session({"url": "http://oc"}, modern)
+    finally:
+        _restore(real)
+    assert got["id"] == "ses_modern", got
+
+
+def test_directory_match_is_not_a_basename_match():
+    """The companion to the pin above: when only the stale path is present
+    the answer is None, not the nearest thing by name."""
+    real, _ = _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        _srow("ses_legacy", "S:/New folder/AgentLand_Agent1_CitizenOne")
+                    ]
+                }
+            )
+        }
+    )
+    try:
+        got = wake.select_session(
+            {"url": "http://oc"}, "S:/AgentLand_Agents/AgentLand_Agent1_CitizenOne"
+        )
+    finally:
+        _restore(real)
+    assert got is None, got
+
+
+def test_directory_match_survives_quotes_and_separators():
+    """The stored registry value is quoted and forward-slashed; the server
+    reports a plain backslashed path. That is every real row on disk, and
+    it is why the feature had never delivered a message."""
+    real, _ = _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        _srow(
+                            "ses_one",
+                            "S:\\AgentLand_Agents\\AgentLand_Agent1_CitizenOne",
+                        )
+                    ]
+                }
+            )
+        }
+    )
+    try:
+        got = wake.select_session(
+            {"url": "http://oc"},
+            '"S:/AgentLand_Agents/AgentLand_Agent1_CitizenOne"',
+        )
+    finally:
+        _restore(real)
+    assert got["id"] == "ses_one", got
+
+
+def test_directory_match_is_case_insensitive():
+    """Windows calls `New folder` and `New Folder` one directory, and both
+    spellings were in the measured data."""
+    real, _ = _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        _srow(
+                            "ses_x", "s:/agentland_agents/AGENTLAND_AGENT1_CITIZENONE"
+                        )
+                    ]
+                }
+            )
+        }
+    )
+    try:
+        got = wake.select_session(
+            {"url": "http://oc"}, "S:/AgentLand_Agents/AgentLand_Agent1_CitizenOne"
+        )
+    finally:
+        _restore(real)
+    assert got["id"] == "ses_x", got
+
+
+def test_a_bare_convention_name_matches_nothing():
+    """`derive_directory` yields a bare name; the server reports an absolute
+    path. If a bare name ever started matching, the gate would silently
+    degrade into the basename match it is documented not to be."""
+    real, _ = _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        _srow(
+                            "ses_x", "S:/AgentLand_Agents/AgentLand_Agent1_CitizenOne"
+                        )
+                    ]
+                }
+            )
+        }
+    )
+    try:
+        got = wake.select_session({"url": "http://oc"}, "AgentLand_Agent1_CitizenOne")
+    finally:
+        _restore(real)
+    assert got is None, got
+
+
+def test_a_row_without_a_location_never_matches():
+    """Unidentifiable is not universal. A row that names no workspace must
+    not satisfy a request for one."""
+    real, _ = _stub(
+        {"/api/session": json.dumps({"data": [_srow("ses_x", "", loc=False)]})}
+    )
+    try:
+        got = wake.select_session(
+            {"url": "http://oc"}, "S:/AgentLand_Agents/AgentLand_Agent1_CitizenOne"
+        )
+    finally:
+        _restore(real)
+    assert got is None, got
+
+
+def test_a_blank_directory_fails_closed():
+    """Without this a blank registry value would match every row in the
+    machine that happens to carry no location."""
+    real, _ = _stub(
+        {"/api/session": json.dumps({"data": [_srow("ses_x", "", loc=False)]})}
+    )
+    try:
+        assert wake.select_session({"url": "http://oc"}, "") is None
+        assert wake.select_session({"url": "http://oc"}, '  "  ') is None
+        assert wake.select_session({"url": "http://oc"}, None) is None
+    finally:
+        _restore(real)
+
+
+def test_session_list_asks_for_no_server_side_filter():
+    """A pin on the FIX rather than on its behaviour.
+
+    `session.list` measured live: flat `directory` 500s, `parentID` is
+    silently ignored, and only `project` filters (uselessly here). If a
+    future hand re-adds any of them the feature goes dark again, and
+    without this nothing in the suite says why.
+    """
+    real, calls = _stub({"/api/session": json.dumps({"data": []})})
+    try:
+        wake.select_session({"url": "http://oc"}, "S:/AgentLand_Agents/X")
+    finally:
+        _restore(real)
+    seen = [u for u, _ in calls if "/api/session" in u]
+    assert seen, calls
+    for url in seen:
+        assert "directory=" not in url, f"server-side filter is back: {url}"
+        assert "location" not in url, f"server-side filter is back: {url}"
+        assert "project=" not in url, f"useless filter is back: {url}"
+
+
+def test_an_unreadable_session_list_logs_its_own_tag():
+    """A 500 used to collapse into `_json_call`'s bare `return None` and
+    surface as `no-session`, which is how a broken query spent a day
+    looking like a quiet citizen."""
+    real, _ = _stub({"/api/session": RuntimeError("500")})
+    seen = []
+    real_log = wake.logutil.log
+    wake.logutil.log = lambda tag, **kw: seen.append(tag)
+    try:
+        got = wake.select_session({"url": "http://oc"}, "S:/AgentLand_Agents/X")
+    finally:
+        _restore(real)
+        wake.logutil.log = real_log
+    assert got is None, got
+    assert "agent_wake_session_list_unreadable" in seen, seen
 
 
 def main():
@@ -1764,6 +1997,15 @@ def main():
         test_a_disabled_endpoint_is_invisible_to_the_deliverable_readers,
         test_correction_no_root_session_creates_nothing_by_default,
         test_correction_create_session_is_opt_in,
+        test_correction_five_matches_the_directory_itself,
+        test_directory_match_is_not_a_basename_match,
+        test_directory_match_survives_quotes_and_separators,
+        test_directory_match_is_case_insensitive,
+        test_a_bare_convention_name_matches_nothing,
+        test_a_row_without_a_location_never_matches,
+        test_a_blank_directory_fails_closed,
+        test_session_list_asks_for_no_server_side_filter,
+        test_an_unreadable_session_list_logs_its_own_tag,
         test_main_registers_every_test_in_this_module,
     ]
     failed = []
