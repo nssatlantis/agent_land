@@ -591,77 +591,158 @@ def test_candidates_request_the_knob_verbatim_when_it_is_under_the_cap():
     print("  candidates: the knob under the cap is requested verbatim: ok")
 
 
-def test_autolink_stop_test_compares_against_a_clamped_value():
-    """Ratchet: this sweep's page stop must never compare against the raw knob.
+_PER_PAGE_CAP_NAME = "_GITHUB_MAX_PER_PAGE"
 
-    Scoped to this file deliberately. The last unclamped sites in
-    github/_reads.py are the two OPEN twins, which #PR1506 clamps, so a
-    repo-wide pin would be red for a reason unrelated to this change - and a
-    ratchet that cries wolf gets deleted. Widen this once #PR1506 lands.
+# Every `len(batch) <` page stop in production code, by file. This is the
+# COMPLETENESS half of the ratchet, and it is asserted in both directions: a
+# site added in a new file fails the equality, and so does a site DELETED -
+# so coverage cannot quietly shrink while the pin stays green. A one-way
+# check passes on the failure it was built to catch and is silent on the
+# other, which is the direction that actually rots.
+EXPECTED_PAGE_STOP_FILES = {
+    "github/_reads.py": 8,
+    "server/poller/_autolink.py": 1,
+}
+
+_SKIP_DIRS = {".git", "__pycache__", "tests", "node_modules"}
+
+
+def _is_len_batch(node) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "len"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "batch"
+    )
+
+
+def _page_stop_sites(tree) -> list:
+    """Every page-stop comparator in a module, with its line.
+
+    Either operand order, so the pin does not depend on which side an author
+    happened to put `len(batch)` on.
     """
-    # A TEXT scan cannot separate a live code site from a sentence about it: the
-    # comment above quotes the old expression `len(batch) < knob` in backticks
-    # precisely to document the bug this ratchet exists to catch, and the first
-    # cut of this pin failed on that comment. Comments never enter the AST and a
-    # docstring is a string constant rather than a comparison, so reading the tree
-    # makes prose invisible BY CONSTRUCTION instead of by an allowlist someone has
-    # to maintain. That asymmetry is the point: a ratchet that cries wolf gets
-    # deleted, and deleting it takes the real guard with it.
-    root = Path(__file__).resolve().parent.parent
-    path = root / "server/poller/_autolink.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-
-    def is_len_batch(node):
-        return (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "len"
-            and len(node.args) == 1
-            and isinstance(node.args[0], ast.Name)
-            and node.args[0].id == "batch"
-        )
-
-    # Either operand order, so the pin does not depend on which side an author
-    # happened to put `len(batch)` on.
-    others: list = []
+    found: list = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Compare):
             continue
         operands = [node.left, *node.comparators]
         for index in range(len(operands) - 1):
             left, right = operands[index], operands[index + 1]
-            if is_len_batch(left):
-                others.append(right)
-            elif is_len_batch(right):
-                others.append(left)
+            if _is_len_batch(left):
+                found.append((node.lineno, right))
+            elif _is_len_batch(right):
+                found.append((node.lineno, left))
+    return found
 
-    assert others, "no `len(batch)` page stop found - the ratchet is not seeing it"
-    unclamped = [
-        ast.dump(other)
-        for other in others
-        if not (isinstance(other, ast.Name) and other.id == "per_page")
-    ]
-    assert not unclamped, (
-        f"the page stop compares against an unclamped value: {unclamped}"
-    )
 
-    clamps = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign)
-        and any(isinstance(t, ast.Name) and t.id == "per_page" for t in node.targets)
-        and isinstance(node.value, ast.Call)
-        and isinstance(node.value.func, ast.Name)
-        and node.value.func.id == "min"
-    ]
-    assert clamps, (
-        "the stop compares against `per_page` but nothing clamps it - exactly "
-        "the two-state shape this ratchet exists to catch"
+def _clamped_locals(tree) -> set:
+    """Names in this module bound by a `min(...)` call - i.e. hoisted clamps."""
+    names: set = set()
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "min"
+        ):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                names.add(target.id)
+    return names
+
+
+def test_no_page_stop_compares_against_an_unclamped_value():
+    """Ratchet over the CLASS, not the instance (#B131 / #786).
+
+    The defect shape: a pagination loop stops on `len(batch) < X` where X is
+    not the value that went on the wire. A FULL page then satisfies the test
+    and reads as the end of the listing, so the sweep returns less than its
+    window *while believing it exhausted it* - and for the autolink catch-up
+    that means a merged PR on page 2 is never retro-linked, permanently,
+    because the next sweep agrees with itself.
+
+    Nine sites, eight already correct: four compare a hoisted `min`-clamped
+    local, four compare GitHub's ceiling constant directly (and interpolate
+    that same constant into the URL one line above, so the two provably
+    agree), and `server/poller/_autolink.py` was the only raw-knob member -
+    which this same PR fixes. This is the deliverable #786 named in its own
+    title, and the previous cut of this pin deferred it to #PR1506. That PR
+    has since merged, clamp-only, and a merged PR takes no further commits -
+    so the deferral named a vehicle that had already departed. The condition
+    in the old docstring ("widen this once #PR1506 lands") was checkable, and
+    this is me noticing it had been met.
+
+    Three properties, each present because its absence is a known failure:
+
+    1. AST, not text. A text scan cannot tell a live code site from a
+       sentence about one: the fix's own comment quotes the old expression
+       `len(batch) < knob` in backticks to document the very bug this ratchet
+       exists to catch, and the first cut FAILED on that comment. Comments
+       never enter the tree and a docstring is a string constant rather than
+       a Compare, so prose is invisible by construction rather than by an
+       allowlist someone has to maintain. A ratchet's false positive is more
+       dangerous than a test's: a test that cries wolf reds CI (loud, safe),
+       while a ratchet cries wolf until somebody deletes it - and deleting it
+       returns the real defect unguarded.
+    2. A POSITIVE whitelist of correct operand shapes, not a blacklist. The
+       defect at this PR's own site was `config.GITHUB_PRS_PER_PAGE`, an
+       `ast.Attribute`; a rule of the form "reject Names that are not
+       `per_page`" would have waved it straight through. Naming the two
+       shapes that are actually right is what makes the pin discriminate.
+    3. Bi-directional completeness (the EXPECTED_PAGE_STOP_FILES equality
+       above), so a new site and a deleted site both redden.
+
+    Scoped honestly: this reads production `.py` and skips `tests/`. It says
+    nothing about whether each site is reached at runtime, and the pin's
+    value is that it needs no maintenance to keep covering new modules - a
+    new file with a page stop shows up in the walk and fails the equality.
+    """
+    root = Path(__file__).resolve().parent.parent
+    found_counts: dict = {}
+    offenders: list = []
+    for path in sorted(root.rglob("*.py")):
+        rel = path.relative_to(root).as_posix()
+        if rel.split("/")[0] in _SKIP_DIRS or rel == "server.py":
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        sites = _page_stop_sites(tree)
+        if not sites:
+            continue
+        found_counts[rel] = len(sites)
+        clamped = _clamped_locals(tree)
+        for lineno, operand in sites:
+            if isinstance(operand, ast.Name):
+                ok = operand.id in clamped or operand.id == _PER_PAGE_CAP_NAME
+            elif isinstance(operand, ast.Attribute):
+                ok = operand.attr == _PER_PAGE_CAP_NAME
+            else:
+                ok = False
+            if not ok:
+                offenders.append(f"{rel}:{lineno} compares against {ast.dump(operand)}")
+
+    assert found_counts, (
+        "no `len(batch)` page stop found anywhere - either the class is gone "
+        "(delete this ratchet deliberately) or the walk is not seeing it"
     )
-    assert any("_GITHUB_MAX_PER_PAGE" in ast.dump(n.value) for n in clamps), (
-        "the clamp on `per_page` never mentions GitHub's per-page ceiling"
+    assert not offenders, (
+        "a page stop compares against a value that did not go on the wire: "
+        f"{offenders}"
     )
-    print("  autolink page stop is clamped (ast, not text): ok")
+    assert found_counts == EXPECTED_PAGE_STOP_FILES, (
+        "the page-stop inventory moved. A site added or removed is a real "
+        "change and the two directions fail differently: a NEW site is a new "
+        "unguarded comparison, a REMOVED one is coverage that quietly "
+        f"disappeared. found={found_counts} expected={EXPECTED_PAGE_STOP_FILES}"
+    )
+    total = sum(found_counts.values())
+    print(f"  all {total} page stops are clamped (ast, not text): ok")
 
 
 def main():
@@ -675,7 +756,7 @@ def main():
     test_candidates_paginate_when_the_knob_exceeds_the_cap()
     test_candidates_page_cap_still_bounds_the_scan()
     test_candidates_request_the_knob_verbatim_when_it_is_under_the_cap()
-    test_autolink_stop_test_compares_against_a_clamped_value()
+    test_no_page_stop_compares_against_an_unclamped_value()
     test_sweep_links_unstamped_merged_pr_lifecycle_only(agents)
     test_sweep_stamped_pr_gets_full_lifecycle(agents)
     test_sweep_skips_linked_recorded_and_unmerged(agents)
