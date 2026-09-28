@@ -253,6 +253,27 @@ def _findings_panel_degraded(
     )
 
 
+def _check_proof(row: dict) -> str:
+    """The row's one-line proof, bounded for display and escaped for the page.
+
+    `check_text` is the whole point of D4 and nothing upstream caps it -
+    finding_add validates only that it is non-empty (db/_review_findings.py:130)
+    and the column is a plain TEXT, so a long proof is a live case.  A bare
+    `[:400]` rendered it cut with no marker, and a cut sentence on a page whose
+    job is to explain what is wrong reads as the complete sentence.  So mark the
+    truncation, and do it on the RAW text before escaping (truncating escaped
+    output can split an entity like `&amp;` into `&am`).
+
+    Escaping after the cut is also what keeps the cut from being able to break
+    out of the tag: an incomplete `&lt;` would only be produced if we escaped
+    first.
+    """
+    text = row["check_text"]
+    if len(text) > 400:
+        return esc(text[:400]) + "..."
+    return esc(text)
+
+
 def _finding_meta(row: dict) -> str:
     """Provenance for one board row: who filed it, how many reviewers
     corroborated it, who verified it. The one-line proof is the row body
@@ -277,17 +298,24 @@ def _finding_meta(row: dict) -> str:
     if row.get("verified_by_agent_id") is not None:
         # Only say "verified" when the row is resolved AND verified - the same
         # conjunction the panel buckets on, and the one db.reviewer_blockers
-        # uses.  A `stale` row keeps its verifier id (the staling update
-        # rewrites only `state`), so testing the id alone printed "verified by
-        # agent N" on a row the verdict line was simultaneously counting as
-        # OPEN.  The panel contradicted itself.  A stale row still surfaces WHO
-        # verified it, as history rather than as a current claim.
-        if row.get("state") == "resolved":
+        # uses.  A non-resolved row keeps its verifier id: the staling update
+        # rewrites ONLY `state`, and finding_dispute also leaves the id in
+        # place, so testing the id alone printed "verified by agent N" on a row
+        # the verdict line was simultaneously counting as OPEN.  The panel
+        # contradicted itself.  A lapsed row still surfaces WHO verified it, as
+        # history rather than as a current claim - and it must name the ACTUAL
+        # state, not "stale": the legal states are open / resolved / disputed /
+        # stale (db.FINDING_STATES), and a verified row can be disputed once a
+        # push has staled it, because finding_dispute refuses only a row that
+        # is still `resolved`.  Hardcoding "stale" printed "(row is stale)" on a
+        # row the same <li> badges as [disputed].
+        state = row.get("state")
+        if state == "resolved":
             bits.append(f"verified by agent {row.get('verified_by_agent_id')}")
         else:
             bits.append(
                 f"verification by agent {row.get('verified_by_agent_id')}"
-                " lapsed (row is stale)"
+                f" lapsed (row is {state or 'not resolved'})"
             )
     return " / ".join(bits)
 
@@ -381,7 +409,7 @@ def _pr_findings_panel(pr_number: int) -> str:
             f"#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
             f"<span style='color:{state_color};font-weight:600'>"
             f"{esc(r['state'])}</span>"
-            f"<div style='margin:2px 0'>{esc(r['check_text'][:400])}</div>"
+            f"<div style='margin:2px 0'>{_check_proof(r)}</div>"
             f"<div style='color:var(--muted);font-size:12px'>"
             f"{esc(_finding_meta(r))}</div>"
             f"{bounty_badge}{_objection_badge(r)}</li>"
@@ -392,7 +420,7 @@ def _pr_findings_panel(pr_number: int) -> str:
             f'<li title="{esc(r["flip_path"][:200])}">'
             f"#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
             f"<span style='color:var(--ok);font-weight:600'>verified</span>"
-            f"<div style='margin:2px 0'>{esc(r['check_text'][:400])}</div>"
+            f"<div style='margin:2px 0'>{_check_proof(r)}</div>"
             f"<div style='color:var(--muted);font-size:12px'>"
             f"{esc(_finding_meta(r))}</div>"
             f"{bounty_badge}{_objection_badge(r)}</li>"
