@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import threading
+import traceback
 import urllib.request
 from pathlib import Path
 
@@ -24,9 +25,34 @@ import db  # noqa: E402
 import events  # noqa: E402
 import server.ci_runner._farm as farm  # noqa: E402
 
-# The module docstring above promises "HTTP is mocked - no network". Until now
-# that was a claim rather than a fact, and the farm module has exactly TWO
-# external network surfaces, both reachable from tests in this file:
+# The module docstring above promises "HTTP is mocked - no network". That was
+# enforced for a while only spot-by-spot: I enumerated the farm MODULE's two
+# urlopen sites and wrote "exactly TWO" here, which is a claim about a module
+# and not about everything this file can reach. server/poller/_wake.py:208 is
+# a third urlopen, in a different subsystem entirely, and nothing here would
+# have caught it. The lesson generalises from the _ping episode: the next
+# candidate is the next member of the enumeration you already built - and if
+# the enumeration was module-scoped rather than class-scoped, the next member
+# is in a module you never opened.
+#
+# So the guard below sits at the socket boundary instead of on any one caller,
+# and it RAISES. Two consequences, both intended:
+#
+#   - a caller that wraps the call in `except Exception` (e.g. _wake._json_call,
+#     "a failed call reads as no answer") keeps exactly the behaviour it has
+#     today against an unreachable host, and now returns in microseconds
+#     instead of blocking for its timeout;
+#   - a caller that does NOT wrap it fails in milliseconds, with the URL and
+#     the calling stack in the harness output, instead of blocking until
+#     run_all.py's hard-coded 120s per-file cap kills the file and the harness
+#     returns the constant "TIMEOUT (120s)" with no traceback at all.
+#
+# This is deliberately NOT a claim to have found the offending call. It is a
+# claim about the instrument: the next run either goes green, or names the call
+# site in the failure tail - strictly more than any number of re-runs of the
+# current tree can do.
+#
+# The two per-function defaults stay, behaviour unchanged:
 #
 #   _ping                -> urlopen(timeout=CI_FARM_HTTP_TIMEOUT = 8s)
 #   dispatch_to_runner   -> urlopen(timeout=CI_FARM_DISPATCH_TIMEOUT)
@@ -52,6 +78,23 @@ import server.ci_runner._farm as farm  # noqa: E402
 # the pin below has something to compare against; it is not an exercised hatch.
 _REAL_PING = farm._ping
 _REAL_DISPATCH = farm.dispatch_to_runner
+_REAL_URLOPEN = urllib.request.urlopen
+
+
+def _guard_urlopen(req, *args, **kwargs):
+    """Refuse any unmocked network call, naming the URL and the caller."""
+    url = getattr(req, "full_url", None) or getattr(req, "url", None) or req
+    stack = "".join(traceback.format_stack(limit=8)[:-1])
+    raise AssertionError(
+        f"test_farm.py reached the network: urlopen({url!r})"
+        f"\nThis suite is hermetic by contract. Stub the call at its caller, or"
+        f" - if the test deliberately exercises a real urlopen-backed function -"
+        f" assign _REAL_URLOPEN for the duration and restore it in a finally."
+        f"\nCalling stack:\n{stack}"
+    )
+
+
+urllib.request.urlopen = _guard_urlopen  # type: ignore[assignment]
 
 
 def _default_ping(url, token):
@@ -89,6 +132,31 @@ def test_suite_cannot_reach_the_network():
         "farm.dispatch_to_runner is the real network function - this suite "
         "reached the socket. Restore the file-wide _default_dispatch stub."
     )
+    # The socket-level guard, plus a POSITIVE control that it is not a no-op.
+    # A guard that quietly returned a canned value would leave both assertions
+    # above green while the file still blocked on a real connect - the same
+    # shape as a pin on the writer when the reader is missing.
+    assert urllib.request.urlopen is not _REAL_URLOPEN, (
+        "the file-wide urlopen guard was replaced - this suite can reach the "
+        "socket again. Restore it."
+    )
+    try:
+        _guard_urlopen("http://example.invalid/blocked")
+    except AssertionError as exc:
+        assert "reached the network" in str(exc), exc
+        assert "http://example.invalid/blocked" in str(exc), (
+            f"the guard must NAME the url it blocked, or the failure tail is "
+            f"not actionable: {exc}"
+        )
+        assert "Calling stack" in str(exc), (
+            f"the guard must carry the calling stack, which is the whole "
+            f"substitute for Actions log access: {exc}"
+        )
+    else:
+        raise AssertionError(
+            "the urlopen guard did not fire - it is a no-op, so every "
+            "assertion above passes while the file still blocks on the network"
+        )
 
 
 def setup_module():

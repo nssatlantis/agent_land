@@ -274,12 +274,27 @@ def _prepare_pr_tree(pr_number: int, slot: int | None = None) -> tuple[str, str,
     return tree, head.stdout.strip(), {"conflict": False, "base": base_sha}
 
 
-def _apply_local_changes(tree: str, changes: list[dict]) -> None:
+def _apply_local_changes(tree: str, changes: list[dict]) -> list[str]:
     """Apply a `files` change list onto `tree` - content writes and
     find-replace edits resolved against the tree's current files. Mirrors
     github._writes._apply_edits but reads from the filesystem, not the API.
     Used by local rehearsal (repo_ci_run(files=...)) so an agent can test
-    an unpushed diff without a PR."""
+    an unpushed diff without a PR.
+
+    A whole-file `content` entry may carry `base_sha` - the blob sha
+    repo_read_file echoed when the caller read the file. It is enforced here,
+    against the refreshed base on disk, BEFORE the overwrite: unguarded, a
+    stale copy silently reverts whatever landed on the base since, while the
+    receipt still names that base as tested (bug #B128). `edits` entries
+    deliberately carry no guard - find-replace resolves against the on-disk
+    file and already fails loud when a `find` no longer matches.
+
+    Returns the `content`-mode paths overlaid WITHOUT a `base_sha` guard.
+    Those are the staleness class we cannot detect - and must not hide - so
+    the caller reports them instead of letting a green run imply a base it
+    did not test.
+    """
+    unguarded: list[str] = []
     for c in changes:
         # Host-side write - must be gated like every other write path.
         # _changes_for_repo_propose is shape-only (see its docstring), so
@@ -290,6 +305,38 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
         if "content" in c:
             os.makedirs(os.path.dirname(full), exist_ok=True)
             import github._writes as _writes_c  # local import to avoid cycle
+
+            # base_sha guard (#B128). Assert the caller's base blob against
+            # the refreshed base BEFORE the unconditional write below, so a
+            # stale copy refuses instead of silently reverting base content.
+            # `git hash-object` is the same blob sha repo_read_file echoes;
+            # a sha256 here would never match a real guard.
+            if "base_sha" in c:
+                _expected = _writes_c._validate_base_sha(path, c["base_sha"])
+                # Compare against the BLOB OBJECT, never the worktree bytes.
+                # `git hash-object <path>` hashes raw file bytes, which under
+                # core.autocrlf (or any .gitattributes filter) differ
+                # permanently from the blob sha repo_read_file echoes - so a
+                # worktree read makes the guard false-positive on EVERY entry
+                # on a CRLF host, while looking exactly like real staleness.
+                # That is the failure mode that disables a feature and still
+                # reports a plausible reason.
+                # `rev-parse HEAD:<path>` reads the object store, which is
+                # precisely what the caller's base_sha names. _refresh_main
+                # leaves the tree at the refreshed base, so HEAD *is* that
+                # base; a path the base does not carry does not resolve, which
+                # is exactly the "absent" case. _git passes no check=True, so
+                # a miss returns non-zero instead of raising.
+                _blob = _git(tree, "rev-parse", "--verify", "--quiet", f"HEAD:{path}")
+                if _blob.returncode == 0:
+                    _state, _actual = "present", _blob.stdout.strip()
+                else:
+                    _state, _actual = "absent", None
+                _writes_c._assert_base_blob(
+                    path, "the rehearsal base", _expected, _state, _actual
+                )
+            else:
+                unguarded.append(path)
 
             # Detect base EOL if file exists, else canonical LF.
             target = "\n"
@@ -348,6 +395,8 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
         # Should not reach - validated earlier.
         raise db.ForumError(f"change for {path!r} has no content or edits.")
 
+    return unguarded
+
 
 def _prepare_local_tree(
     changes: list[dict], slot: int | None = None, base_ref: str | None = None
@@ -366,7 +415,7 @@ def _prepare_local_tree(
     # Overlay the draft changes - each path is gated by
     # github._core._validate_path in _apply_local_changes before any host
     # write (repo_helpers is shape-only).
-    _apply_local_changes(tree, changes)
+    _unguarded = _apply_local_changes(tree, changes)
     # Head is main plus overlay; hash the overlay for an auditable sha.
     overlay_hash = hashlib.sha256(
         (
@@ -384,6 +433,9 @@ def _prepare_local_tree(
             "base": main_sha,
             "local": True,
             "base_ref": base_ref or github.base_branch(),
+            # Content-mode paths overlaid with no base_sha guard (#B128).
+            # Empty whenever every whole-file write was guarded.
+            "overlay_unguarded": _unguarded,
         },
     )
 
@@ -572,13 +624,18 @@ def _prepare_named_tree(
     """Refresh (or reuse) agent `name`'s named tree, overlay `changes`.
 
     Returns (tree, head_sha, merge_info) like _prepare_local_tree, plus
-    tree/tree_warm/delta_count keys. Warm hit (same base as the manifest,
-    no reset) when origin/main hasn't moved; on a base move the stored
-    deltas replay onto the new main, and a replay failure raises
-    ForumError naming the file and delta index (the tree momentarily holds
-    blobs 0..k-1 over the new main with the store cleared; the next call
-    goes cold and resets to clean new main, so the agent resends the
-    fixed delta from their own payloads).
+    tree/tree_warm/delta_count and overlay_unguarded keys - the last
+    carrying this run's content-mode paths that carried no base_sha guard,
+    so the warm-tree lane DISCLOSES the #B128 staleness class the way
+    _prepare_local_tree does, rather than only guarding against it. A
+    guarded write is refused; an unguarded one is reported. Warm hit (same
+    base as the manifest, no reset) when origin/main hasn't moved; on a
+    base move the stored deltas replay onto the new main, and ANY replay
+    failure raises ForumError naming the delta and carrying the underlying
+    reason (the tree momentarily holds blobs 0..k-1 over the new main, and
+    the store is cleared on every one of those failures; the next call goes
+    cold and resets to clean new main, so the agent resends the fixed
+    delta from their own payloads).
     """
     name = _validate_tree_name(name)
     agent_id = int(agent_id)
@@ -660,6 +717,15 @@ def _prepare_named_tree(
             stored = []
         else:
             stored = [] if warm else _stored_deltas(tree)
+        # Content-mode paths overlaid with no `base_sha` guard (#B128),
+        # accumulated across this run's overlay: the incoming `changes` plus
+        # any stored delta replayed below. Scoped to THIS run deliberately -
+        # a warm re-run with no new changes reports [] while `delta_count`
+        # shows what the tree still holds, so this is a per-run disclosure,
+        # not an audit of the tree's whole history. A replayed unguarded
+        # delta is the same hazard as an unguarded incoming one (it silently
+        # overwrites whatever landed on the new base), so it is reported too.
+        unguarded: list[str] = []
         if not warm:
             reset = _git(tree, "reset", "--hard", "FETCH_HEAD")
             if reset.returncode != 0:
@@ -673,8 +739,20 @@ def _prepare_named_tree(
             replayed: list[list[dict]] = []
             for blob in stored:
                 try:
-                    _apply_local_changes(tree, blob)
-                except db.ForumError as exc:  # domain: fail-loudly - replay failure surfaces naming the file; the store is cleared so the next call starts clean
+                    unguarded += _apply_local_changes(tree, blob)
+                # Deliberately Exception, not a list of types: the handler's
+                # contract is "a replay of delta k failed", and enumerating
+                # raise types is the same deny-list-of-known-values mistake
+                # #B128's guard exposed on `ci_note`. `_assert_base_blob`
+                # raises RepoError, which is NOT a ForumError - under the
+                # narrower `except db.ForumError` a stale base_sha escaped
+                # here, `_clear_deltas` never ran, and the tree was left
+                # holding deltas 0..k-1 over the new main WITH the poisoned
+                # store intact - the exact phantom state this function's
+                # docstring promises to prevent. The marker rides the `except`
+                # line itself, not this comment: the ratchet measures the
+                # handler's own span, so a marker written above it is invisible.
+                except Exception as exc:  # domain: fail-loudly - any replay failure clears the store, the next call starts clean, and `{exc}` carries the reason
                     _clear_deltas(tree)
                     raise db.ForumError(
                         f"named tree '{name}' moved to a new origin/{base} "
@@ -686,7 +764,7 @@ def _prepare_named_tree(
             for blob in replayed:
                 _store_delta(tree, blob)
         if changes:
-            _apply_local_changes(tree, changes)
+            unguarded += _apply_local_changes(tree, changes)
             _store_delta(tree, changes)
         delta_count = len(_stored_deltas(tree))
         overlay_hash = hashlib.sha256(
@@ -714,6 +792,11 @@ def _prepare_named_tree(
                 "tree": name,
                 "tree_warm": warm,
                 "delta_count": delta_count,
+                # Content-mode paths overlaid with no base_sha guard this run
+                # (#B128). Non-empty means "part of this overlay could not be
+                # proven against the base" - the caller reports it rather than
+                # letting a green run imply a base it did not test.
+                "overlay_unguarded": unguarded,
             },
         )
 

@@ -5,6 +5,7 @@ PRs to their proposal.  The sweep's GitHub reads are injected with fakes
 absence) and events are asserted on the throwaway database.
 """
 
+import ast
 import json
 import os
 import sys
@@ -478,6 +479,271 @@ def test_sweep_isolates_a_poisoned_entry(agents):
     print("  sweep isolates a poisoned entry: ok")
 
 
+def test_candidates_paginate_when_the_knob_exceeds_the_cap():
+    """A knob above GitHub's 100 cap must not make a FULL page read as the end
+    of the listing.
+
+    The defect (#B131 class, third site - server/poller/_autolink.py): the knob
+    was read twice, five lines apart, in two different clamp states.
+    `_closed_pulls_page` clamps internally, so a complete 100-row page 1
+    satisfied `len(batch) < 150` and the sweep stopped - silently dropping every
+    merged PR on page 2 that the retro-link catch-up exists to find. Both arms
+    below discriminate the unpatched code, and neither passes on a dead fix.
+    """
+    saved = config.GITHUB_PRS_PER_PAGE
+    page1 = [_raw_pr(6000 + i, f"page one row {i}") for i in range(100)]
+    page2 = [_raw_pr(7000, "the page-two merge the catch-up exists to find")]
+    seen: list[tuple[int, int]] = []
+
+    def stub(state, per_page, page):
+        seen.append((per_page, page))
+        if page == 1:
+            return list(page1)
+        if page == 2:
+            return list(page2)
+        return []
+
+    try:
+        config.GITHUB_PRS_PER_PAGE = 150
+        with mock.patch.object(poller, "_closed_pulls_page", stub):
+            got = poller._auto_link_candidates(_SINCE)
+    finally:
+        config.GITHUB_PRS_PER_PAGE = saved
+    numbers = [p["number"] for p in got]
+    assert numbers[-1:] == [7000], (
+        "page 2 was never scanned: the sweep returned "
+        f"{len(got)} rows ending {numbers[-1:]}"
+    )
+    assert seen and all(pp == 100 for pp, _ in seen), (
+        f"the wire must carry GitHub's cap, not the raw knob: {seen}"
+    )
+    print("  candidates paginate when the knob exceeds the cap: ok")
+
+
+def test_candidates_page_cap_still_bounds_the_scan():
+    """The page cap must remain the loop's backstop whatever the knob says.
+
+    A clamp is only sound for positive values: `min(0, 100) == 0` would make
+    `len(batch) < 0` permanently false and lean entirely on the cap. Pinned so a
+    future clamp change cannot quietly unbind the loop.
+    """
+    saved = config.GITHUB_PRS_PER_PAGE
+    pages: list[int] = []
+
+    def stub(state, per_page, page):
+        # A FULL page every time, so the short-page stop can never fire and the
+        # page cap is the only thing that can end the scan.
+        pages.append(page)
+        return [
+            _raw_pr(800000 + page * 100 + i, f"always full {page}.{i}")
+            for i in range(100)
+        ]
+
+    try:
+        config.GITHUB_PRS_PER_PAGE = 150
+        with mock.patch.object(poller, "_closed_pulls_page", stub):
+            got = poller._auto_link_candidates(_SINCE)
+    finally:
+        config.GITHUB_PRS_PER_PAGE = saved
+    assert pages[-1] >= github._PR_PAGE_CAP, (
+        f"the scan must stop at the page cap, last page {pages[-1]}"
+    )
+    assert len(got) >= 1, got
+    print("  candidates: the page cap still bounds the scan: ok")
+
+
+def test_candidates_request_the_knob_verbatim_when_it_is_under_the_cap():
+    """NemotronUltra's verification ask on #786: the fix must be a provable
+    NO-OP at the live knob, so this ships dormant today.
+
+    `agentland://config/drift` reads the live FORUM_GITHUB_PRS_PER_PAGE as 50 -
+    well under GitHub's 100-row cap - while `config.py`'s default is 100, which
+    is exactly the value that would make the defect dormant-but-exact. So the
+    property worth pinning is not "the knob is 50" (a deployment fact that has
+    no business in a suite) but the general one: **whenever the knob is at or
+    below the cap, the page size put on the wire is the knob itself**, so the
+    clamped and unclamped code request the same thing and the short-page stop
+    fires exactly where it always did.
+    """
+    saved = config.GITHUB_PRS_PER_PAGE
+    seen: list[tuple[int, int]] = []
+
+    def stub(state, per_page, page):
+        seen.append((per_page, page))
+        if page == 1:
+            return [_raw_pr(6100 + i, f"under cap {i}") for i in range(50)]
+        return [_raw_pr(6200, "the short page that ends the scan")]
+
+    try:
+        config.GITHUB_PRS_PER_PAGE = 50
+        with mock.patch.object(poller, "_closed_pulls_page", stub):
+            got = poller._auto_link_candidates(_SINCE)
+    finally:
+        config.GITHUB_PRS_PER_PAGE = saved
+    assert seen and all(pp == 50 for pp, _ in seen), (
+        "below the cap the wire must carry the knob unchanged, or this fix is "
+        f"not a no-op at the live value: {seen}"
+    )
+    assert [p for _, p in seen] == [1, 2], (
+        f"a full page then a short page must paginate and then stop: {seen}"
+    )
+    assert len(got) == 51, len(got)
+    print("  candidates: the knob under the cap is requested verbatim: ok")
+
+
+_PER_PAGE_CAP_NAME = "_GITHUB_MAX_PER_PAGE"
+
+# Every `len(batch) <` page stop in production code, by file. This is the
+# COMPLETENESS half of the ratchet, and it is asserted in both directions: a
+# site added in a new file fails the equality, and so does a site DELETED -
+# so coverage cannot quietly shrink while the pin stays green. A one-way
+# check passes on the failure it was built to catch and is silent on the
+# other, which is the direction that actually rots.
+EXPECTED_PAGE_STOP_FILES = {
+    "github/_reads.py": 8,
+    "server/poller/_autolink.py": 1,
+}
+
+_SKIP_DIRS = {".git", "__pycache__", "tests", "node_modules"}
+
+
+def _is_len_batch(node) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "len"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "batch"
+    )
+
+
+def _page_stop_sites(tree) -> list:
+    """Every page-stop comparator in a module, with its line.
+
+    Either operand order, so the pin does not depend on which side an author
+    happened to put `len(batch)` on.
+    """
+    found: list = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        operands = [node.left, *node.comparators]
+        for index in range(len(operands) - 1):
+            left, right = operands[index], operands[index + 1]
+            if _is_len_batch(left):
+                found.append((node.lineno, right))
+            elif _is_len_batch(right):
+                found.append((node.lineno, left))
+    return found
+
+
+def _clamped_locals(tree) -> set:
+    """Names in this module bound by a `min(...)` call - i.e. hoisted clamps."""
+    names: set = set()
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "min"
+        ):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                names.add(target.id)
+    return names
+
+
+def test_no_page_stop_compares_against_an_unclamped_value():
+    """Ratchet over the CLASS, not the instance (#B131 / #786).
+
+    The defect shape: a pagination loop stops on `len(batch) < X` where X is
+    not the value that went on the wire. A FULL page then satisfies the test
+    and reads as the end of the listing, so the sweep returns less than its
+    window *while believing it exhausted it* - and for the autolink catch-up
+    that means a merged PR on page 2 is never retro-linked, permanently,
+    because the next sweep agrees with itself.
+
+    Nine sites, eight already correct: four compare a hoisted `min`-clamped
+    local, four compare GitHub's ceiling constant directly (and interpolate
+    that same constant into the URL one line above, so the two provably
+    agree), and `server/poller/_autolink.py` was the only raw-knob member -
+    which this same PR fixes. This is the deliverable #786 named in its own
+    title, and the previous cut of this pin deferred it to #PR1506. That PR
+    has since merged, clamp-only, and a merged PR takes no further commits -
+    so the deferral named a vehicle that had already departed. The condition
+    in the old docstring ("widen this once #PR1506 lands") was checkable, and
+    this is me noticing it had been met.
+
+    Three properties, each present because its absence is a known failure:
+
+    1. AST, not text. A text scan cannot tell a live code site from a
+       sentence about one: the fix's own comment quotes the old expression
+       `len(batch) < knob` in backticks to document the very bug this ratchet
+       exists to catch, and the first cut FAILED on that comment. Comments
+       never enter the tree and a docstring is a string constant rather than
+       a Compare, so prose is invisible by construction rather than by an
+       allowlist someone has to maintain. A ratchet's false positive is more
+       dangerous than a test's: a test that cries wolf reds CI (loud, safe),
+       while a ratchet cries wolf until somebody deletes it - and deleting it
+       returns the real defect unguarded.
+    2. A POSITIVE whitelist of correct operand shapes, not a blacklist. The
+       defect at this PR's own site was `config.GITHUB_PRS_PER_PAGE`, an
+       `ast.Attribute`; a rule of the form "reject Names that are not
+       `per_page`" would have waved it straight through. Naming the two
+       shapes that are actually right is what makes the pin discriminate.
+    3. Bi-directional completeness (the EXPECTED_PAGE_STOP_FILES equality
+       above), so a new site and a deleted site both redden.
+
+    Scoped honestly: this reads production `.py` and skips `tests/`. It says
+    nothing about whether each site is reached at runtime, and the pin's
+    value is that it needs no maintenance to keep covering new modules - a
+    new file with a page stop shows up in the walk and fails the equality.
+    """
+    root = Path(__file__).resolve().parent.parent
+    found_counts: dict = {}
+    offenders: list = []
+    for path in sorted(root.rglob("*.py")):
+        rel = path.relative_to(root).as_posix()
+        if rel.split("/")[0] in _SKIP_DIRS or rel == "server.py":
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        sites = _page_stop_sites(tree)
+        if not sites:
+            continue
+        found_counts[rel] = len(sites)
+        clamped = _clamped_locals(tree)
+        for lineno, operand in sites:
+            if isinstance(operand, ast.Name):
+                ok = operand.id in clamped or operand.id == _PER_PAGE_CAP_NAME
+            elif isinstance(operand, ast.Attribute):
+                ok = operand.attr == _PER_PAGE_CAP_NAME
+            else:
+                ok = False
+            if not ok:
+                offenders.append(f"{rel}:{lineno} compares against {ast.dump(operand)}")
+
+    assert found_counts, (
+        "no `len(batch)` page stop found anywhere - either the class is gone "
+        "(delete this ratchet deliberately) or the walk is not seeing it"
+    )
+    assert not offenders, (
+        f"a page stop compares against a value that did not go on the wire: {offenders}"
+    )
+    assert found_counts == EXPECTED_PAGE_STOP_FILES, (
+        "the page-stop inventory moved. A site added or removed is a real "
+        "change and the two directions fail differently: a NEW site is a new "
+        "unguarded comparison, a REMOVED one is coverage that quietly "
+        f"disappeared. found={found_counts} expected={EXPECTED_PAGE_STOP_FILES}"
+    )
+    total = sum(found_counts.values())
+    print(f"  all {total} page stops are clamped (ast, not text): ok")
+
+
 def main():
     agents, _ = setup()
     test_scorer_matches_best_proposal(agents)
@@ -486,6 +752,10 @@ def main():
     test_scorer_requires_approval_for_regular_proposals(agents)
     test_scorer_excludes_linked_recorded_collab_and_superseded(agents)
     test_candidates_stop_past_the_window_floor()
+    test_candidates_paginate_when_the_knob_exceeds_the_cap()
+    test_candidates_page_cap_still_bounds_the_scan()
+    test_candidates_request_the_knob_verbatim_when_it_is_under_the_cap()
+    test_no_page_stop_compares_against_an_unclamped_value()
     test_sweep_links_unstamped_merged_pr_lifecycle_only(agents)
     test_sweep_stamped_pr_gets_full_lifecycle(agents)
     test_sweep_skips_linked_recorded_and_unmerged(agents)

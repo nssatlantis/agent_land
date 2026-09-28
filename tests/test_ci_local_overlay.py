@@ -225,6 +225,141 @@ def main():
     )
     print("  repo_ci_run(absolute) gate: ok")
 
+    # 4) #B128 base_sha guard on content-mode overlay entries. The whole-file
+    # guard already existed on the write tools and was already carried in the
+    # change dict here - it was simply never read, so a stale copy silently
+    # reverted base content while the receipt named the refreshed base.
+    import subprocess
+
+    guard_tree = tempfile.mkdtemp(prefix="agentland_overlay_b128_")
+    try:
+        # A real repo, exactly as _prepare_local_tree's _ensure_clone gives,
+        # so `git hash-object` is exercised on the path production takes.
+        subprocess.run(
+            ["git", "init", "-q", guard_tree], check=True, capture_output=True
+        )
+        target = os.path.join(guard_tree, "cfg.py")
+        with open(target, "w", encoding="utf-8", newline="") as fh:
+            fh.write("BASE = 1\n")
+
+        def _git(*args):
+            return subprocess.run(
+                ["git", "-C", guard_tree, *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+        # Commit it. Production reads the BLOB OBJECT (rev-parse HEAD:<path>),
+        # so the fixture's "current base" must be a real commit rather than a
+        # bare worktree file. A caller's base_sha comes from repo_read_file,
+        # which echoes a blob sha - deriving the expected value any other way
+        # couples the pin to the very instrument it exists to police.
+        _git("add", "cfg.py")
+        _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "b")
+
+        def _blob(rel):
+            # rev-parse, NOT hash-object: the caller's base_sha names the blob
+            # object, so the expected value must come from the object store.
+            # `rel` is REPO-RELATIVE: a rev-parse spec is not a filesystem
+            # path, so an absolute one dies with exit 128.
+            return _git("rev-parse", "HEAD:" + rel)
+
+        good = _blob("cfg.py")
+
+        # (a) A matching guard proceeds and the write lands.
+        ci_runner._apply_local_changes(
+            guard_tree,
+            [{"path": "cfg.py", "content": "BASE = 2\n", "base_sha": good}],
+        )
+        assert Path(target).read_text() == "BASE = 2\n", "guarded write did not land"
+
+        # (b) A STALE guard refuses - and the load-bearing half is that
+        # NOTHING was written. A guard that raised after the overwrite would
+        # still pass (a), while causing the exact revert this fixes.
+        before = Path(target).read_bytes()
+        msg = _expect_error(
+            ci_runner._apply_local_changes,
+            guard_tree,
+            [{"path": "cfg.py", "content": "REVERTED = 1\n", "base_sha": "0" * 40}],
+        )
+        assert "stale base" in msg.lower(), f"stale-guard message: {msg}"
+        assert Path(target).read_bytes() == before, (
+            "stale guard refused AFTER overwriting - the revert still happened"
+        )
+
+        # (c) null asserts ABSENCE, so a present file trips it loudly rather
+        # than silently overwriting.
+        msg = _expect_error(
+            ci_runner._apply_local_changes,
+            guard_tree,
+            [{"path": "cfg.py", "content": "x = 1\n", "base_sha": None}],
+        )
+        assert "stale base" in msg.lower(), f"absent-assert message: {msg}"
+
+        # (d) Unguarded stays LEGAL - refusing it would break every existing
+        # caller, including shipped payloads - but is REPORTED, so a green
+        # run can no longer imply a base it did not test.
+        assert ci_runner._apply_local_changes(
+            guard_tree, [{"path": "cfg.py", "content": "UNGUARDED = 1\n"}]
+        ) == ["cfg.py"], "unguarded content entry not reported"
+
+        # (e) edits mode reports nothing: it resolves against the on-disk file
+        # and already fails loud on drift, so a guard there is redundant.
+        edited = ci_runner._apply_local_changes(
+            guard_tree,
+            [
+                {
+                    "path": "cfg.py",
+                    "edits": [{"find": "UNGUARDED", "replace": "EDITED"}],
+                }
+            ],
+        )
+        assert edited == [], "edits mode must not be reported as unguarded"
+
+        # (f) CRLF worktree vs LF blob - the pin that catches the INSTRUMENT
+        # bug rather than the guard's presence. Production must read the blob
+        # object (rev-parse HEAD:<path>), never the worktree bytes
+        # (hash-object <path>). Under core.autocrlf those disagree
+        # permanently, so a worktree read makes the guard false-positive on
+        # EVERY entry while looking exactly like real staleness: it disables
+        # the feature and still reports a plausible reason. Three asserts -
+        # the fixture genuinely diverges, the guard ACCEPTS the correct blob
+        # sha despite a CRLF worktree, and it still REJECTS a wrong sha in the
+        # same tree (so the arm is not satisfied by a guard that never fires).
+        crlf_rel = "crlf.py"
+        crlf_abs = os.path.join(guard_tree, crlf_rel)
+        with open(crlf_abs, "w", encoding="utf-8", newline="") as fh:
+            fh.write("A = 1\nB = 2\n")
+        _git("add", crlf_rel)
+        _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "c")
+        lf_blob = _blob(crlf_rel)
+        with open(crlf_abs, "w", encoding="utf-8", newline="") as fh:
+            fh.write("A = 1\r\nB = 2\r\n")
+        worktree_hash = _git("hash-object", crlf_rel)
+        assert worktree_hash != lf_blob, (
+            "fixture is not discriminating: the CRLF worktree must hash "
+            "differently from the stored LF blob for this pin to mean anything"
+        )
+        ci_runner._apply_local_changes(
+            guard_tree,
+            [{"path": crlf_rel, "content": "A = 99\nB = 2\n", "base_sha": lf_blob}],
+        )
+        assert "A = 99" in Path(crlf_abs).read_text(), (
+            "guarded write over a CRLF worktree did not land"
+        )
+        stale_crlf = _expect_error(
+            ci_runner._apply_local_changes,
+            guard_tree,
+            [{"path": crlf_rel, "content": "A = 1\n", "base_sha": "0" * 40}],
+        )
+        assert "stale base" in stale_crlf.lower(), stale_crlf
+    finally:
+        import shutil
+
+        shutil.rmtree(guard_tree, ignore_errors=True)
+    print("  #B128 base_sha guard: ok")
+
     print("\ntest_ci_local_overlay: all assertions passed")
 
 
