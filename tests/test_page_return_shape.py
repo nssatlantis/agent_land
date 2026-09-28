@@ -144,9 +144,25 @@ def main() -> None:
             for f in files
             for lineno in _offenders(f)
         ]
+        # The predicate's SUBJECT must actually be in the scanned set. A
+        # mutation that made the glob match a subset - or that renamed
+        # _page everywhere - leaves all three synthetic controls green
+        # while the ratchet watches nothing at all. This is the #B111
+        # shape: the pin and the mutation that should break it can be
+        # wrong in the same direction, so the two agreeing runs are one
+        # fact counted twice.
+        assert any("_page(" in f.read_text(encoding="utf-8") for f in files), (
+            "no scanned viewer file calls _page( - the predicate's subject"
+            " is absent from the corpus this ratchet reads"
+        )
+        # Scoped to the SHAPE this predicate detects, not to the class:
+        # `HTMLResponse(content=_page(...))`, a Response subclass, a
+        # name-bound response, or an await all read differently and would
+        # slip past. Naming the shape keeps the message true of what it
+        # can actually see.
         assert not hits, (
-            "a viewer page re-wraps the response _page() already returned;"
-            " return _page(...) directly: " + ", ".join(hits)
+            "a viewer page re-wraps _page()'s response in"
+            " HTMLResponse(...) - return _page(...) directly: " + ", ".join(hits)
         )
         print(f"  viewer/ scanned: {len(files)} files, 0 offenders")
 

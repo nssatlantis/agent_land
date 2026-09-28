@@ -111,7 +111,7 @@ def test_one_row_means_two_things_to_two_citizens():
     assert b["your_blockers"] == 1, b
     assert b["open_on_your_proposals"] == 0, b
     # The note names the remedy and points at both readers.
-    assert "cannot flip" in b["findings_note"], b["findings_note"]
+    assert "not yet independently verified" in b["findings_note"], b["findings_note"]
     assert "findings_list()" in b["findings_note"], b["findings_note"]
 
 
@@ -175,7 +175,11 @@ def test_check_in_carries_the_key_and_the_action_line():
     # One action line, naming the number that actually stops them.
     lines = [a for a in ci["suggested_actions"] if a.startswith("Review findings:")]
     assert len(lines) == 1, ci["suggested_actions"]
-    assert "cannot flip" in lines[0], lines[0]
+    # The copy must not claim to BE the flip gate: db.flip_ready is
+    # PR-scoped, vote-conditional and head-pinned, and this arm is none of
+    # those. Overstating a precondition as the gate is doc-truth.
+    assert "pin the current head" in lines[0], lines[0]
+    assert "cannot flip" not in lines[0], "the copy overclaims the gate"
     assert "/findings" in lines[0], lines[0]
 
 

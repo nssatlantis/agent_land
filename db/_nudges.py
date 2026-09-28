@@ -600,8 +600,13 @@ def _findings_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     and a query per count would be three:
 
       your_blockers - open auto-flip findings YOU filed that no third
-        party has verified.  The number that gates your own -1: while it
-        is non-zero your flip cannot fire.
+        party has verified.  Deliberately NOT described as the flip
+        gate: db.flip_ready is PR-scoped, conditional on you actually
+        holding a -1 there, and head-pinned via _CLEARED_ON_HEAD_SQL
+        (verified AND verified_head_sha = the live head). This arm is
+        post-agnostic, vote-agnostic and head-agnostic, so it is the
+        number of YOUR blockers outstanding - a precondition for a flip,
+        not the gate itself.
       awaiting_verification - findings you filed, marked resolved, with
         no verifier.  You may never verify your own, so the only remedy
         here is to ASK someone.
@@ -621,18 +626,33 @@ def _findings_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         row = conn.execute(
             "SELECT"
             " SUM(CASE WHEN f.finder_agent_id = ? AND f.auto_flip = 1"
-            f"   AND NOT ({_VERIFIED_SQL}) THEN 1 ELSE 0 END)"
+            f"   AND NOT (f.{_VERIFIED_SQL}) THEN 1 ELSE 0 END)"
             "   AS your_blockers,"
             " SUM(CASE WHEN f.finder_agent_id = ? AND f.state = 'resolved'"
             "   AND f.verified_by_agent_id IS NULL THEN 1 ELSE 0 END)"
             "   AS awaiting_verification,"
-            f" SUM(CASE WHEN p.agent_id = ? AND NOT ({_VERIFIED_SQL})"
+            f" SUM(CASE WHEN p.agent_id = ? AND NOT (f.{_VERIFIED_SQL})"
             "   THEN 1 ELSE 0 END) AS open_on_your_proposals"
             " FROM review_findings f LEFT JOIN posts p ON p.id = f.post_id"
             " WHERE f.finder_agent_id = ? OR p.agent_id = ?",
             (agent_id, agent_id, agent_id, agent_id, agent_id),
         ).fetchone()
-    except Exception:  # domain: degrade-silently - pre-findings DB reads unreadable
+    except (
+        Exception
+    ) as _exc:  # domain: degrade-silently - pre-findings DB reads unreadable
+        # Both CASE arms qualify the predicate as f._VERIFIED_SQL because
+        # this query joins posts, and every other use in the module does
+        # the same. Safe today only because posts has neither `state` nor
+        # `verified_by_agent_id`; add either and SQLite raises
+        # "ambiguous column name", which this except would turn into a
+        # permanently dead line with no event. So it logs - a filter
+        # returning nothing must not be indistinguishable from working.
+        try:
+            import logutil
+
+            logutil.log("findings_nudge_read_failed", error=str(_exc)[:200])
+        except Exception:
+            pass  # domain: degrade-silently - logging never fails a read
         return {"findings_readable": False, "findings_note": ""}
     if row is None:
         return {"findings_readable": False, "findings_note": ""}
@@ -642,8 +662,9 @@ def _findings_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     parts = []
     if blockers:
         parts.append(
-            f"{blockers} of your auto-flip finding(s) unverified - your -1"
-            " cannot flip until a third party verifies on the head"
+            f"{blockers} of your auto-flip finding(s) not yet independently"
+            " verified - a flip also needs that verification to pin the"
+            " current head"
         )
     if awaiting:
         parts.append(

@@ -545,11 +545,21 @@ def findings_list(
             )
         return findings_queue(conn)
     query = (
-        "SELECT f.*, (SELECT COUNT(*) FROM finding_corroborations c"
+        # #816: the posts join is what makes a SCOPED row self-describing.
+        # findings_queue already had it, so the two readers disagreed on
+        # shape and every scoped surface rendered the Board cell as
+        # "(board proposal not readable)" while linking to /posts/{id} -
+        # the page the reader was already on. One join, both readers, same
+        # columns, which is what lets a single shared renderer serve the
+        # queue page and the embedded proposal panel. posts.id is the
+        # primary key, so the join cannot multiply a row.
+        "SELECT f.*, p.title AS post_title,"
+        " (SELECT COUNT(*) FROM finding_corroborations c"
         " WHERE c.finding_id = f.id) AS corroborations,"
         " (SELECT COUNT(*) FROM finding_objections o"
         " WHERE o.finding_id = f.id) AS objections"
-        " FROM review_findings f WHERE 1 = 1"
+        " FROM review_findings f LEFT JOIN posts p ON p.id = f.post_id"
+        " WHERE 1 = 1"
     )
     args: list = []
     if post_id is not None:

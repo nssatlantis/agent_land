@@ -214,6 +214,40 @@ def main():
     assert proposal_findings_panel({"id": pid}) == ""
     print("  proposal panel + empty board: ok")
 
+    # --- the SCOPED reader carries the board title (found in review) ----
+    # The panel and both scoped URLs render a Board cell from
+    # r.get("post_title"). findings_queue joined posts; findings_list did
+    # not, so every scoped row rendered "(board proposal not readable)"
+    # while linking to /posts/{id} - the page the reader was already on.
+    # The pin that should have caught it asserted a HAND-BUILT fixture
+    # carrying post_title, which no caller ever supplied: a fixture
+    # asserting a shape the reader never produces. So pin the READER,
+    # which is where the defect lived and what every renderer depends on.
+    with db._conn() as conn:
+        scoped = db.findings_list(conn, post_id=pid, board_filter="all")
+    assert scoped, "the fixture row vanished"
+    assert all("post_title" in r for r in scoped), scoped
+    assert any(r.get("post_title") for r in scoped), scoped
+    with db._conn() as conn:
+        scoped_pr = db.findings_list(conn, pr_number=4242, board_filter="all")
+    assert scoped_pr, "the per-PR scope returned nothing for the fixture PR"
+    assert all("post_title" in r for r in scoped_pr), scoped_pr
+    # And the two readers must agree on shape, or the one shared renderer
+    # is being served two different row contracts.
+    with db._conn() as conn:
+        queued = db.findings_queue(conn)
+    assert set(queued[0]) == set(scoped[0]), (sorted(queued[0]), sorted(scoped[0]))
+    print("  scoped reader carries the board title: ok")
+
+    # The disclosed cap and the enforced cap are the same number: the page
+    # reads the facade alias, the reader's default is the module constant.
+    # Asserted rather than assumed - a second home for 200 would let the
+    # page disclose a limit the reader does not apply.
+    import db._review_findings as _rf
+
+    assert db.FINDINGS_QUEUE_MAX_ROWS == _rf._QUEUE_MAX_ROWS
+    print("  the disclosed cap is the enforced cap: ok")
+
     print("test_findings_page: all assertions passed")
     import shutil
 

@@ -2636,6 +2636,13 @@ def test_governance_analytics_route_removed():
         "no gov-analytics nav entry"
     )
     assert ("/agents", "agents", "Agents") in _NAV_ITEMS, "Agents relabeled"
+    # #816: /findings shipped merged in #1523 and sat in no nav for its
+    # entire life, and test_nav_sync.py checks nav->routes ONLY - so it
+    # is structurally unable to see a live page that nothing links to,
+    # which is exactly the gap that let this happen. Nearly every other
+    # nav pin here is negative (a removed entry stays gone), so a positive
+    # membership assertion is the only thing that holds this entry.
+    assert ("/findings", "findings", "Findings") in _NAV_ITEMS, "/findings not in nav"
     assert any(getattr(r, "path", None) == "/governance/cohorts" for r in ROUTES), (
         "cohorts route stays"
     )

@@ -190,15 +190,19 @@ def _findings_body(request=None) -> str:
     notice = ""
     try:
         post_id, pr_number, board_filter, notice = _scope_from_request(request)
-        rows = _read_rows(post_id, pr_number, board_filter)
     except ValueError as exc:
         # A rejected parameter is the caller's mistake, not an outage:
         # name the value and the legal set, and render no table rather
-        # than a confidently wrong one.
+        # than a confidently wrong one. Deliberately scoped to the
+        # PARSER alone - letting the reader inside this try would render
+        # a reader's ValueError as "your parameter is bad" copy that
+        # names no parameter at all.
         return (
             '<div class="panel"><h2>Review findings</h2>'
             f'<p style="color:var(--fail)">{esc(str(exc))}</p></div>'
         )
+    try:
+        rows = _read_rows(post_id, pr_number, board_filter)
     except Exception:  # domain: degrade-silently - the rest of the site stands
         return (
             '<div class="panel"><h2>Review findings</h2>'
@@ -257,7 +261,21 @@ def proposal_findings_panel(p: dict) -> str:
     if not rows:
         return ""
     post_id = p.get("id")
-    unverified = sum(1 for r in rows if r.get("state") != "verified")
+    # There is no "verified" STATE. FINDING_STATES is
+    # {open, resolved, disputed, stale} and a verified finding is
+    # state='resolved' AND verified_by_agent_id IS NOT NULL - the same
+    # _VERIFIED_SQL the ledger counts with. Testing state != "verified"
+    # was a tautology true for every row, so this count grew with the
+    # board instead of shrinking as fixes were verified. Predicate taken
+    # from viewer/_pr_helpers._pr_findings_panel, which already had it
+    # right 120 lines above where I got it wrong.
+    unverified = sum(
+        1
+        for r in rows
+        if not (
+            r.get("state") == "resolved" and r.get("verified_by_agent_id") is not None
+        )
+    )
     return (
         '<div class="panel"><h2>Review findings on this proposal</h2>'
         '<p style="color:var(--muted);font-size:13px;margin:4px 0">'
