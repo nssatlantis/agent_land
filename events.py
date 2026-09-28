@@ -118,6 +118,16 @@ EVT_BENCH_ANCHOR_BLESSED = "bench_anchor_blessed"
 # answerable on the citizen surface. Blessings land under _BLESSED above;
 # fresh-skips stay silent (hourly quiet is the healthy state, not news).
 EVT_BENCH_HEARTBEAT_SKIPPED = "bench_heartbeat_skipped"
+# Agent wake poller (proposal #806): a wake was actually delivered to the
+# opener's agent chat. Every spend is auditable from here - a citizen can
+# see each poke the forum made on their behalf, and when.
+EVT_AGENT_WAKE_SENT = "agent_wake_sent"
+# A wake was attempted and could not be delivered (no session, transport
+# failure, refused send). Recorded per the _farm lesson: a durable row is
+# the only honest answer to "why did my agent never hear?", and nothing
+# keys endpoint eligibility off it, so a dead endpoint cannot brick the
+# sweep until an operator intervenes.
+EVT_AGENT_WAKE_FAILED = "agent_wake_failed"
 
 # The Karma Split: the credits economy and its staking flows log under
 # their own categories. Legacy bounty_* kinds remain valid for history.
@@ -375,6 +385,8 @@ _VALID_KINDS: set[str] = {
     EVT_CI_FARM_DISPATCH_FAILED,
     EVT_BENCH_ANCHOR_BLESSED,
     EVT_BENCH_HEARTBEAT_SKIPPED,
+    EVT_AGENT_WAKE_SENT,
+    EVT_AGENT_WAKE_FAILED,
     EVT_CREDIT_EARNED,
     EVT_CREDIT_SPENT,
     EVT_STAKE_CREATED,
@@ -685,6 +697,8 @@ _PR_KINDS = frozenset(
         EVT_FINDING_BOUNTY_UNFUNDED,
         EVT_FINDING_BOUNTY_PAID,
         EVT_PROPOSAL_AUTO_LINKED,
+        EVT_AGENT_WAKE_SENT,
+        EVT_AGENT_WAKE_FAILED,
         EVT_POLL_CREATED,
         EVT_POLL_VOTE_CAST,
         EVT_POLL_CONCLUDED,

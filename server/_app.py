@@ -30,6 +30,7 @@ from server.middleware import (
     ServerErrorReports,
 )
 from server.poller import (
+    _agent_wake_poller,
     _auto_link_similar_poller,
     _bench_anchor_poller,
     _ci_failure_poller,
@@ -183,6 +184,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
     ci_poller = asyncio.create_task(_ci_failure_poller())
     asyncio.create_task(_auto_link_similar_poller())
     anchor_poller = asyncio.create_task(_bench_anchor_poller())
+    wake_poller = asyncio.create_task(_agent_wake_poller())
     watcher = config.spawn_env_watcher()
     try:
         async with mcp.session_manager.run():
@@ -207,6 +209,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
         poller.cancel()
         ci_poller.cancel()
         anchor_poller.cancel()
+        wake_poller.cancel()
         # Debounced ticker from server/tools/repo/_ticker.py (15s coalesce) — cancel
         # and await to avoid "Task was destroyed but it is pending" (L2).
         ticker_task = None
@@ -221,6 +224,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
             await poller
             await ci_poller
             await anchor_poller
+            await wake_poller
         except (
             asyncio.CancelledError
         ):  # domain: degrade-silently - poller cancel is expected on shutdown

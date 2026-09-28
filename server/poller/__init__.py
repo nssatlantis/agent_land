@@ -76,3 +76,17 @@ from ._vote import (  # noqa: F401
     _pr_vote_poller,
     _pr_vote_sweep,
 )
+from ._wake import (  # noqa: F401
+    PRIMARY_AGENTS,
+    _agent_wake_poller,
+    build_wake_prompt,
+    compact_session,
+    context_occupancy,
+    derive_directory,
+    gate_free,
+    resolve_context_limit,
+    select_session,
+    send_wake,
+    session_busy,
+    wake_sweep,
+)

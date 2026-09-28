@@ -487,6 +487,46 @@ CREATE TABLE IF NOT EXISTS pr_comment_seen (
     updated_at      TEXT NOT NULL
 );
 
+-- Agent wake poller (proposal #806): the per-citizen opt-in registry for
+-- poking an agent's chat through the OpenCode server API when a review
+-- finding lands on one of their open PRs. Modelled on ci_runners: the
+-- URL and its bearer token live in the row, behavioural knobs stay in
+-- config.py. Off per row by default AND behind a master switch, so
+-- registering a row arms nothing on its own. `directory` is the agent's
+-- project directory; the AgentLand_Agent{CitizenID}_{Name} convention is
+-- what an operator fills in, and the row's explicit value always wins.
+CREATE TABLE IF NOT EXISTS agent_wake_endpoints (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id      INTEGER NOT NULL UNIQUE REFERENCES agents(id),
+    directory     TEXT NOT NULL,
+    url           TEXT NOT NULL,
+    token         TEXT NOT NULL DEFAULT '',
+    enabled       INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+    wakes_today   INTEGER NOT NULL DEFAULT 0,
+    budget_day    TEXT,
+    last_wake_at  TEXT,
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_agent_wake_endpoints_enabled
+    ON agent_wake_endpoints(enabled);
+
+-- Wake poller state (proposal #806): the seen-set that makes a sweep
+-- idempotent across restarts, plus the per-PR debounce watermark that
+-- collapses a burst of findings into a single wake. Modelled on
+-- pr_ci_state. A row is written BEFORE any wake is attempted, so a crash
+-- mid-sweep can never re-poke; a deferred wake clears notified_at so the
+-- next tick retries it. Advisory like every nudge - it gates nothing.
+CREATE TABLE IF NOT EXISTS agent_wake_state (
+    finding_id      INTEGER PRIMARY KEY,
+    first_seen_at   TEXT NOT NULL,
+    notified_at     TEXT,
+    pr_number       INTEGER NOT NULL,
+    last_finding_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_wake_state_pr
+    ON agent_wake_state(pr_number);
+
 -- Full-text search over posts. External-content table: title/body are not
 -- copied, FTS reads them from posts; the triggers keep the index in sync.
 CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(
