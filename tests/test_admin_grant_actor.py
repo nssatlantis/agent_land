@@ -38,7 +38,7 @@ The four pins, and what each one rules OUT:
    same passing test, and a control satisfiable only by the wrong behaviour
    is not a control.
 4. a foreign guild id - the operator-error guard, which must keep firing for
-   a panel principal or the panel becomes an any-request payer.
+   a panel principal or the guard would only ever protect the citizen path.
 """
 
 import os
@@ -165,6 +165,12 @@ def _ready_request(tag: str, amount: float = 2.0) -> tuple[dict, dict, dict]:
     c1, c2 = _new_agent("aga-c1"), _new_agent("aga-c2")
     idea = _old_idea(mate, tag, [c1, c2])
     db.designate_guild_project(founder["token"], guild["id"], idea)
+    # The grant gate requires the collaborative proposal to carry a work
+    # breakdown: `request_guild_grant` refuses with "that proposal carries no
+    # to-do list yet". A pin that drops this raises at module scope, so every
+    # pin below it is a dark def - a red file, never a silent pass, but
+    # coverage of nothing.
+    db.create_todo_list(mate["token"], idea, "plan", [{"text": "build"}])
     prop = db.promote_idea(
         mate["token"], idea, f"Build {idea}", "Full body here.", collaborative=True
     )
