@@ -49,6 +49,15 @@ from ._batches import (  # noqa: F401
     _workflow_ci_green_sweep,
     sweep_pr_comments,
 )
+from ._broadcast import (  # noqa: F401
+    MAX_MESSAGE_CHARS,
+    SKIP_REASONS,
+    active_broadcast,
+    create_broadcast,
+    get_broadcast,
+    repair_running,
+    run_broadcast,
+)
 from ._outcome import (  # noqa: F401
     _NOTIFICATION_PRUNE_MAX_AGE_SECONDS,
     _PR_ROWS_BACKFILL_MAX_AGE_SECONDS,
@@ -75,4 +84,23 @@ from ._vote import (  # noqa: F401
     _pr_stall_notices_impl,
     _pr_vote_poller,
     _pr_vote_sweep,
+)
+from ._wake import (  # noqa: F401
+    PRIMARY_AGENTS,
+    _agent_wake_poller,
+    build_wake_prompt,
+    compact_session,
+    context_occupancy,
+    derive_directory,
+    endpoint_for_agent,
+    gate_free,
+    list_endpoints,
+    register_endpoint,
+    remove_endpoint,
+    resolve_context_limit,
+    select_session,
+    send_wake,
+    session_busy,
+    update_endpoint,
+    wake_sweep,
 )
