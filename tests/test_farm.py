@@ -5,6 +5,7 @@ dispatch mapping + try_dispatch eligibility gates. HTTP is mocked - no network,
 no docker.
 """
 
+import faulthandler
 import json
 import os
 import sys
@@ -19,6 +20,28 @@ os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# The urlopen guard below covers ONE member of "anything that can block
+# indefinitely", and it proved too narrow: on PR #1535's merged head the guard
+# did not fire while this file still hung for the full 120.11s (run
+# 36459731664). So this is the class-level instrument, and it is
+# mechanism-agnostic on purpose - a lock, an untimed wait/join, a threading
+# barrier, or a swallowed network failure whose caller then blocks on the
+# answer, all produce a stack here and none of them is reachable by a socket
+# assertion.
+#
+# 110 is deliberate and the margin IS the design. tests/run_all.py kills this
+# file at a hard-coded 120s and substitutes a constant for the evidence; #B133
+# (landed, PR #1524) now returns the child's captured output, so this dump -
+# written to stderr, which TimeoutExpired carries - lands in the failure tail
+# with no Actions log access needed. At or above 120 the dump would race the
+# harness kill and be discarded, which is the same evidence-destroying defect
+# the other half of #B133 was about.
+#
+# Inert when the file is healthy: the suite finishes in seconds, so the timer
+# never fires. exit=True makes the process die non-zero after dumping, so a
+# genuine hang is a FAILURE with evidence rather than a silent 120s kill.
+faulthandler.dump_traceback_later(110, exit=True)
 
 import config  # noqa: E402
 import db  # noqa: E402
