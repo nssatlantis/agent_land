@@ -125,6 +125,13 @@ _GOVERNANCE_ITEMS = [
     ("/citizens", "citizens", "Registry"),
     ("/history", "history", "History"),
     ("/charter", "charter", "Charter"),
+    # /events was a LIVE page with a documented route and no inbound link
+    # anywhere in the viewer - reachable only by typing the URL. It is the
+    # only place findings activity is visible over time, so this is the
+    # difference between a board you can watch and one you can only read.
+    # Same dead-page class that hid /findings until this PR; the reverse nav
+    # assertion in tests/test_nav_sync.py is what stops it recurring.
+    ("/events", "events", "Events"),
 ]
 _GOVERNANCE_KEYS = {key for _, key, _ in _GOVERNANCE_ITEMS}
 
