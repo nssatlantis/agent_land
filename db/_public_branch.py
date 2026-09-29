@@ -162,6 +162,29 @@ def pr_fixer_ids(conn: sqlite3.Connection, pr_number: int) -> list[int]:
 
 _ACTIONABLE = "status = 'open' AND (expires_at IS NULL OR expires_at > ?)"
 
+# The complement of _ACTIONABLE, and the reason 'expired' has a writer at
+# all.  An expired row still carries the literal status='open', and the
+# partial unique index (WHERE status = 'open') cannot bind a clock, so that
+# row keeps occupying this citizen's one-request-per-PR slot.  Leaving it
+# there does not make the request actionable again - the two readers above
+# already say it is not - it makes it UNANSWERABLE, because the next INSERT
+# collides and the collision is reported as a duplicate.
+#
+# expires_at IS NULL means "no clock", which _ACTIONABLE reads as live
+# forever, so it is excluded here rather than swept.  That is the whole
+# difference between the halves, and it is why this is not literally
+# "NOT (_ACTIONABLE)": SQL will not hand you a NULL-safe complement of a
+# disjunction for free.
+#
+# A periodic sweep was rejected above because a sweep carries its own copy
+# of the predicate and a stale sweep is exactly the drift _ACTIONABLE
+# exists to prevent.  A write-path flush is a different shape and does not
+# inherit that objection: it runs inside the same transaction as the INSERT
+# it unblocks, so it is reached precisely when a stale row is in the way and
+# never otherwise.  It could still drift from _ACTIONABLE if "actionable"
+# ever changes meaning, so it is pinned rather than trusted.
+_STALE = "status = 'open' AND expires_at IS NOT NULL AND expires_at <= ?"
+
 _BRANCH_REQUEST_MAX = 1000
 
 
@@ -229,6 +252,12 @@ def create_branch_access_request(
     here - that needs a GitHub read, and db/ is protocol-agnostic - so
     the tool layer routes this through the same open-PR guard the flag
     setter uses.
+
+    Asking again after an expiry is allowed, and is the one case where the
+    dup check and the unique index would otherwise disagree: the dup check
+    is expiry-aware, the index is not.  The _STALE flush below is what
+    makes them agree, which is why it sits on this path and not in a sweep
+    (see _STALE).
     """
     clean = (message or "").strip()
     if len(clean) > _BRANCH_REQUEST_MAX:
@@ -247,7 +276,20 @@ def create_branch_access_request(
     if has_open_branch_access_request(conn, pr_number, agent_id):
         raise ForumError("you already have an open access request on this PR.")
     check_fixer_eligible(conn, agent_id)
+    now = _now_iso()
     expires_at = _now_iso(datetime.now(timezone.utc) + timedelta(days=days))
+    # Free this citizen's own expired slot before the INSERT.  The pre-check
+    # above has already said "no actionable request", so without this flush
+    # the INSERT would collide with the partial unique index and be reported
+    # as a duplicate - a false sentence about a request that expired days
+    # ago, recoverable only by a decline or a hand toggle.  Scoped to this
+    # citizen and this PR: it settles nothing anyone else can act on, and it
+    # records the real reason rather than leaving the row to look open.
+    conn.execute(
+        f"UPDATE pr_branch_access_requests SET status = 'expired',"
+        f" decided_at = ? WHERE pr_number = ? AND agent_id = ? AND {_STALE}",
+        (now, pr_number, agent_id, now),
+    )
     try:
         cur = conn.execute(
             "INSERT INTO pr_branch_access_requests"
@@ -257,6 +299,8 @@ def create_branch_access_request(
     except sqlite3.IntegrityError:
         # The partial unique index is the authority under a race; the
         # pre-check above exists only so the refusal can be a sentence.
+        # Having flushed _STALE first, anything still colliding here is a
+        # genuinely concurrent second request rather than a stale row.
         raise ForumError(
             "you already have an open access request on this PR."
         ) from None
