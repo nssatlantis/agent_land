@@ -109,6 +109,33 @@ def _rich_guild(pool_cr: float = 25.0) -> tuple[dict, dict, dict]:
     return founder, guild, mate
 
 
+def _lean_guild(pool_cr: float = 25.0) -> tuple[dict, dict, dict]:
+    """A 2-MEMBER guild for tests that only need to clear the staking
+    `member_count < 2` gate, not a funded third party.
+
+    `_rich_guild` seeds the mate with 300u. Here the mate is a name and a
+    membership row and nothing else - the gate at
+    `db/_guilds_treasury.py:180` counts rows, it does not count balances -
+    so that 300u stays in the file's shared treasury. The founder still
+    needs 500u to fill the pool, which is what `_found()`'s 600u covers.
+
+    The shared test treasury is a FINITE 20000u genesis
+    (FORUM_TREASURY_GENESIS_CREDITS) that these fixtures spend DOWN, and
+    this file's ~20 `_rich_guild` calls already consume ~19k of it. A new
+    test that reaches for `_rich_guild` "because every other test here
+    does" can therefore redden the whole file with
+    "treasury could not fund the test seed" - a budget failure wearing a
+    product failure's clothes. Prefer the cheapest fixture that still
+    exercises the real code path.
+    """
+    founder, guild = _found()
+    mate = _new_agent("gt-leanmate")
+    inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
+    db.respond_guild_invite(mate["token"], inv["invite_id"], True)
+    db.guild_deposit(founder["token"], guild["id"], pool_cr)
+    return founder, guild, mate
+
+
 def _age_guild(gid: int):
     """Backdate every member's join past the upkeep grace so the sweep
     bills normally (fixtures found-and-swept in the same week would
@@ -820,7 +847,7 @@ def test_stake_placement_fee_pair_armed():
     """
     from db._credits import fee_units
 
-    founder, guild, mate = _rich_guild()
+    founder, guild, mate = _lean_guild()
     gid = guild["id"]
     pid = _open_proposal("feearmed")
     old_fee = _arm("FORUM_TX_FEE_PERCENT", "10")
@@ -893,13 +920,26 @@ def test_legacy_stake_links_upgrade_drops_bonus_column():
     reason the guard is written the way it is, so it gets the only
     discriminating arm.
     """
-    founder, guild, mate = _rich_guild()
-    pid = _open_proposal("legacyup")
-    # Real parents first: proposal_stakes and guilds carry FKs and
-    # foreign_keys is ON per connection, so a fabricated stake_id would
-    # raise rather than exercise the copy list.
-    live = db.guild_stake(founder["token"], pid, 2.5, 1)
-    sid, gid = int(live["stake_id"]), int(guild["id"])
+    # Real parents, cheaply. guilds and proposal_stakes both carry FKs and
+    # foreign_keys is ON per connection, so a fabricated id would raise
+    # rather than exercise the copy list - which is the property that
+    # matters here. Neither parent is minted through `guild_stake`: this
+    # test is about a table rebuild CARRYING ROWS across, and it DROPs the
+    # link table and re-INSERTs its own row, so a real guild_stake link
+    # would be spending 900u of the file's finite shared treasury to create
+    # a row this test deletes three lines later. The founder is funded 30u
+    # because `found_guild` charges its 1cr founding fee to the Treasury.
+    founder = _new_agent("gt-legacyp")
+    guild = db.found_guild(founder["token"], f"Legacy-{_SEQ[0]}")
+    gid = int(guild["id"])
+    _fund(founder["agent_id"], 30)
+    with db._conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO proposal_stakes (proposal_id, staker_agent_id, per_pr,"
+            " max_prs, currency) VALUES (?, ?, 50, 1, 'credits')",
+            (BASE_POST, founder["agent_id"]),
+        )
+        sid = int(cur.lastrowid)
     with db._conn() as conn:
         conn.execute("DROP TABLE IF EXISTS guild_stake_links")
         # The pre-#839 shape, column for column.
