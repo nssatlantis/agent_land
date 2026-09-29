@@ -87,9 +87,7 @@ def _ask(token, pr_number, message=""):
 def _ask_error(token, pr_number, message=""):
     """The refusal an ask raises, as a string."""
     return asyncio.run(
-        _tool_error(
-            _pbtools.request_public_branch_access(token, pr_number, message)
-        )
+        _tool_error(_pbtools.request_public_branch_access(token, pr_number, message))
     )
 
 
