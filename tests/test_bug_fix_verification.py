@@ -762,7 +762,7 @@ def test_viewer_enumerates_every_bug_status():
         )
 
 
-def _seed_fix_pr_identity(pr_number, *, opener=None, committer=None, post_token=None):
+def _seed_fix_pr_identity(pr_number, *, opener=None, committer=None, post_agent=None):
     """Seed the PR-identity rows the outcome poller leaves behind for a merged
     fix PR, so the fixer-bar pins exercise signals a natural fix produces.
 
@@ -776,7 +776,7 @@ def _seed_fix_pr_identity(pr_number, *, opener=None, committer=None, post_token=
         # Created OUTSIDE the write txn below on purpose: create_post opens its
         # own connection, and nesting a write inside a held BEGIN IMMEDIATE is
         # the self-deadlock this module already had to fix once.
-        post_id = db.create_post(post_token, "Fix proposal", "body")["post_id"]
+        post_id = db.create_post(post_agent["token"], "Fix", "body")["post_id"]
     with db._conn(immediate=True) as conn:
         if opener is not None:
             conn.execute(
@@ -831,9 +831,7 @@ def test_fixer_bar_survives_the_claim_release():
         "test is not exercising the seat the production flow destroys"
     )
     assert after["solved_by"] is None, "no solution recorded, so no seat there"
-    _seed_fix_pr_identity(
-        pr_number, opener=fixer["agent_id"], post_token=rep["token"]
-    )
+    _seed_fix_pr_identity(pr_number, opener=fixer["agent_id"], post_agent=rep)
     msg = expect_error(
         db.verify_bug_fix,
         fixer["token"],
@@ -889,17 +887,28 @@ def test_bounty_worker_cannot_verify_their_own_bounty_fix():
     creator = _job_creator("bountyw-creator")
     job = db.create_job(creator["token"], "commissioned fix", "desc", 1.0, ["step"])
     jid = job["job_id"]
+    with db._conn() as conn:
+        from db._credits import grant
+
+        # claim_job escrows a small deposit and _karmaed seeds KARMA, not
+        # credits - so the worker needs a balance before it can claim.  Same
+        # seeding idiom _job_creator uses for the creator's escrow.
+        grant(worker["agent_id"], 2000, "test_seed", conn=conn)
     db.claim_job(worker["token"], jid)
     with db._conn(immediate=True) as conn:
         conn.execute(
             "UPDATE bug_reports SET bounty_job_id = ? WHERE id = ?", (jid, bug["id"])
         )
-        assert conn.execute(
+        job_row = conn.execute(
             "SELECT worker_agent_id FROM jobs WHERE id = ?", (jid,)
-        ).fetchone()["worker_agent_id"] == worker["agent_id"], "fixture: job is claimed"
-        assert conn.execute(
+        ).fetchone()
+        bug_row = conn.execute(
             "SELECT claimed_by, solved_by FROM bug_reports WHERE id = ?", (bug["id"],)
-        ).fetchone()["claimed_by"] is None, "no claim seat: this is the worker's only one"
+        ).fetchone()
+    assert job_row["worker_agent_id"] == worker["agent_id"], "fixture: job is claimed"
+    assert bug_row["claimed_by"] is None, (
+        "no claim seat here: the bounty job is the worker's only one"
+    )
     msg = expect_error(
         db.verify_bug_fix,
         worker["token"],
@@ -919,9 +928,7 @@ def test_resolved_refuses_every_late_bar():
     _rep, bug = _fixed_bug("resolvedref")
     v = [_karmaed(f"rr-{i}") for i in range(3)]
     for a in v:
-        db.verify_bug_fix(
-            a["token"], bug["id"], "confirmed_fixed", head_sha="a" * 40
-        )
+        db.verify_bug_fix(a["token"], bug["id"], "confirmed_fixed", head_sha="a" * 40)
     full = db.get_bug_report(bug["id"])
     assert full["status"] == "resolved", full["status"]
     other = _karmaed("rr-other")
@@ -955,7 +962,11 @@ def test_no_bare_equality_guard_on_bug_status():
     import ast
     from pathlib import Path
 
-    decided = {"fixed", "closed"}
+    # Only "fixed", NOT "closed": `resolved` is `fixed`'s sibling - a report
+    # that is both fixed and verified - so a bare `== "fixed"` cannot see it.
+    # `closed` has no sibling and its `==` guard is complete, which is why
+    # including it in this set made the pin over-fire on its first run.
+    decided = {"fixed"}
     src = (Path(__file__).resolve().parents[1] / "db" / "_bug_reports.py").read_text()
     offenders = []
     for node in ast.walk(ast.parse(src)):
