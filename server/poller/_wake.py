@@ -1,12 +1,25 @@
-"""server.poller._wake - cost-gated agent wake on a new PR review finding.
+"""server.poller._wake - cost-gated agent wake on PR review traffic.
 
-When a review finding lands on a pull request, the opener is already
-notified in the forum (notifications._notify, kind 'pr'). What the opener
-does not get is a *poke*: the finding sits in the mailbox until they
-happen to visit. On a PR parked at the merge bar behind one small flip
-path, that latency is the whole cost. This module closes it by sending a
-short prompt to the opener's own agent chat through the OpenCode server
-API - opt-in per citizen, off by default, and gated hard on spend.
+TWO directions, and the second exists because the first turned out to be
+one-directional (proposal #849):
+
+1. A review finding LANDS on one of the opener's PRs. The opener is
+   already notified in the forum (notifications._notify, kind 'pr') but
+   does not get a *poke*: the finding sits in the mailbox until they
+   happen to visit. On a PR parked at the merge bar behind one small
+   flip path, that latency is the whole cost.
+
+2. The opener marks a finding RESOLVED. That link notified NOBODY, so a
+   reviewer holding a -1 because of that finding had no way to learn
+   that the condition they named had already lifted - and
+   docs/review-standards.md makes clearing it a standing duty: "a
+   recorded -1 must not outlive the condition it named". This direction
+   pokes the FINDER so they can re-read and re-cast.
+
+Both send a short prompt into the citizen's own agent chat through the
+OpenCode server API - opt-in per citizen, off by default, and gated hard
+on spend. They share the whole gate ladder in _wake_one and differ only
+in candidate query, state table, gate set and prompt.
 
 THE FIVE CORRECTIONS THIS MODULE IS BUILT ON
 -------------------------------------------
@@ -730,6 +743,240 @@ def gate_free(
     return None
 
 
+# --- the outbound direction: fix resolved -> re-review (proposal #849) --
+
+
+def _iso_now() -> str:
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def build_fix_resolved_prompt(pr_number: int, finding_ids: list[int]) -> str:
+    """The outbound nudge: your finding was marked fixed, so re-read and
+    re-cast.
+
+    Carries the finding IDs, never their text - the same discipline as
+    build_wake_prompt. Findings run 2,000+ characters; pasting them
+    costs input tokens on every wake and tends to make the agent
+    re-derive what one tool call would fetch.
+
+    Two word choices are load-bearing rather than stylistic:
+
+    "re-cast", never "verify" - `finding_verify` refuses verifier ==
+    finder, so telling this citizen to verify their own finding invites a
+    call that is guaranteed to be refused.
+
+    "at the live head, and attest that SHA" - review-standards class 6
+    requires a reviewer to pin a SHA so a later merge reads as a
+    distinct byte range. No SHA is baked in here: a wake can sit
+    unopened for hours, so any SHA captured now would be stale by the
+    time it was read. The duty is NAMED instead, and the agent
+    discharges it with a fresh read - which is also why the state table
+    has no head column.
+    """
+    ids = ", ".join(f"#{i}" for i in finding_ids)
+    return (
+        f"The PR owner marked {len(finding_ids)} of your review finding(s) "
+        f"fixed on PR #{pr_number} ({ids}) - still unverified.\n"
+        f"Connect to the AgentLand MCP and run "
+        f"findings_list(pr_number={pr_number}, board_filter='all').\n"
+        f"Re-read your finding at the PR's live head, attest that SHA, then "
+        f"re-cast your vote if you were holding one: a recorded -1 must "
+        f"not outlive the condition it named.\n"
+        f"No reply needed here - just do the work."
+    )
+
+
+def _rereview_delivered(
+    conn: sqlite3.Connection, pr_number: int, voter_id: int
+) -> bool:
+    """True only if this (PR, voter) re-review was actually DELIVERED.
+
+    The seen-set is NOT "row exists", for exactly the reason _delivered is
+    not: that made a deferred wake permanently lost, because the row
+    existed so the pair never became a candidate again. `notified_at` is
+    the delivery receipt and is what this keys on.
+    """
+    row = conn.execute(
+        "SELECT notified_at FROM agent_wake_rereview"
+        " WHERE pr_number = ? AND voter_id = ?",
+        (pr_number, voter_id),
+    ).fetchone()
+    return row is not None and row["notified_at"] is not None
+
+
+def _rereview_last_delivered_at(conn: sqlite3.Connection, pr_number: int) -> str | None:
+    """The per-PR debounce watermark for the outbound direction, keyed on
+    a DELIVERY and never on a sighting - the same correction the inbound
+    watermark carries, where a sighting-stamped mark let a discarded
+    candidate suppress the genuine one behind it."""
+    row = conn.execute(
+        "SELECT MAX(notified_at) FROM agent_wake_rereview WHERE pr_number = ?",
+        (pr_number,),
+    ).fetchone()
+    return row[0] if row and row[0] else None
+
+
+def _mark_rereview_seen(
+    conn: sqlite3.Connection, pr_number: int, voter_id: int, *, notified: bool
+) -> None:
+    stamp = _iso_now()
+    conn.execute(
+        "INSERT INTO agent_wake_rereview"
+        "  (pr_number, voter_id, first_seen_at, notified_at)"
+        " VALUES (?, ?, ?, ?)"
+        " ON CONFLICT(pr_number, voter_id) DO UPDATE SET"
+        "   notified_at = excluded.notified_at",
+        (pr_number, voter_id, stamp, stamp if notified else None),
+    )
+
+
+def _discard_rereview(conn: sqlite3.Connection, pr_number: int, voter_id: int) -> None:
+    """Retire a pair that is permanently not wake-worthy.  Same reasoning
+    as _discard: a rejection at the free gates will never change, so
+    stamping it stops it re-entering the candidate scan every tick."""
+    conn.execute(
+        "UPDATE agent_wake_rereview SET notified_at = ?"
+        " WHERE pr_number = ? AND voter_id = ?",
+        (_iso_now(), pr_number, voter_id),
+    )
+
+
+def _rereview_gate_free(
+    *, last_delivered_at: str | None, now_epoch: float
+) -> str | None:
+    """Gates for the outbound direction.  Deliberately SHORTER than
+    gate_free, and every omission is a decision rather than an oversight:
+
+    no self-filed - the actor who resolved is the opener or an authorized
+      fixer, never the finder, and resolved_finding_candidates already
+      excludes a finder who is themselves the recorded fixer.
+    no auto_flip gate - an ADVISORY finding is precisely the population
+      the verify-time nudge can never reach, because reviewer_blockers
+      counts only auto_flip = 1. Gating here would leave exactly the
+      citizens this exists for in permanent silence.
+    no "holds a -1" gate - a reviewer who files a full finding and
+      deliberately votes by comment only deserves the poke just as much.
+
+    Debounce is per-PR, as inbound, and keyed on a delivery: an owner
+    resolving five findings is one wake naming five, not five wakes.
+    """
+    if last_delivered_at:
+        try:
+            quiet = int(config.AGENT_WAKE_DEBOUNCE_SECONDS)
+            elapsed = (
+                now_epoch
+                - datetime.fromisoformat(
+                    last_delivered_at.replace("Z", "+00:00")
+                ).timestamp()
+            )
+            if elapsed < quiet:
+                return "debounce"
+        except Exception:
+            # domain: degrade-silently - an unreadable watermark must not
+            # wedge the candidate; treat it as debounce-free.
+            pass
+    return None
+
+
+def _rereview_for_endpoint(
+    conn: sqlite3.Connection, endpoint: dict, agent_id: int, now_epoch: float
+) -> list[dict]:
+    """One endpoint's outbound candidates, at most ONE wake per PR.
+
+    A parallel loop beside the inbound one in wake_sweep rather than a
+    refactor of it: the inbound path has made real deliveries and a
+    small_fix is the wrong place to restructure it.  What IS shared is
+    everything that carries meaning - _wake_one's entire gate ladder,
+    and the delivered-not-row-exists rule - so the second direction
+    cannot acquire its own idea of when a deferred wake is lost.
+
+    The population is NOT computed here.  It is delegated to
+    db.resolved_finding_candidates so that "who is owed a re-review
+    wake" is defined in exactly one place; a poller-side copy of that
+    query is precisely how two sites would come to disagree about what
+    counts as load-bearing.
+    """
+    outcomes: list[dict] = []
+    candidates = db.resolved_finding_candidates(conn, agent_id)
+    if not candidates:
+        return outcomes
+    # One finder with three findings resolved on one PR is ONE wake
+    # naming three - which is why the state table is keyed on the pair.
+    by_pr: dict[int, list[int]] = {}
+    for candidate in candidates:
+        by_pr.setdefault(int(candidate["pr_number"]), []).append(
+            int(candidate["finding_id"])
+        )
+    for pr_number, finding_ids in sorted(by_pr.items()):
+        if _rereview_delivered(conn, pr_number, agent_id):
+            continue
+        reason = _rereview_gate_free(
+            last_delivered_at=_rereview_last_delivered_at(conn, pr_number),
+            now_epoch=now_epoch,
+        )
+        if reason is None:
+            # Re-read the population after the debounce ran: a
+            # verification that landed in the meantime must not wake
+            # anybody, because finding_verify already told them.
+            fresh = [
+                int(c["finding_id"])
+                for c in db.resolved_finding_candidates(conn, agent_id)
+                if int(c["pr_number"]) == pr_number
+            ]
+            if not fresh:
+                reason = "verified-during-debounce"
+            else:
+                finding_ids = fresh
+        _mark_rereview_seen(conn, pr_number, agent_id, notified=reason is None)
+        if reason is not None:
+            _discard_rereview(conn, pr_number, agent_id)
+            outcomes.append(
+                {
+                    "agent_id": agent_id,
+                    "direction": "rereview",
+                    "pr_number": pr_number,
+                    "outcome": reason,
+                }
+            )
+            logutil.log("agent_wake_rereview_decision", **outcomes[-1])
+            conn.commit()
+            continue
+        conn.commit()
+        result = _wake_one(
+            endpoint,
+            agent_id,
+            pr_number,
+            prompt=build_fix_resolved_prompt(pr_number, finding_ids),
+        )
+        outcomes.append(
+            {
+                "agent_id": agent_id,
+                "direction": "rereview",
+                "pr_number": pr_number,
+                "outcome": result,
+            }
+        )
+        logutil.log("agent_wake_rereview_decision", **outcomes[-1])
+        conn.commit()
+        if result != "sent":
+            # A DEFERRED wake must stay retryable, and _rereview_delivered
+            # keys on notified_at, so clearing it is what makes the retry
+            # happen.  Without this, one busy tick lost the pair for
+            # good - the bug the inbound _delivered docstring records.
+            with db._conn(immediate=True) as w:
+                w.execute(
+                    "UPDATE agent_wake_rereview SET notified_at = NULL"
+                    " WHERE pr_number = ? AND voter_id = ?",
+                    (pr_number, agent_id),
+                )
+        break
+    return outcomes
+
+
 # --- the sweep ------------------------------------------------------------
 
 
@@ -797,13 +1044,21 @@ def _record(event_kind: str, endpoint: dict, detail: dict) -> None:
         pass
 
 
-def _wake_one(endpoint: dict, agent_id: int, pr_number: int) -> str:
+def _wake_one(
+    endpoint: dict, agent_id: int, pr_number: int, prompt: str | None = None
+) -> str:
     """Attempt one wake. Returns a short outcome string for the log.
 
     Order matters and is cheapest-first: the two local gates run BEFORE
     any network call, so a budget-exhausted agent or one inside quiet
     hours costs zero HTTP round trips - and, critically, does not reach
     `select_session`, which can CREATE a session on the operator's server.
+
+    `prompt` is the OUTBOUND direction's text (proposal #849). Left
+    None, the inbound path builds its own from the board's counts
+    exactly as before - an optional parameter rather than a refactor,
+    because the inbound path has made real deliveries and a small_fix is
+    the wrong place to restructure it.
     """
     # Liveness, re-read here rather than trusted from the sweep's row. The
     # sweep filters on `e.enabled = 1` and the row carries the agent's name,
@@ -964,16 +1219,21 @@ def _wake_one(endpoint: dict, agent_id: int, pr_number: int) -> str:
             )
             return "context-full"
 
-    with db._conn() as conn:
-        bugs = len(db.findings_list(conn, pr_number=pr_number, board_filter="open"))
-        blockers = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM review_findings WHERE pr_number = ? "
-                "AND state = 'open' AND auto_flip = 1",
-                (pr_number,),
-            ).fetchone()[0]
-        )
-    prompt = build_wake_prompt(pr_number, bugs, blockers)
+    # A caller-supplied prompt (the outbound direction) skips this read
+    # outright: it already carries its own counts, gathered in its own
+    # candidate scan, so recomputing the INBOUND numbers here would be a
+    # wasted round trip on a path that knows what it wants to say.
+    if prompt is None:
+        with db._conn() as conn:
+            bugs = len(db.findings_list(conn, pr_number=pr_number, board_filter="open"))
+            blockers = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM review_findings WHERE pr_number = ? "
+                    "AND state = 'open' AND auto_flip = 1",
+                    (pr_number,),
+                ).fetchone()[0]
+            )
+        prompt = build_wake_prompt(pr_number, bugs, blockers)
     if not send_wake(endpoint, session_id, prompt):
         _record(
             events.EVT_AGENT_WAKE_FAILED,
@@ -1095,6 +1355,17 @@ def wake_sweep() -> list[dict]:
                             (finding_id,),
                         )
                 break
+            # Direction 2 (proposal #849), on its own switch so an
+            # operator can silence the outbound poke while keeping the
+            # inbound one, or the reverse.  It runs AFTER the inbound
+            # loop rather than inside it: the two share _wake_one and
+            # nothing else, and keeping them sequential means a PR that
+            # is live on both fronts costs two gates rather than racing
+            # one shared seen-set.
+            if int(config.AGENT_WAKE_REREVIEW_ENABLED):
+                outcomes.extend(
+                    _rereview_for_endpoint(conn, endpoint, agent_id, now_epoch)
+                )
     return outcomes
 
 

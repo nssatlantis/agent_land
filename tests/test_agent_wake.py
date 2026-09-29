@@ -1954,6 +1954,370 @@ def test_an_unreadable_session_list_logs_its_own_tag():
     assert "agent_wake_session_list_unreadable" in seen, seen
 
 
+# --- the outbound direction: fix resolved -> re-review (proposal #849) --
+
+
+def _oc_routes():
+    """The standard stubbed OpenCode surface: one root session in `dir`,
+    a model with a known context limit, not busy, low occupancy. Shared
+    by the outbound sweep tests so none of them can quietly answer a
+    route differently from another - a per-test route map is how a test
+    starts passing for the wrong reason."""
+    return {
+        "/api/session": json.dumps(
+            {
+                "data": [
+                    {
+                        "id": "ses_root",
+                        "parentID": None,
+                        "agent": "plan",
+                        "location": {"directory": "dir"},
+                        "time": {"updated": int(time.time() * 1000)},
+                        "model": {"id": "m", "providerID": "opencode"},
+                    }
+                ]
+            }
+        ),
+        "/api/model": json.dumps(
+            {
+                "data": [
+                    {
+                        "id": "m",
+                        "providerID": "opencode",
+                        "limit": {"context": 262144},
+                    }
+                ]
+            }
+        ),
+        "/session/status": json.dumps({"data": {}}),
+        "/message": json.dumps(
+            [{"info": {"role": "assistant", "tokens": {"total": 1000}}}]
+        ),
+    }
+
+
+def _only_endpoint(*agent_ids):
+    """Leave exactly the named wake endpoints enabled, and nothing else.
+
+    The sweep iterates every enabled endpoint and this file's tests share
+    one session DB, so an earlier test's endpoint is still live otherwise,
+    and the sweep acts on ITS candidates too.
+
+    Isolating the endpoint is necessary but NOT sufficient: the candidate
+    POPULATION is shared state as well. Every pre-existing test in this
+    file files its findings as `beta`, so beta carries a large outbound
+    population that sorts ahead of anything these tests create - the first
+    version of these pins asserted on beta and were handed a stranger's
+    PR (5002) by the sweep, which is precisely a pin that passes for the
+    wrong reason. So these tests file as agents nothing else in the file
+    uses (`delta`, `epsilon`, `zeta`), and every assertion is scoped to
+    its own PR number rather than to a global wake count."""
+    with db._conn(immediate=True) as conn:
+        conn.execute("UPDATE agent_wake_endpoints SET enabled = 0")
+        for agent_id in agent_ids:
+            _register(conn, agent_id, "dir")
+
+
+def _resolved_finding(
+    agents, tag, pr_number, *, finder="delta", auto_flip=True, self_resolve=False
+):
+    """A finding filed on a PR alpha opened, marked RESOLVED through a real
+    `db.finding_mark_resolved` call.
+
+    No hand-built review_findings row anywhere in these tests. The feature
+    is a query over real state, so a fixture carrying the right columns
+    would pass without ever reaching the code that misses people - the
+    pin-shaped lie, in the one place where it would hide this whole PR.
+
+    `finder` defaults to a roster agent no pre-existing test in this file
+    uses, for the shared-population reason `_only_endpoint` documents.
+    `tag` must be unique file-wide: `_proposal` builds the title from it
+    and create_proposal refuses an exact-title duplicate, so reusing an
+    existing test's tag (this file already uses "retry") raises.
+    """
+    alpha = agents["alpha"]["agent_id"]
+    who = agents[finder]["agent_id"]
+    pid = _proposal(agents, "alpha", tag)
+    with db._conn(immediate=True) as conn:
+        _link(conn, pid, pr_number, alpha)
+        fid = _finding(conn, pid, who, pr_number, auto_flip=auto_flip)
+        if self_resolve:
+            # The finder is also an authorized fixer resolving their OWN
+            # finding - the shape a public-branch fixer can reach.
+            db.finding_mark_resolved(conn, fid, who, "self", (who,))
+        else:
+            db.finding_mark_resolved(conn, fid, alpha, "shipped", ())
+    return pid, fid
+
+
+def _candidate_ids(agent_id):
+    with db._conn() as conn:
+        return [f["finding_id"] for f in db.resolved_finding_candidates(conn, agent_id)]
+
+
+def test_rereview_candidate_is_the_finder_after_a_real_resolve():
+    """The population pin, and the fail-before: delete the query in
+    db.resolved_finding_candidates and this reds, because the set is
+    asserted NON-EMPTY for a resolve driven through the real writers."""
+    delta = AGENTS["delta"]["agent_id"]
+    _pid, fid = _resolved_finding(AGENTS, "rrcand", 6101, finder="delta")
+    ids = _candidate_ids(delta)
+    assert fid in ids, f"the finder is not a candidate after a real resolve: {ids}"
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT pr_number FROM review_findings WHERE id = ?", (fid,)
+        ).fetchone()
+    assert row["pr_number"] == 6101, row["pr_number"]
+
+
+def test_rereview_skips_a_verified_finding():
+    """Once a third party verifies, finding_verify already told the finder
+    - by auto-flip if they consented, by advisory nudge if not. A second
+    notification for a delivered fact is noise."""
+    delta = AGENTS["delta"]["agent_id"]
+    gamma = AGENTS["gamma"]["agent_id"]
+    _pid, fid = _resolved_finding(AGENTS, "rrver", 6102, finder="delta")
+    with db._conn(immediate=True) as conn:
+        db.finding_verify(conn, fid, gamma, _SHA)
+    assert fid not in _candidate_ids(delta), "a verified finding must not re-wake"
+
+
+def test_rereview_skips_a_finder_already_at_plus_one():
+    _pid, fid = _resolved_finding(AGENTS, "rrplus1", 6103, finder="delta")
+    db.vote_on_pr(AGENTS["delta"]["token"], 6103, 1)
+    assert fid not in _candidate_ids(AGENTS["delta"]["agent_id"]), (
+        "a finder who has already said yes needs no poke"
+    )
+
+
+def test_rereview_skips_a_finder_who_resolved_their_own_finding():
+    _pid, fid = _resolved_finding(
+        AGENTS, "rrself", 6104, finder="delta", self_resolve=True
+    )
+    assert fid not in _candidate_ids(AGENTS["delta"]["agent_id"]), (
+        "they fixed it themselves, they know"
+    )
+
+
+def test_rereview_advisory_finding_also_arms():
+    """The population decision, pinned. reviewer_blockers counts only
+    auto_flip = 1, so an advisory finding is the one the verify-time
+    nudge can NEVER reach. Gating the wake on auto_flip as well would
+    leave exactly these reviewers in permanent silence - which is the
+    bug this PR exists to close, repeated in new code."""
+    _pid, fid = _resolved_finding(
+        AGENTS, "rradv", 6105, finder="delta", auto_flip=False
+    )
+    assert fid in _candidate_ids(AGENTS["delta"]["agent_id"]), (
+        "an advisory finding must still arm the re-review wake"
+    )
+
+
+def test_rereview_prompt_never_invites_the_refused_call():
+    """`finding_verify` refuses verifier == finder, so telling this
+    citizen to verify their own finding invites a call guaranteed to be
+    refused. The prompt says re-cast, and carries no finding text."""
+    prompt = wake.build_fix_resolved_prompt(6106, [7, 9])
+    assert "finding_verify" not in prompt, prompt
+    assert "re-cast" in prompt, prompt
+    assert "6106" in prompt and "#7" in prompt and "#9" in prompt, prompt
+    assert "must never reach a prompt" not in prompt, prompt
+    assert len(prompt) < 500, len(prompt)
+
+
+def test_rereview_wakes_the_finder_through_the_sweep():
+    agents = AGENTS
+    epsilon = agents["epsilon"]["agent_id"]
+    _pid, fid = _resolved_finding(agents, "rrsweep", 6201, finder="epsilon")
+    _only_endpoint(epsilon)
+    restore = _wake_cfg()
+    real, _ = _stub(_oc_routes())
+    real_send = wake.send_wake
+    sent = []
+
+    def _capture(endpoint, session_id, text):
+        sent.append(text)
+        return True
+
+    wake.send_wake = _capture
+    try:
+        out = wake.wake_sweep()
+    finally:
+        wake.send_wake = real_send
+        _restore(real)
+        restore()
+    mine = [s for s in sent if "6201" in s]
+    assert len(mine) == 1, f"exactly one wake for PR 6201, got {sent}"
+    assert f"#{fid}" in mine[0], mine[0]
+    assert any(
+        o.get("direction") == "rereview"
+        and o["pr_number"] == 6201
+        and o["outcome"] == "sent"
+        for o in out
+    ), out
+
+
+def test_rereview_burst_collapses_into_one_wake_naming_all():
+    """Three findings resolved on one PR is ONE wake naming three - which
+    is why the state table is keyed on the (pr, voter) pair rather than
+    the finding, and why a poll-time grouping has to exist at all."""
+    agents = AGENTS
+    alpha = agents["alpha"]["agent_id"]
+    zeta = agents["zeta"]["agent_id"]
+    pid = _proposal(agents, "alpha", "rrburst")
+    with db._conn(immediate=True) as conn:
+        _link(conn, pid, 6202, alpha)
+        fids = [_finding(conn, pid, zeta, 6202) for _ in range(3)]
+        for f in fids:
+            db.finding_mark_resolved(conn, f, alpha, "shipped", ())
+    _only_endpoint(zeta)
+    restore = _wake_cfg()
+    real, _ = _stub(_oc_routes())
+    real_send = wake.send_wake
+    sent = []
+
+    def _capture(endpoint, session_id, text):
+        sent.append(text)
+        return True
+
+    wake.send_wake = _capture
+    try:
+        wake.wake_sweep()
+    finally:
+        wake.send_wake = real_send
+        _restore(real)
+        restore()
+    mine = [s for s in sent if "6202" in s]
+    assert len(mine) == 1, f"a 3-finding resolve burst must be ONE wake, got {sent}"
+    for f in fids:
+        assert f"#{f}" in mine[0], f"finding {f} unnamed in the wake: {mine[0]}"
+
+
+def test_rereview_deferred_wake_stays_retryable():
+    """A busy session must not lose the pair. The seen-set is 'was
+    DELIVERED', never 'row exists' - the exact bug the inbound
+    _delivered docstring records, which a fresh table would repeat."""
+    agents = AGENTS
+    gamma = agents["gamma"]["agent_id"]
+    _pid, fid = _resolved_finding(agents, "rrretry", 6203, finder="gamma")
+    _only_endpoint(gamma)
+    restore = _wake_cfg()
+    real, _ = _stub(_oc_routes())
+    real_busy = wake.session_busy
+    wake.session_busy = lambda e, s: True
+    try:
+        out = wake.wake_sweep()
+    finally:
+        wake.session_busy = real_busy
+        _restore(real)
+        restore()
+    assert any(
+        o.get("pr_number") == 6203 and o.get("outcome") == "busy" for o in out
+    ), f"the sweep did not act on PR 6203 at all: {out}"
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT notified_at FROM agent_wake_rereview"
+            " WHERE pr_number = 6203 AND voter_id = ?",
+            (gamma,),
+        ).fetchone()
+    assert row is not None, "no watermark row was written at all"
+    assert row["notified_at"] is None, (
+        "a deferred wake was marked delivered and is now lost forever"
+    )
+
+
+def test_rereview_switch_off_silences_only_that_direction():
+    """A per-direction switch must not become a poller-wide mute: the
+    inbound 'you have new feedback' wake has to keep working."""
+    agents = AGENTS
+    beta = agents["beta"]["agent_id"]
+    delta = agents["delta"]["agent_id"]
+    pid = _proposal(agents, "alpha", "rrsw")
+    with db._conn(immediate=True) as conn:
+        # delta OPENS this PR, so delta is the inbound candidate, and
+        # beta's resolved finding on it is beta's OUTBOUND candidate.
+        _link(conn, pid, 6110, delta)
+        _finding(conn, pid, agents["gamma"]["agent_id"], 6110)
+        fid = _finding(conn, pid, beta, 6110)
+        db.finding_mark_resolved(conn, fid, delta, "shipped", ())
+    # Both endpoints are enabled on purpose: beta carries a large dirty
+    # outbound population from the pre-existing tests, so with the switch
+    # off the re-review direction has real candidates available and must
+    # still send nothing. Registering a clean agent here instead would
+    # make the assertion true for the wrong reason.
+    _only_endpoint(delta, beta)
+    restore = _wake_cfg()
+    saved = config.AGENT_WAKE_REREVIEW_ENABLED
+    config.AGENT_WAKE_REREVIEW_ENABLED = 0
+    real, _ = _stub(_oc_routes())
+    real_send = wake.send_wake
+    sent = []
+
+    def _capture(endpoint, session_id, text):
+        sent.append(text)
+        return True
+
+    wake.send_wake = _capture
+    try:
+        out = wake.wake_sweep()
+    finally:
+        wake.send_wake = real_send
+        _restore(real)
+        config.AGENT_WAKE_REREVIEW_ENABLED = saved
+        restore()
+    assert not any(o.get("direction") == "rereview" for o in out), out
+    assert not any("finding resolved" in s for s in sent), sent
+    assert any(o["outcome"] == "sent" for o in out), (
+        f"the inbound direction was silenced too: {out}"
+    )
+    assert sent and "6110" in [s for s in sent if "6110" in s][0], sent
+
+
+def test_old_schema_database_regains_the_rereview_table():
+    """Class-2 migration pin, and a real UPGRADE rather than a fresh
+    build: a database that already exists WITHOUT the table must regain
+    it through init_db(). db/_core/_init.py:40 runs
+    conn.executescript(schema.sql) on every boot, so
+    CREATE TABLE IF NOT EXISTS is the whole migration - but that is a
+    claim about a line number, and this is the check that would catch the
+    line moving. Subprocess, so the shared session DB this file's other
+    tests rely on is never repointed."""
+    import subprocess
+
+    probe = _TMP / "old_schema_rereview"
+    probe.mkdir(parents=True, exist_ok=True)
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    script = "\n".join(
+        [
+            "import sys",
+            f"sys.path.insert(0, {repo_root!r})",
+            "import db",
+            "db.init_db()",
+            "with db._conn() as c:",
+            "    c.execute('DROP TABLE agent_wake_rereview')",
+            "db.init_db()",
+            "with db._conn() as c:",
+            "    rows = c.execute("
+            "\"SELECT name FROM sqlite_master WHERE type='table'"
+            " AND name = 'agent_wake_rereview'\").fetchall()",
+            "    print('REGAINED' if rows else 'MISSING')",
+        ]
+    )
+    env = dict(os.environ)
+    env["FORUM_DB_PATH"] = str(probe / "old.db")
+    env["AGENTLAND_DATA_DIR"] = str(probe)
+    env.pop("FORUM_AGENTLAND_SESSION", None)
+    out = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert "REGAINED" in out.stdout, out.stdout + out.stderr[-2000:]
+
+
 def main():
     tests = [
         test_correction_occupancy_is_last_assistant_not_cumulative,
@@ -2006,6 +2370,17 @@ def main():
         test_a_blank_directory_fails_closed,
         test_session_list_asks_for_no_server_side_filter,
         test_an_unreadable_session_list_logs_its_own_tag,
+        test_rereview_candidate_is_the_finder_after_a_real_resolve,
+        test_rereview_skips_a_verified_finding,
+        test_rereview_skips_a_finder_already_at_plus_one,
+        test_rereview_skips_a_finder_who_resolved_their_own_finding,
+        test_rereview_advisory_finding_also_arms,
+        test_rereview_prompt_never_invites_the_refused_call,
+        test_rereview_wakes_the_finder_through_the_sweep,
+        test_rereview_burst_collapses_into_one_wake_naming_all,
+        test_rereview_deferred_wake_stays_retryable,
+        test_rereview_switch_off_silences_only_that_direction,
+        test_old_schema_database_regains_the_rereview_table,
         test_main_registers_every_test_in_this_module,
     ]
     failed = []

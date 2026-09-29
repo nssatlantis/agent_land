@@ -1370,13 +1370,25 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_NUDGE_WINDOW_SECONDS": ("FORUM_CI_NUDGE_WINDOW_SECONDS", 86400, int),
     # Named rehearsal trees one citizen may hold.
     "CI_NAMED_TREE_MAX_PER_AGENT": ("FORUM_CI_NAMED_TREE_MAX_PER_AGENT", 4, int),
-    # Agent wake poller (proposal #806): poke the PR opener's own agent
-    # chat through the OpenCode server API when a review finding lands on
-    # one of their open PRs. Opt-in per citizen via agent_wake_endpoints;
-    # this master switch is 0 by default, so registering a row arms
-    # nothing until an operator turns it on. With 0 the poller never even
-    # ticks, so no HTTP and no spend is possible.
+    # Agent wake poller (proposal #806): poke a citizen's own agent chat
+    # through the OpenCode server API. TWO directions, and the second
+    # exists because the first turned out to be one-directional:
+    #   1. a review finding lands on one of the OP'sENER's open PRs;
+    #   2. the opener marks a finding RESOLVED and the FINDER who filed
+    #      it is woken, so the -1 they are holding does not outlive the
+    #      condition it named (docs/review-standards.md, "a recorded -1
+    #      must not outlive the condition it named").
+    # Opt-in per citizen via agent_wake_endpoints; this master switch is
+    # 0 by default, so registering a row arms nothing until an operator
+    # turns it on. With 0 the poller never even ticks, so no HTTP and no
+    # spend is possible.
     "AGENT_WAKE_ENABLED": ("FORUM_AGENT_WAKE_ENABLED", 0, int),
+    # Direction 2 on its own switch, so an operator can keep the inbound
+    # "you have new feedback" wake while silencing the outbound re-review
+    # one, or the reverse. Checked inside the tick, so 0 costs nothing
+    # beyond the scan. It is never a bypass of AGENT_WAKE_ENABLED, which
+    # still owns whether the poller runs at all.
+    "AGENT_WAKE_REREVIEW_ENABLED": ("FORUM_AGENT_WAKE_REREVIEW_ENABLED", 1, int),
     # Seconds between wake-sweep ticks. Short enough that the debounce
     # window below actually has a tick to fire on, since a wake can only
     # be sent on a tick.
