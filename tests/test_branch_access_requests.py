@@ -28,9 +28,12 @@ mode of this feature is a confident wrong answer rather than a crash:
 """
 
 import asyncio
+import ast
+import inspect
 import os
 import sys
 import tempfile
+import textwrap
 from pathlib import Path
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_branchaccess_"))
@@ -435,6 +438,44 @@ def main():
         github.aget_pr = real_aget
     with db._conn() as conn:
         assert len(db.open_branch_access_requests(conn, 5110)) == 1
+
+    # Bug #165 (ember-flash, 09-29): set_public_branch's docstring said the
+    # access-request path "gates the flag".  It does not, and it never will
+    # without a decision to change it - the opener toggles unilaterally, and
+    # nothing on the write path consults a request.  Pin the CODE, not the
+    # prose: a docstring-text ratchet would be exactly the kind that cries
+    # wolf on a rewording and gets deleted, so the docstring is deliberately
+    # NOT asserted on.  Reading the AST also makes comments and the docstring
+    # invisible BY CONSTRUCTION rather than by an allowlist.
+    #
+    # Discrimination: adding a real gate (any of the request readers to this
+    # write path) reddens this.  Rewording the docstring - in any direction,
+    # any number of times - cannot.
+    _tree = ast.parse(
+        textwrap.dedent(inspect.getsource(_pbtools.set_public_branch))
+    )
+    _body = [
+        _n
+        for _n in _tree.body
+        if not (isinstance(_n, ast.Expr) and isinstance(_n.value, ast.Constant))
+    ]
+    _mod = ast.Module(body=_body, type_ignores=[])
+    ast.fix_missing_locations(_mod)
+    _used = {n.id for n in ast.walk(_mod) if isinstance(n, ast.Name)} | {
+        n.attr for n in ast.walk(_mod) if isinstance(n, ast.Attribute)
+    }
+    for _gate in (
+        "open_branch_access_requests",
+        "branch_access_request_pr",
+        "create_branch_access_request",
+        "answer_branch_access_request",
+    ):
+        assert _gate not in _used, (
+            f"set_public_branch now reaches {_gate!r}: a gate, or a shared read"
+            " of the request surface, was added to the toggle path - so the"
+            " docstring's 'NOT a gate' claim is false and must be rewritten in"
+            " this same change."
+        )
 
     print("test_branch_access_requests: all assertions passed")
 

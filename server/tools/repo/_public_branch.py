@@ -64,9 +64,20 @@ async def set_public_branch(token: str, pr_number: int, enabled: bool) -> dict:
     `is_public_branch` when it assigns blame, so with the branch open the
     karma goes to the most recent committer OTHER than the opener - and
     with no such commit, or with the branch closed, the opener pays
-    instead. Turning it on therefore moves karma, which is why the
-    access-request path (proposal #825) gates the flag instead of leaving
-    it a bare toggle."""
+    instead. Turning it on therefore moves karma, which is why a fixer can
+    ASK for the branch rather than only discovering that it is closed:
+    `request_public_branch_access` (proposal #840) notifies you and records
+    the ask, and you answer with `respond_public_branch_access`.
+
+    That path is NOT a gate, and the correction matters more here than the
+    feature does: you keep unilateral control of this flag, before and
+    after that tool exists, and nothing consults a request. What the ask
+    changes is that opening the branch is announced and answered on the
+    record instead of done silently - discoverability, not authority.
+
+    One property worth knowing before you open it: closing the flag stops
+    future pushes. It does NOT undo commits that have already landed, nor
+    move the decline blame back for a PR that is already decided."""
     db.require_active_agent(token)
     await _require_open_pr(
         pr_number, "toggle", "the public-branch flag cannot change after close"
