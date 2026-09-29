@@ -55,6 +55,8 @@ from db._nudges import (  # noqa: E402
 from db._pr_state import (  # noqa: E402
     pr_is_decided,
     pr_is_live,
+    pr_merged_sql,
+    pr_negative_before_sql,
     pr_state_as_of,
     proposal_is_decided,
 )
@@ -690,6 +692,80 @@ def test_pr_history_verdict_directions(agents):
     print("  _proposal_pr_history directions + both write paths: ok")
 
 
+def test_direction_fragments(agents):
+    """Truth table for the two direction predicates (#831): pr_merged_sql
+    and pr_negative_before_sql.  Each merged arm attests alone; the
+    negative ledger (pr_record) never attests a merge; an unstamped cache
+    row attests neither direction (#B79); a stamped merged cache row is
+    merged and NOT negative; and the temporal boundary is strict - a row
+    created exactly at the decision moment was not "before" it, and the
+    upheld arm must not count it."""
+    post_id = db.create_proposal(agents["beta"]["token"], "Dir prop", "Body.")[
+        "post_id"
+    ]
+    gid = agents["gamma"]["agent_id"]
+    t_out = "2026-09-26T12:00:00.000Z"
+    t_before = "2026-09-26T11:00:00.000Z"
+    t_after = "2026-09-26T13:00:00.000Z"
+
+    def _dirs(conn, pr):
+        row = conn.execute(
+            f"SELECT {pr_merged_sql(str(pr))} AS m,"
+            f" {pr_negative_before_sql(str(pr), chr(39) + t_before + chr(39))}"
+            " AS nb,"
+            f" {pr_negative_before_sql(str(pr), chr(39) + t_out + chr(39))}"
+            " AS ne,"
+            f" {pr_negative_before_sql(str(pr), chr(39) + t_after + chr(39))}"
+            " AS na"
+        ).fetchone()
+        return (row["m"], row["nb"], row["ne"], row["na"])
+
+    with db._conn() as conn:
+        # 0. nothing anywhere: neither direction at any when (the LIVE
+        #    phase - every arm below must move one of these numbers).
+        assert _dirs(conn, 991401) == (0, 0, 0, 0)
+        # 1. outcome 'merged' alone attests merged, never negative.
+        conn.execute(
+            "INSERT INTO proposal_outcomes (pr_number, post_id, status,"
+            " happened_at) VALUES (991402, ?, 'merged', ?)",
+            (post_id, t_out),
+        )
+        assert _dirs(conn, 991402) == (1, 0, 0, 0)
+        # 2. pr_merges alone attests merged.
+        conn.execute(
+            "INSERT INTO pr_merges (pr_number, agent_id, karma, merged_at)"
+            " VALUES (991403, ?, 1, ?)",
+            (gid, t_out),
+        )
+        assert _dirs(conn, 991403) == (1, 0, 0, 0)
+        # 3. stamped cache with merged_at: merged, and NOT negative - the
+        #    negative cache arm requires merged_at IS NULL.
+        _stamp_cache_closed(conn, 991404)
+        assert _dirs(conn, 991404) == (1, 0, 0, 0)
+        # 4. UNSTAMPED cache attests nothing in either direction (#B79).
+        _stamp_cache_closed(conn, 991405, stamp=None)
+        assert _dirs(conn, 991405) == (0, 0, 0, 0)
+        # 5. outcome declined: negative only when the row existed STRICTLY
+        #    before the decision; exact-time and after are not upheld.
+        conn.execute(
+            "INSERT INTO proposal_outcomes (pr_number, post_id, status,"
+            " happened_at) VALUES (991406, ?, 'declined', ?)",
+            (post_id, t_out),
+        )
+        assert _dirs(conn, 991406) == (0, 1, 0, 0)
+        # 6. pr_record (the negative ledger): negative, never merged.
+        conn.execute(
+            "INSERT INTO pr_record (pr_number, agent_id, status, karma,"
+            " closed_at) VALUES (991407, ?, 'declined', 0, ?)",
+            (gid, t_out),
+        )
+        assert _dirs(conn, 991407) == (0, 1, 0, 0)
+        # 7. stamped cache closed-not-merged: negative, same strict window.
+        _stamp_cache_closed(conn, 991408, merged=False)
+        assert _dirs(conn, 991408) == (0, 1, 0, 0)
+    print("  direction fragments (merged/negative arms, strict window): ok")
+
+
 _ABSENCE_ALIAS_RE = re.compile(r"proposal_outcomes\s+(?:AS\s+)?(\w+)\s+ON\b", re.I)
 _ABSENCE_FIXED_PATTERNS = (
     r"NOT IN \(SELECT pr_number FROM proposal_outcomes",
@@ -934,6 +1010,7 @@ def main():
     test_live_pr_numbers_helper_parity(agents)
     test_close_proposal_unblocks_on_merged_unrecorded(agents)
     test_pr_history_verdict_directions(agents)
+    test_direction_fragments(agents)
     test_ast_corpus_excludes_prose()
     test_no_new_absence_proxy_spellings()
     print("test_pr_state_predicate: all ok")

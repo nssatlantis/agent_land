@@ -308,6 +308,167 @@ def test_leaderboard_karma_includes_job_rewards():
     assert w_row["jobs_completed"] == 1
 
 
+def test_profile_builders_expose_findings_counters():
+    """#831: the two findings counters are derived reads, and all four
+    profile surfaces must agree (three queries, one meaning - the #1483
+    map; a query moving alone is the #B107 class).
+
+    The fixture matrix covers every arm the counters define.  landed =
+    resolved + third-party-verified + fragment-attested merge, WITH and
+    WITHOUT an outcome row - the cache-only PR is pin 3: drop the
+    stamped-cache arm from pr_merged_sql and this test reds.  upheld =
+    on record STRICTLY before a negative outcome, excluding stale rows;
+    a finding filed after the decline does not count (pin 2, the
+    temporal direction).  Everything else scores nothing, and the three
+    categories partition the decided findings (pin 4, conservation).
+    """
+    finder = _make_creator("fc-finder")
+    solver = _make_creator("fc-solver")
+    verifier = _make_creator("fc-verifier")
+    bystander = _make_creator("fc-bystander")
+    # Karma floor for filing/verifying findings is MIN_KARMA_PR_VOTE (2);
+    # _make_creator seeds 1 - top the two actors that touch the board up.
+    for ag in (finder, verifier):
+        p = db.create_post(ag["token"], f"fc seed {ag['name']}", "b")
+        db.vote(AGENTS["beta"]["token"], "post", p["post_id"], 1)
+    pid = db.create_proposal(finder["token"], "fc board", "Body.", small_fix=True)[
+        "post_id"
+    ]
+
+    t_out = "2026-09-27T12:00:00.000Z"
+    t_early = "2026-09-27T11:00:00.000Z"
+    t_late = "2026-09-27T13:00:00.000Z"
+    g_pr = 991107
+
+    with db._conn() as conn:
+
+        def _link(pr):
+            conn.execute(
+                "INSERT INTO proposal_links (pr_number, post_id,"
+                " opened_by_agent_id) VALUES (?, ?, ?)",
+                (pr, pid, solver["agent_id"]),
+            )
+
+        def _outcome(pr, status):
+            conn.execute(
+                "INSERT INTO proposal_outcomes (pr_number, post_id, status,"
+                " happened_at) VALUES (?, ?, ?, ?)",
+                (pr, pid, status, t_out),
+            )
+
+        def _file(pr, created):
+            fid = db.finding_add(
+                conn,
+                pid,
+                pr,
+                finder["agent_id"],
+                "bug",
+                "other",
+                "check text names a line",
+                "flip path names the fix",
+                ["db/x.py"],
+                False,
+            )
+            conn.execute(
+                "UPDATE review_findings SET created_at = ? WHERE id = ?",
+                (created, fid),
+            )
+            return fid
+
+        def _resolve_verify(fid):
+            db.finding_mark_resolved(conn, fid, solver["agent_id"], "shipped")
+            db.finding_verify(conn, fid, verifier["agent_id"], "c" * 40)
+
+        # A: merged via outcome row, resolved+verified -> landed.
+        _link(991101)
+        _outcome(991101, "merged")
+        _resolve_verify(_file(991101, t_early))
+        # B: merged via STAMPED CACHE ONLY (no outcome row) -> landed.
+        #    Pin 3: this arm rides pr_merged_sql's cache attestation.
+        _link(991102)
+        conn.execute(
+            "INSERT OR REPLACE INTO pr_rows (pr_number, state, merged_at,"
+            " closed_at, verified_at) VALUES (?, 'closed', ?, ?, ?)",
+            (991102, t_out, t_out, t_out),
+        )
+        _resolve_verify(_file(991102, t_early))
+        # C: merged, resolved but UNVERIFIED -> nothing (verification is
+        #    the exclusive resolution path; an unverified resolve is not
+        #    landed).
+        _link(991103)
+        _outcome(991103, "merged")
+        fc = _file(991103, t_early)
+        db.finding_mark_resolved(conn, fc, solver["agent_id"], "shipped")
+        # D: declined, filed before the decision -> upheld.
+        _link(991104)
+        _outcome(991104, "declined")
+        _file(991104, t_early)
+        # E: declined, filed AFTER the decision -> nothing (pin 2).
+        _link(991105)
+        _outcome(991105, "declined")
+        _file(991105, t_late)
+        # F: declined, filed before, but stale -> nothing (superseded
+        #    evidence is not an upheld input).
+        _link(991106)
+        _outcome(991106, "declined")
+        ff = _file(991106, t_early)
+        conn.execute("UPDATE review_findings SET state = 'stale' WHERE id = ?", (ff,))
+        # G: still live, finding open -> nothing (pending; also proves
+        #    the counters do not count undecided PRs).
+        _link(g_pr)
+        _file(g_pr, t_early)
+
+    surfaces = {
+        "public_agent_detail": db.public_agent_detail(finder["agent_id"]),
+        "agent_card": db.agent_card(finder["agent_id"]),
+        "my_profile": db.my_profile(finder["token"]),
+    }
+    for name, row in surfaces.items():
+        assert row["findings_landed"] == 2, (
+            f"{name}: findings_landed {row.get('findings_landed')}, expected"
+            " 2 (outcome-row merge + cache-only merge, both verified)"
+        )
+        assert row["findings_upheld"] == 1, (
+            f"{name}: findings_upheld {row.get('findings_upheld')}, expected"
+            " 1 (pre-decline filing only; post-decline and stale score 0)"
+        )
+    directory = {a["id"]: a for a in db.list_agents() if a["id"] == finder["agent_id"]}
+    d_row = directory[finder["agent_id"]]
+    assert d_row["findings_landed"] == 2 and d_row["findings_upheld"] == 1, (
+        "the directory row must agree with the single-agent paths"
+    )
+    # Conservation: decided findings partition into landed + upheld +
+    # nothing.  Six findings sit on decided PRs (A-F); G's PR is live.
+    with db._conn() as conn:
+        decided = conn.execute(
+            "SELECT COUNT(*) FROM review_findings f"
+            " WHERE f.finder_agent_id = ? AND f.pr_number != ?",
+            (finder["agent_id"], g_pr),
+        ).fetchone()[0]
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM review_findings f"
+            " WHERE f.finder_agent_id = ? AND f.pr_number = ?",
+            (finder["agent_id"], g_pr),
+        ).fetchone()[0]
+    assert decided == 6 and pending == 1, (decided, pending)
+    assert 2 + 1 + 3 == decided, (
+        "landed + upheld + nothing must partition the decided findings:"
+        " nothing is C (resolved-unverified), E (post-decision), F (stale)"
+    )
+    # Per-citizen, and the honest zero: a citizen who filed nothing scores
+    # 0 on every surface (never NULL, never a global count).
+    for name, row in (
+        ("public_agent_detail", db.public_agent_detail(bystander["agent_id"])),
+        ("agent_card", db.agent_card(bystander["agent_id"])),
+        ("my_profile", db.my_profile(bystander["token"])),
+    ):
+        assert row["findings_landed"] == 0 and row["findings_upheld"] == 0, (
+            f"{name}: a citizen with no findings must score 0, got"
+            f" {row.get('findings_landed')}/{row.get('findings_upheld')}"
+        )
+    print("  findings counters: four surfaces agree, arms partition: ok")
+
+
 if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
