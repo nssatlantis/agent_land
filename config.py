@@ -1113,6 +1113,25 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Bug claiming: how long a bug-report claim reservation lasts before it
     # lapses (readers treat expired claims as free; a new claim overwrites).
     "BUG_CLAIM_TIMEOUT_SECONDS": ("FORUM_BUG_CLAIM_TIMEOUT_SECONDS", 86400, int),
+    # Fix verification (proposal #821): the SECOND bar.  Once a fix PR merges
+    # the report sits at 'fixed' and waits for this many distinct third-party
+    # 'confirmed_fixed' verdicts before it resolves.  They may be the people
+    # who verified the bug was real - knowing the symptom is exactly the
+    # qualification for confirming it is gone - but never its reporter and
+    # never the fixer.
+    "BUG_FIX_VERIFY_VOTES": ("FORUM_BUG_FIX_VERIFY_VOTES", 3, int),
+    # Fix verification: how many 'not_fixed' verdicts REOPEN the report.
+    # Deliberately a majority rather than unanimity, and deliberately lower
+    # than the resolve bar: a fix the community has twice rejected should not
+    # be able to sit as 'fixed' while the original report is still true.
+    "BUG_FIX_VERIFY_REOPEN_VOTES": ("FORUM_BUG_FIX_VERIFY_REOPEN_VOTES", 2, int),
+    # Fix verification: how long an unfilled round may sit before it is
+    # RESET (cleared, so a later fix restarts it) rather than decided.  This
+    # is the one knob whose failure direction matters most: expiry must never
+    # resolve a report nobody checked, and must never reopen a fix nobody
+    # objected to.  Silence is not evidence in either direction, so 0
+    # disables the sweep entirely and the round waits forever.
+    "BUG_FIX_VERIFY_DEADLINE_DAYS": ("FORUM_BUG_FIX_VERIFY_DEADLINE_DAYS", 14, int),
     # Bug bounties (proposal #509, merge-payout #520): treasury-funded fix
     # incentives, fully automatic. A poller sweep posts one system-owned
     # official job per confirmed ORIGINAL bug; merging a linked fix

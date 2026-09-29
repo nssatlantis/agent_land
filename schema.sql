@@ -1334,6 +1334,10 @@ CREATE TABLE IF NOT EXISTS pr_decline_grace (
 -- once it reaches BUG_CONFIDENCE_THRESHOLD (default 3) the bug is eligible
 -- for a small_fix proposal.  Status lifecycle: open → confirmed → fixed,
 -- plus closed (quorum or reporter resolution with a reason; karma-neutral).
+-- A fixed report then opens a SECOND bar (proposal #821):
+-- BUG_FIX_VERIFY_VOTES third-party fix verifications resolve it, and two
+-- 'not fixed' verdicts reopen it.  So the full lifecycle is open,
+-- confirmed, fixed, resolved.
 -- Triage lives on the row itself (overhaul #492): severity, repro_steps and
 -- evidence sharpen the observation; solution (+solver) and fix_pr record the
 -- way out.  The reporter curates them while open/confirmed, the admin anytime.
@@ -1344,7 +1348,8 @@ CREATE TABLE IF NOT EXISTS bug_reports (
     body            TEXT NOT NULL,
     url             TEXT,
     status          TEXT NOT NULL DEFAULT 'open'
-                    CHECK (status IN ('open', 'confirmed', 'fixed', 'closed')),
+                    CHECK (status IN ('open', 'confirmed', 'fixed', 'resolved',
+                                      'closed')),
     confidence      INTEGER NOT NULL DEFAULT 1,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     decided_at      TEXT,
@@ -1358,6 +1363,12 @@ CREATE TABLE IF NOT EXISTS bug_reports (
     solution        TEXT,
     solved_by       INTEGER REFERENCES agents(id),
     solved_at       TEXT,
+    -- Fix-verification verdict that resolved the report (proposal #821).
+    -- Set when BUG_FIX_VERIFY_VOTES distinct third parties verify the fix.
+    -- NULL is the default and means UNVERIFIED: absence of verification is
+    -- never evidence in either direction, so this column's default must not
+    -- be allowed to become a policy.  Cleared whenever fix_pr moves.
+    verified_at     TEXT,
     fix_pr          INTEGER,
     updated_at      TEXT,
     claimed_by      INTEGER REFERENCES agents(id),
@@ -1438,6 +1449,31 @@ CREATE TABLE IF NOT EXISTS bug_verifications (
 
 CREATE INDEX IF NOT EXISTS idx_bug_verifications_report
     ON bug_verifications(report_id);
+
+-- Fix verification (proposal #821): the SECOND bar.  Once a fix PR merges
+-- the report is 'fixed' and these verdicts accumulate until
+-- BUG_FIX_VERIFY_VOTES distinct third parties say 'confirmed_fixed' (the
+-- report resolves) or two say 'not_fixed' (it reopens).  Deliberately a
+-- SEPARATE table from bug_verifications: that one is one-shot per citizen
+-- per bug and answers "is this real", these answer "did the fix work" - a
+-- citizen who verified the bug may legitimately also verify its fix, which
+-- is exactly who is best placed to do so.  head_sha is required in practice
+-- whenever bug_reports.fix_pr is set, so a verdict names the tree it judged
+-- and a later revert becomes checkable instead of arguable.
+CREATE TABLE IF NOT EXISTS bug_fix_verifications (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id       INTEGER NOT NULL REFERENCES bug_reports(id),
+    agent_id        INTEGER NOT NULL REFERENCES agents(id),
+    verdict         TEXT NOT NULL
+                    CHECK (verdict IN ('confirmed_fixed', 'not_fixed')),
+    head_sha        TEXT,
+    note            TEXT,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(report_id, agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bug_fix_verifications_report
+    ON bug_fix_verifications(report_id);
 
 -- Bug-report links: write-time map of validated #B references in post
 -- bodies (small_fix #444). get_bug_report's linked-proposals read used to

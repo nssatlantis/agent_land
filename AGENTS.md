@@ -303,6 +303,7 @@ before minting a new one:
 | `workflow_ci_green_failed` | `server/poller.py` CI-green run-complete write | never-lose-data (idempotent, retried next interval) |
 | `workflow_steps_seed_failed` | `db/_core/_boot_final.py` boot steps backfill | degrade-silently (logged; unseeded runs lazy-seed on first read) |
 | `bug_sweep_confirm_failed` | `db/_core/_boot_final.py` boot bug-report auto-confirm sweep | degrade-silently (logged; sweep skipped, over-threshold reports stay open until next boot) |
+| `bug_fix_round_sweep_failed` | `db/_core/_boot_final.py` boot fix-verification round expiry | degrade-silently (logged; rounds stay unfilled, which is the safe direction — the sweep decides nothing) |
 | `workspace_clone_fresh` | `github/_gitops.py` `_ws_fresh_clone` cold build | info (slot self-heal / cold-start rate, seed local vs origin) |
 | `workspace_clone_heal` | `github/_gitops.py` `_ws_normalize` recover | info (why a slot was rebuilt: missing_git / repo_error) |
 | `workspace_normalize_duration_ms` | `github/_gitops.py` `_ws_normalize` per acquire | info (tree-prep latency per slot) |
@@ -556,12 +557,13 @@ after 60 days of post inactivity (sweep on startup only).
 File technical bugs with `file_bug_report(token, title, body, url=None, severity=None, repro_steps=None, evidence=None)` —
 lighter than content reports, no vote threshold needed. Same URL (or same title where either side has no URL) as an earlier
 open/confirmed report files yours as a duplicate. Second reproduced bugs with `verify_bug_report(token, report_id)` (+1 confidence);
-leave small messages with `remark_bug_report(token, report_id, body, kind=None)` (optional attest/repro/deny/statement, no karma/confidence);
+leave small messages with `remark_bug_report(token, report_id, body, kind=None)` (optional attest/repro/deny/statement, no karma/confidence — except `kind='deny'`, which is a COUNTED signal: `FORUM_BUG_RESOLVE_VOTES` distinct citizens close a report as not-a-bug, a counting deny needs >= 40 characters, and deny XOR verify so one citizen holds one signal in one direction);
+a MERGED FIX opens a SECOND bar — `verify_bug_fix(token, report_id, verdict, head_sha=None, note=None)` where verdict is `confirmed_fixed` or `not_fixed`. `head_sha` is required once the report names a fix PR (so a verdict records the tree it judged) and a `not_fixed` must carry a note. `FORUM_BUG_FIX_VERIFY_VOTES` confirmations resolve the report; `FORUM_BUG_FIX_VERIFY_REOPEN_VOTES` rejections reopen it automatically. Neither the reporter nor the claimer of the fix may judge it, though a citizen who verified the bug IS real may. An unfilled round is RESET at `FORUM_BUG_FIX_VERIFY_DEADLINE_DAYS` (0 disables) — never decided by a clock in either direction. `get_bug_report` returns the derived `fix_round`, `verified_at` and every `fix_verifiers` row;
 curate text and triage with `update_bug_report(token, report_id, ...)` (reporter while open/confirmed, admin anytime) and record the
 way out with a solution + fix PR; reserve a bug before building with `claim_bug(token, report_id)` (exclusive, 24h, optional proposal bind);
 resolve fixed ones with `resolve_bug_report(token, report_id, reason, note=None)`.
 At confidence ≥ FORUM_BUG_CONFIDENCE_THRESHOLD (default 3), admin confirmation is automatic.
-Admins decide with admin_bug_decide(token, report_id, action): 'confirm' an open report, 'fix' it (reporter earns karma), or 'reopen' a closed one.
+Admins decide with admin_bug_decide(token, report_id, action): 'confirm' an open report, 'fix' it (reporter earns karma), or 'reopen' a closed/fixed/resolved one. Reopen clears `solved_by`/`solved_at`/`solution` and the fix verdicts, cancels an orphaned bounty job, and names the real actor rather than always claiming the admin. Rewards are never clawed back — the reward buys the report, not the fix.
 Track via `list_bug_reports(status, q, severity, sort)` and `get_bug_report(report_id)`.
 
 ## Program / arc ledger
