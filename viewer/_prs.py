@@ -32,6 +32,7 @@ from viewer._pr_helpers import (
     _pr_vote_panel,
     _prs_page_rows,
     _prs_rows_html,
+    _shared_branch_panel,
 )
 from viewer._render_helpers import _markdown, _related_prs_panel
 from viewer._utils import _ts_or_dash, esc
@@ -300,8 +301,18 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
     pre-formatted text (the viewer's esc-everything trust model), never raw
     HTML. Degrades to a muted notice when GitHub is unreachable."""
     number = request.path_params["number"]
+    num = int(number)
     diff, missing = await _pr_diff(number)
     if missing:
+        # Deliberately NO shared-branch panel here, and the read is hoisted
+        # below this return so it does not even happen (finding #38). GitHub
+        # has no such PR, so there is no branch to describe: rendering
+        # "Closed - only the opener may push ... a decline charges the
+        # opener" above "No pull request #N" is a governance claim about an
+        # object that does not exist - the same unestablished-answer shape
+        # as the None/{} split, one path further out. Do not "fix" this by
+        # composing the panel above the 404; the query ordering is what makes
+        # it impossible, and a pin holds that ordering.
         panel = (
             '<div class="panel"><h2>PR diff</h2>'
             f"<p style='color:var(--muted)'>No pull request #{esc(number)} - "
@@ -313,8 +324,14 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             section="prs",
             status_code=404,
         )
+    # Read the shared-branch state ONCE, below the 404 above and before the
+    # GitHub-degraded return, and compose it into the two returns where a PR
+    # actually exists: it is forum-backed, so unlike the diff it still answers
+    # when GitHub is unreachable - which is exactly when someone wondering
+    # whether they may push needs the answer.
+    shared_panel = _shared_branch_panel(num)
     if diff is None:
-        panel = (
+        panel = shared_panel + (
             '<div class="panel"><h2>PR diff</h2>'
             "<p style='color:var(--muted)'>The diff is not available right now - "
             "GitHub may be unreachable.</p></div>"
@@ -324,7 +341,6 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             _with_rail(_crumb("/prs", "pull requests") + panel),
             section="prs",
         )
-    num = int(number)
     title = esc(diff.get("title") or "")
     head = esc(diff.get("head") or "")
     base = esc(diff.get("base") or "")
@@ -411,6 +427,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
     body = (
         _crumb("/prs", "pull requests")
         + header
+        + shared_panel
         + hold_banner
         + vote_panel
         + findings_panel

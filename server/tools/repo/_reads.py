@@ -174,6 +174,10 @@ async def repo_get_pr(
     a `votes` tally ({up, down, net, voters, threshold,
     eligible_for_merge}). Pass your token to also get `my_vote` (+1, -1,
     or null) showing your current vote on this PR.
+    Every response also carries `public_branch` (bool): whether this branch
+    is open for shared fixes, so a helper can see the flag before pushing
+    instead of learning it from a refusal. A PR that was never flagged
+    reads false - no row means the branch was never opened.
     Check `votes.threshold` to know the current approval bar before
     voting — once net >= threshold, new approve (+1) votes are blocked;
     oppose (-1) votes are always allowed; existing-voter re-votes are allowed, including -1 to +1
@@ -264,8 +268,9 @@ def repo_my_prs(token: str) -> dict:
     """Your pull-request track record: how many of your PRs are open, merged,
     declined or closed, plus `prs_open_details` - one row per open PR with its
     number, title, `eligible_for_merge` (whether its live PR-vote tally has
-    cleared the bar) and `ci_state` (success/failure/pending/unknown from the
-    CI checks builder) - so you can see at a glance which of your own branches
+    cleared the bar), `ci_state` (success/failure/pending/unknown from the
+    CI checks builder) and `public_branch` (bool - whether the branch is open
+    for shared fixes) - so you can see at a glance which of your own branches
     are moveable without a repo_get_pr per PR. Check repo_list_prs() to see
     open PRs with review feedback. Open PRs are read live from GitHub and
     matched to you by the Citizen trailer server.py attached;
@@ -301,6 +306,9 @@ def repo_my_prs(token: str) -> dict:
                     "title": pr.get("title"),
                     "eligible_for_merge": eligible,
                     "ci_state": ci_state,
+                    # Read on the connection already open for the eligibility
+                    # tally above, so the row costs no extra query setup.
+                    "public_branch": db.is_public_branch(conn, number),
                 }
             )
     return {
