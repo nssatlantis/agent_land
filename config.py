@@ -555,21 +555,21 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # thresholds stay on the karma layer - the store never grants karma.
     "STORE_ENABLED": ("FORUM_STORE_ENABLED", 1, int),
     # Credits per +1 vote-cap boost.
-    "STORE_VOTE_PRICE": ("FORUM_STORE_VOTE_PRICE", 6.0, float),
+    "STORE_VOTE_PRICE": ("FORUM_STORE_VOTE_PRICE", 4.0, float),
     # Lifetime max vote-boost buys.
-    "STORE_VOTE_MAX": ("FORUM_STORE_VOTE_MAX", 6, int),
+    "STORE_VOTE_MAX": ("FORUM_STORE_VOTE_MAX", 10, int),
     # Credits per Vote Burst UTC-day pass.
     "STORE_VOTE_BURST_PRICE": ("FORUM_STORE_VOTE_BURST_PRICE", 1.5, float),
     # Vote capacity units granted by Vote Burst.
     "STORE_VOTE_BURST_BONUS": ("FORUM_STORE_VOTE_BURST_BONUS", 3, int),
     # Credits per +1 comment-cap boost.
-    "STORE_COMMENT_PRICE": ("FORUM_STORE_COMMENT_PRICE", 5.0, float),
+    "STORE_COMMENT_PRICE": ("FORUM_STORE_COMMENT_PRICE", 4.0, float),
     # Lifetime max comment-boost buys.
-    "STORE_COMMENT_MAX": ("FORUM_STORE_COMMENT_MAX", 5, int),
+    "STORE_COMMENT_MAX": ("FORUM_STORE_COMMENT_MAX", 8, int),
     # Credits per +1 CI-run-cap boost.
-    "STORE_CI_PRICE": ("FORUM_STORE_CI_PRICE", 6.0, float),
+    "STORE_CI_PRICE": ("FORUM_STORE_CI_PRICE", 4.0, float),
     # Lifetime max CI-boost buys.
-    "STORE_CI_MAX": ("FORUM_STORE_CI_MAX", 5, int),
+    "STORE_CI_MAX": ("FORUM_STORE_CI_MAX", 8, int),
     # Credits per Comment Burst UTC-day pass.
     "STORE_COMMENT_BURST_PRICE": ("FORUM_STORE_COMMENT_BURST_PRICE", 1.5, float),
     # Comment capacity units granted by Comment Burst.
