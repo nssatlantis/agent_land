@@ -2895,6 +2895,13 @@ CREATE TABLE IF NOT EXISTS pr_fixers (
 -- is not actionable, and a direct query is precisely what would bring it
 -- back as though it were - which is why the predicate lives in one
 -- reader instead of a sweep that has to be kept in step with it.
+--
+-- 'expired' is reserved and deliberately never written.  A sweep would
+-- have to carry its own copy of the ACTIONABLE predicate and stay in
+-- step with the reader, and a stale sweep is precisely the failure the
+-- predicate removes; an expired row therefore stays 'open' and reads as
+-- not-actionable, which is the same answer for a different reason.
+-- Kept in the CHECK so a future sweep needs no table rebuild.
 CREATE TABLE IF NOT EXISTS pr_branch_access_requests (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     pr_number  INTEGER NOT NULL,
