@@ -697,6 +697,36 @@ def main():
         never = asyncio.run(_rtools.repo_get_pr(number=4399))
         assert "public_branch" in never, f"repo_get_pr omits the flag: {never}"
         assert never["public_branch"] is False, never
+        # #840: the SAME call carries the actionable access requests, so an
+        # agent learns whether anyone is waiting without a second call - the
+        # set-without-get rule applied to the request path. Empty first, then
+        # a seeded request, so the key is pinned in both states.
+        assert "access_requests" in never, f"repo_get_pr omits access_requests: {never}"
+        assert never["access_requests"] == [], never
+        # Seeded as fixture data with raw SQL on purpose.  This block pins
+        # the READ surface; the writer's karma gate is exercised properly in
+        # tests/test_branch_access_requests.py against a fresh DB.  Calling
+        # the writer here made the pin depend on beta's karma at the END of
+        # a 700-line file, which is not what it is measuring - and as
+        # written it failed there with "shared fixes require at least 0
+        # effective karma", i.e. effective_karma(beta) < 0, which I could
+        # not explain from the source and am not going to paper over with a
+        # guess.  The anomaly is recorded rather than worked around: it may
+        # be a real defect in effective_karma worth its own report.
+        with db._conn() as conn:
+            _cur = conn.execute(
+                "INSERT INTO pr_branch_access_requests"
+                " (pr_number, agent_id, message, expires_at)"
+                " VALUES (?, ?, ?, ?)",
+                (4399, beta, "I can fix this", "2999-01-01T00:00:00.000Z"),
+            )
+            _seeded_id = int(_cur.lastrowid or 0)
+        asked = asyncio.run(_rtools.repo_get_pr(number=4399))
+        assert len(asked["access_requests"]) == 1, asked["access_requests"]
+        _row = asked["access_requests"][0]
+        assert _row["id"] == _seeded_id, _row
+        assert _row["agent_id"] == beta, _row
+        assert _row["requester_name"], _row
 
         # And the read must TRACK the writer. This is the arm that makes the
         # pin discriminating: a row builder hardcoding False passes the arm

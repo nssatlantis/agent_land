@@ -48,7 +48,11 @@ from ._propose import (  # noqa: F401
     link_pr_to_todo_item,
     repo_propose_change,
 )
-from ._public_branch import set_public_branch  # noqa: F401
+from ._public_branch import (  # noqa: F401
+    request_public_branch_access,
+    respond_public_branch_access,
+    set_public_branch,
+)
 from ._reads import (  # noqa: F401
     repo_get_pr,
     repo_get_pr_diff,
