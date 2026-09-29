@@ -33,10 +33,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # 110 is deliberate and the margin IS the design. tests/run_all.py kills this
 # file at a hard-coded 120s and substitutes a constant for the evidence; #B133
 # (landed, PR #1524) now returns the child's captured output, so this dump -
-# written to stderr, which TimeoutExpired carries - lands in the failure tail
-# with no Actions log access needed. At or above 120 the dump would race the
-# harness kill and be discarded, which is the same evidence-destroying defect
-# the other half of #B133 was about.
+# reaches the failure tail with no Actions log access needed. The carrier at
+# this literal is the NORMAL-return path, not the timeout arm: exit=True means
+# the child ends ITSELF at ~110s with a non-zero returncode, so subprocess.run
+# returns a CompletedProcess and the dump rides that path's
+# "output = result.stdout + result.stderr". The "except subprocess.Timeout-
+# Expired" arm is never entered while 110 < 120. It is cited here only as the
+# reason the literal must stay strictly below the wall: at or above 120 the
+# child is still alive when communicate() gives up, the harness SIGKILLs it
+# mid-dump, and the evidence dies with the process - the same evidence-
+# destroying defect the other half of #B133 was about.
+#
+# Keep exit=True. A child that exits on its own at 110s is NOT in the state
+# that timeout arm guards against (killed at the wall, possibly still holding
+# an open connection or a half-finished transaction in this slot's pooled DB),
+# so it skips the pool surrender the arm performs. That is the right outcome by
+# accident rather than by design, and switching this to raise would hand a
+# half-written DB back to the worker pool.
 #
 # Inert when the file is healthy: the suite finishes in seconds, so the timer
 # never fires. exit=True makes the process die non-zero after dumping, so a
@@ -1097,7 +1110,47 @@ def main():
     test_dispatch_timeout_derives_from_run_timeout()
     test_dropped_dispatch_is_ledgered()
     test_suite_cannot_reach_the_network()
+    test_watchdog_margin_under_harness_wall()
     print("All CI farm tests passed.")
+
+
+def test_watchdog_margin_under_harness_wall():
+    """Finding #20 (#817 board): pin the MARGIN, not the presence.
+
+    A presence check for the watchdog call stays green on exactly the
+    regression this file exists to prevent - raising the literal to the wall
+    disarms the evidence while the call is still sitting there. So read both
+    literals out of source and assert the gap, with a real margin rather than
+    mere ordering: at 119 there is 1s of slack and the dump probably survives,
+    at or above 120 it is truncated mid-write. Pin by @Axiom (agent_id=17),
+    mutation-tested in four directions on head 611a385a.
+    """
+    import re
+
+    here = Path(__file__).resolve().parent
+    farm_src = (here / "test_farm.py").read_text(encoding="utf-8")
+    harness_src = (here / "run_all.py").read_text(encoding="utf-8")
+
+    m = re.search(r"dump_traceback_later\(\s*(\d+)", farm_src)
+    assert m, (
+        "the faulthandler watchdog is gone from test_farm.py - the class-"
+        "level hang evidence this file exists to produce is unarmed"
+    )
+    watchdog_s = int(m.group(1))
+
+    # Anchored on the call, not a bare "timeout=": the harness also passes
+    # timeout=10 to queue.get and mentions subprocess.run in two comments, and
+    # this pattern requires the literal "(" so neither can be picked up.
+    w = re.search(r"subprocess\.run\(.*?timeout=(\d+)", harness_src, re.S)
+    assert w, "run_all.py's per-file wall literal moved - update this pin"
+    wall_s = int(w.group(1))
+
+    margin = wall_s - watchdog_s
+    assert margin >= 5, (
+        f"watchdog fires at {watchdog_s}s, harness wall is {wall_s}s: margin "
+        f"{margin}s < 5s. At or above the wall the SIGKILL truncates the "
+        "dump mid-write and the evidence dies with the process."
+    )
 
 
 def test_dropped_dispatch_is_ledgered():
