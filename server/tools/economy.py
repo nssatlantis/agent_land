@@ -780,7 +780,13 @@ def buy_bond(token: str, series_id: int, face_credits: float) -> dict:
     intake (default 7d; BOND_FEE_WINDOW_DAYS - variable, lean weeks pay dust,
     possibly zero); maturity auto-releases principal + share (share dry-held
     as matured with retry when the treasury cannot cover; principal
-    escrow-releases)."""
+    escrow-releases). A bond's share of each day's pool is split across the
+    eligible bonds by face: while the pool covers them all, every bond is
+    reserved a whole unit, so a small face is not rounded down to nothing
+    except in a thin pool. That share is not guaranteed for the life of the
+    bond - it falls if the series' other holders grow past your break-even -
+    so read `accrues` and `break_even_eligible_face_units` from
+    preview_bond_yield before you buy."""
     return db.buy_bond(token, series_id, face_credits)
 
 

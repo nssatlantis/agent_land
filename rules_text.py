@@ -682,8 +682,10 @@ phase so you can see where each proposal stands.
     the series' selected revenue-only sources - transfer fees, stake
     fees, store, tags, jobs, skills, invoices, services and/or guild
     fees (forfeit, custody and bond-internal intake can never be yield;
-    default transfer+stake+store;
-    floored per bond, remainder carried; lean weeks pay dust - the
+    default transfer+stake+store; the daily pool is split across
+    the eligible bonds, one unit reserved for each when the pool
+    covers them all and the rest by largest share, so the whole pool
+    is distributed; lean weeks pay dust - the
     share is revenue, not interest).
     Maturity auto-releases principal + share; early redemption
     (redeem_bond) returns principal minus a 3.5% haircut, accrued

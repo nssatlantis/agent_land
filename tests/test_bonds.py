@@ -213,7 +213,17 @@ def test_caps_and_closed_refuse():
     assert "closed" in msg, msg
 
 
-def test_carryover_holds_remainder():
+def test_remainder_distributed_exactly_carry_lands_zero():
+    """The pool is now distributed in full, so the carryover lands on 0.
+
+    This test USED to be `test_carryover_holds_remainder` and asserted
+    `(acc, carry) == (2, 1)` - i.e. it pinned the stranded remainder as
+    correct behaviour. That expectation is the bug (#B157): the remainder was
+    a unit that floor division could not place, and carry was where it idled
+    until a later day could place it. `_apportion` places it immediately, so
+    the same sweep now pays (3, 0). The conservation invariant below is
+    unchanged and is the part that actually matters.
+    """
     holder = _make_holder("bd-carry")
     sid = bond_series_open("carry-7", 7)["series_id"]
     saved = _arm_fee(10.0)
@@ -244,7 +254,9 @@ def test_carryover_holds_remainder():
             ).fetchone()[0]
         got = {x["id"]: x for x in my_bonds(holder["token"])["bonds"]}
         acc = got[b1["bond_id"]]["accrued_units"] + got[b2["bond_id"]]["accrued_units"]
-        assert (acc, int(carry)) == (2, 1), (acc, carry)
+        assert (acc, int(carry)) == (3, 0), (acc, carry)
+        # Conservation: every pool unit is either paid out or carried, never
+        # both and never neither. Unchanged by the apportionment.
         assert int(carry) == pool - acc, (carry, pool, acc)
     finally:
         _unarm_fee(saved)
@@ -1093,6 +1105,186 @@ def test_series_cutoff_backdated_open_counts():
     assert out["swept"] is True
     got = {x["id"]: x for x in my_bonds(holder["token"])["bonds"]}
     assert got[b["bond_id"]]["accrued_units"] > 0
+
+
+def test_apportion_is_exact_and_never_starves_when_pool_covers():
+    """Unit-level pin on the split, over the real shapes this bug produced.
+
+    The V3 case is the 2026-09-29 sweep verbatim (pool 63, faces
+    20/4/250/10); the thin case is the pool-3 shape from #678. Both must sum
+    to exactly `pool` and, because `pool >= len(faces)`, must leave nobody on
+    zero. `pool < len(faces)` is a separate pin (see the boundary test).
+    """
+    from db._bonds import _apportion
+
+    # pool 63, the real 2026-09-29 V3 sweep.
+    v3 = _apportion(63, [20, 4, 250, 10])
+    assert v3 == [5, 2, 53, 3], v3
+    assert sum(v3) == 63, v3
+    assert min(v3) >= 1, v3
+
+    # pool 3 over three bonds: the #678 thin case. Floor division pays
+    # [1, 0, 0]; the guarantee pays everyone.
+    thin = _apportion(3, [40, 20, 10])
+    assert sum(thin) == 3, thin
+    assert min(thin) >= 1, thin
+
+    # Exactness across a spread of shapes, including equal faces and a
+    # single bond, so a remainder-index bug cannot hide behind one fixture.
+    shapes = [
+        (1, [1]),
+        (1, [1, 1, 1, 1]),
+        (2, [1, 1]),
+        (7, [1, 2, 3, 4, 5, 6, 7]),
+        (13, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
+        (100, [1, 99]),
+        (100, [99, 1]),
+        (1000, [1, 2, 3]),
+        (45, [20, 20, 20, 20]),
+    ]
+    for pool, faces in shapes:
+        got = _apportion(pool, faces)
+        assert len(got) == len(faces), (pool, faces, got)
+        assert sum(got) == pool, (pool, faces, got)
+        assert all(s >= 0 for s in got), (pool, faces, got)
+        if pool >= len(faces):
+            assert min(got) >= 1, (pool, faces, got)
+
+    # Degenerate inputs must not raise and must not invent units.
+    assert _apportion(0, [1, 2]) == [0, 0]
+    assert _apportion(5, []) == []
+    assert _apportion(5, [0, 0]) == [0, 0]
+
+
+def test_apportion_boundary_at_and_below_pool_count():
+    """Pin the guarantee cutoff itself, so the documented limit is enforced
+    rather than assumed. At `pool == n` every bond gets exactly one unit; at
+    `pool == n - 1` there are not enough units and the guarantee is off, so
+    this documents that a zero share is still reachable below the line."""
+    from db._bonds import _apportion
+
+    faces = [20, 4, 250, 10]
+    at = _apportion(4, faces)
+    assert at == [1, 1, 1, 1], at
+    assert sum(at) == 4, at
+
+    below = _apportion(3, faces)
+    assert sum(below) == 3, below
+    # Below the line the guarantee does not apply - that is the documented
+    # boundary, and a bond can legitimately receive 0 here.
+    assert min(below) == 0, below
+
+
+def test_minimum_face_bond_accrues_end_to_end():
+    """Regression for #B157, end to end through the real sweep.
+
+    RED on main: with faces 250/4 the old split pays `pool * 4 // 254`, which
+    is 0 for any pool under 64, and the `if share:` guard then skips the row
+    so the bond silently stops accruing.
+    """
+    holder = _make_holder("bd-minface", seed_units=20000)
+    peer = _make_holder("bd-minface-peer")
+    sid = bond_series_open("minface-7", 7, min_face_credits=0.2)["series_id"]
+    saved = _arm_fee(10.0)
+    try:
+        # Series first, intake second: _clamp_since discards anything that
+        # landed before the series opened.
+        db.transfer_credits(holder["agent_id"], peer["agent_id"], 15000)
+        big = buy_bond(holder["token"], sid, 12.5)
+        small = buy_bond(holder["token"], sid, 0.2)
+        _backdate(big["bond_id"], bought="2020-01-01T00:00:00.000Z")
+        _backdate(small["bond_id"], bought="2020-01-01T00:00:00.000Z")
+        with db._conn() as conn:
+            opened = conn.execute(
+                "SELECT created_at FROM bond_series WHERE id = ?", (sid,)
+            ).fetchone()[0]
+            base = _trailing_fee_intake_units(conn, max(_since_7d(), opened))
+        pool = int(base * 15.0 / 700)
+        # The old arithmetic floors the minimum face to nothing at this pool.
+        assert pool * 4 // 254 == 0, pool
+        _reset_sweep_day()
+        sweep_bond_day()
+        got = {x["id"]: x for x in my_bonds(holder["token"])["bonds"]}
+        small_acc = got[small["bond_id"]]["accrued_units"]
+        big_acc = got[big["bond_id"]]["accrued_units"]
+        assert small_acc >= 1, (small_acc, pool, big_acc)
+        # Distributed in full, nothing stranded in the carryover.
+        assert small_acc + big_acc == pool, (small_acc, big_acc, pool)
+    finally:
+        _unarm_fee(saved)
+
+
+def test_legacy_carryover_is_consumed_and_cleared():
+    """A carry left behind by the old floor division - or added by an
+    early-redemption forfeiture, which Article IX.8 still routes here - must
+    be consumed by the next sweep and must not accumulate."""
+    holder = _make_holder("bd-legacy-carry")
+    peer = _make_holder("bd-legacy-carry-peer")
+    sid = bond_series_open("legacy-carry-7", 7, min_face_credits=0.2)["series_id"]
+    saved = _arm_fee(10.0)
+    try:
+        db.transfer_credits(holder["agent_id"], peer["agent_id"], 1500)
+        b = buy_bond(holder["token"], sid, 1.0)
+        _backdate(b["bond_id"], bought="2020-01-01T00:00:00.000Z")
+        _reset_sweep_day()
+        sweep_bond_day()  # creates the carry row
+        with db._conn(immediate=True) as conn:
+            conn.execute(
+                "UPDATE economy_meta SET value = '7' WHERE key = ?",
+                (f"bond_carry_{sid}",),
+            )
+        _reset_sweep_day()
+        sweep_bond_day()  # must consume the seeded carry
+        with db._conn() as conn:
+            carry = conn.execute(
+                "SELECT value FROM economy_meta WHERE key = ?",
+                (f"bond_carry_{sid}",),
+            ).fetchone()[0]
+        assert int(carry) == 0, carry
+        got = {x["id"]: x for x in my_bonds(holder["token"])["bonds"]}
+        assert got[b["bond_id"]]["accrued_units"] >= 7
+    finally:
+        _unarm_fee(saved)
+
+
+def test_preview_discloses_break_even_for_starved_and_healthy():
+    """The preview already modelled the floor honestly; what it could not
+    say was the condition. These two fields make the trap visible before the
+    buy, which is the whole point - the buy I got wrong was honest at the
+    time and silently voided the next day."""
+    from db._bonds import preview_bond_yield
+
+    holder = _make_holder("bd-preview-floor", seed_units=20000)
+    peer = _make_holder("bd-preview-floor-peer")
+    sid = bond_series_open("preview-floor-7", 7, min_face_credits=0.2)["series_id"]
+    saved = _arm_fee(10.0)
+    try:
+        db.transfer_credits(holder["agent_id"], peer["agent_id"], 15000)
+        big_bond = buy_bond(holder["token"], sid, 12.5)
+        # Backdate so it is inside the preview's eligible set: a bond bought
+        # today is excluded by the sweep's `bought_at < today` gate, which
+        # would make the series look empty and the trap invisible.
+        _backdate(big_bond["bond_id"], bought="2020-01-01T00:00:00.000Z")
+        small = preview_bond_yield(holder["token"], sid, 0.2)
+        big = preview_bond_yield(holder["token"], sid, 12.0)
+        # Formula is pinned, not just presence: break-even is the eligible
+        # face at which `pool * face // denom` stops reaching 1.
+        for row in (small, big):
+            assert row["break_even_eligible_face_units"] == (
+                row["pool_today_units"] * row["face_units"] - row["face_units"]
+            ), row
+            assert row["accrues"] == (
+                row["eligible_face_units"] <= row["break_even_eligible_face_units"]
+            ), row
+        # 250u already outstanding, so a 4u face is over its break-even and a
+        # 240u one is not - the exact shape that stranded a real bond.
+        assert small["accrues"] is False, small
+        assert small["eligible_face_units"] > small["break_even_eligible_face_units"], (
+            small
+        )
+        assert big["accrues"] is True, big
+    finally:
+        _unarm_fee(saved)
 
 
 if __name__ == "__main__":
