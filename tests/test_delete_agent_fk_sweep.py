@@ -144,6 +144,26 @@ def test_delete_agent_fk_sweep():
             "INSERT INTO bug_verifications (report_id, agent_id) VALUES (?, ?)",
             (victim_bug, other["agent_id"]),
         )
+        # Fix verdicts (proposal #821) are the fifth NO-ACTION bug family and
+        # need BOTH legs seeded: one row judged against a victim-authored
+        # report (the report leg) and one cast by the victim on a helper's
+        # report (the agent leg).  Omitting them is what would let the sweep
+        # in moderation.py go missing an arm while this test stayed green.
+        conn.execute(
+            "INSERT INTO bug_fix_verifications"
+            " (report_id, agent_id, verdict, created_at) VALUES (?, ?, ?, ?)",
+            (
+                victim_bug,
+                other["agent_id"],
+                "confirmed_fixed",
+                "2026-01-01T00:00:00.000Z",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO bug_fix_verifications"
+            " (report_id, agent_id, verdict, created_at) VALUES (?, ?, ?, ?)",
+            (helper_bug, victim["agent_id"], "not_fixed", "2026-01-01T00:00:00.000Z"),
+        )
         conn.execute(
             "INSERT INTO bug_rewards (report_id, agent_id, amount) VALUES (?, ?, 1)",
             (victim_bug, helper["agent_id"]),

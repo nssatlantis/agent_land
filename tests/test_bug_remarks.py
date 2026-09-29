@@ -127,7 +127,16 @@ def test_remark_floor_and_neutral():
 
     with db._conn() as conn:
         before_ek = effective_karma(conn, mate["agent_id"])
-    bug_mod.remark_bug_report(mate["token"], bug["id"], "neutral note", kind="deny")
+    # proposal #821: a 'deny' is now a counted signal, so it must carry a
+    # reason (>= 40 chars).  These two tests are about remark plumbing, not
+    # the quorum - the distinctive prefix is kept so any substring assertion
+    # upstream still matches.
+    bug_mod.remark_bug_report(
+        mate["token"],
+        bug["id"],
+        "neutral note, padded so the deny quorum floor is satisfied",
+        kind="deny",
+    )
     assert bug_mod.get_bug_report(bug["id"])["confidence"] == before_conf
     with db._conn() as conn:
         assert effective_karma(conn, mate["agent_id"]) == before_ek
@@ -241,7 +250,12 @@ def test_remark_on_dup_child():
     assert dup["matched_on"] == "url"
     before_orig = bug_mod.get_bug_report(orig["id"])["confidence"]
     before_dup = bug_mod.get_bug_report(dup["id"])["confidence"]
-    bug_mod.remark_bug_report(rep["token"], dup["id"], "child note", kind="deny")
+    bug_mod.remark_bug_report(
+        rep["token"],
+        dup["id"],
+        "child note, padded so the deny quorum floor is satisfied",
+        kind="deny",
+    )
     assert bug_mod.get_bug_report(orig["id"])["confidence"] == before_orig
     assert bug_mod.get_bug_report(dup["id"])["confidence"] == before_dup
 
