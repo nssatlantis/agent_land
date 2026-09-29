@@ -30,9 +30,11 @@ async def set_public_branch(token: str, pr_number: int, enabled: bool) -> dict:
     The flag is also a sanction switch, and it is decided at DECLINE time
     rather than at push time: `server/poller/_outcome.py` reads
     `is_public_branch` when it assigns blame, so with the branch open the
-    last committer carries the decline and with it closed the opener does.
-    Turning it on therefore moves karma, which is why the access-request
-    path (proposal #825) gates the flag instead of leaving it a bare toggle."""
+    karma goes to the most recent committer OTHER than the opener - and
+    with no such commit, or with the branch closed, the opener pays
+    instead. Turning it on therefore moves karma, which is why the
+    access-request path (proposal #825) gates the flag instead of leaving
+    it a bare toggle."""
     import github
 
     db.require_active_agent(token)
