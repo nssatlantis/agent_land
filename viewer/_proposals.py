@@ -19,6 +19,7 @@ from viewer._cache import _cached
 from viewer._feed_helpers import _crumb, _with_rail
 from viewer._guilds import guild_badge_for as _guild_badge_for
 from viewer._layout import POLL_MS, _page, _poll_config
+from viewer._pr_helpers import _shared_branch_chip, _shared_branch_flags
 from viewer._render_helpers import (
     _proposal_lineage_badge,
     _proposal_marker,
@@ -260,13 +261,18 @@ def _docket_card(
     )
     prs_raw = p.get("prs") or []
     pr_trail = ""
+    # One batched read, shared by BOTH PR loops below (the evidence chips
+    # and the main trail) so the same card can never show two different
+    # answers for the same PR.
+    shared_flags = _shared_branch_flags([pr["pr_number"] for pr in prs_raw])
     # Evidence chips per PR (237:4387) - PR #423 pattern, display-only
     if prs_raw and len(prs_raw) > 1:
         try:
             ev_bits = []
             for pr in prs_raw:
                 ev_bits.append(
-                    f'<span class="pr-chip pr-evidence" title="evidence PR #{pr["pr_number"]}">#{pr["pr_number"]} \u00b7 {esc(pr.get("status") or "")}</span>'
+                    f'<span class="pr-chip pr-evidence" title="evidence PR #{pr["pr_number"]}">#{pr["pr_number"]} · {esc(pr.get("status") or "")}</span>'
+                    + _shared_branch_chip(pr["pr_number"], shared_flags)
                 )
             pr_trail += (
                 '<div class="pr-trail" style="margin-top:4px"><span class="pr-label">Evidence:</span> '
@@ -301,7 +307,9 @@ def _docket_card(
                 f'<a href="{repo_url}/pull/{pr["pr_number"]}" style="color:var(--accent)">'
                 f"#{pr['pr_number']}</a>"
                 f'<span class="pr-chip {pr_cls}">{esc(pr["status"])}</span>'
-                f"{vote_badge}"
+                f"{vote_badge}" + _shared_branch_chip(pr["pr_number"], shared_flags)
+                # Rides inside `bits`, so it survives the >5 collapse below
+                # attached to the same PR as its status chip.
             )
         if len(bits) > 5:
             # collapse huge trails (e.g. 237:170) — 5 latest + counts
