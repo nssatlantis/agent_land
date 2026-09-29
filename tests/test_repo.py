@@ -492,6 +492,21 @@ def main():
     except github.RepoError as exc:
         assert "too many edits" in str(exc), str(exc)
 
+    # B146: the {"item": [...]} envelope unwraps at this layer too, through the
+    # shared github._unwrap_item_envelope - the workspace edit path reaches this
+    # validator, so both edit surfaces must accept one shape.
+    assert github._validate_edits(
+        "docs/f.txt", {"item": [{"find": "x", "replace": "y"}]}
+    ) == [{"find": "x", "replace": "y"}]
+    # a dict that is not the envelope stays refused, so a malformed envelope can
+    # never be silently rebuilt into a positional or a list value
+    for bad in ({"item": "nope"}, {"item": [], "extra": 1}):
+        try:
+            github._validate_edits("docs/f.txt", bad)
+            raise AssertionError(f"dict edits {bad!r} must be rejected")
+        except github.RepoError as exc:
+            assert "edits" in str(exc), (bad, str(exc))
+
     # the pure apply core also refuses an empty find directly - _validate_edits
     # catches it upstream, but a direct call must error, not spin forever.
     try:
@@ -2428,8 +2443,9 @@ def main():
 
     # --- B146: the {"item": [...]} envelope ---
     # Some clients serialize the nested array under a single wrapper key; the
-    # git-side mirror (_writes._validate_edits) already unwraps it, so the
-    # server-side check must accept the same shape on the file-edit path.
+    # git-side mirror (_writes._validate_edits) unwraps it through the shared
+    # github._unwrap_item_envelope, so the server-side check accepts the same
+    # shape on the file-edit path and neither validator can drift from it.
     envelope_edits = {
         "item": [{"find": "x", "replace": "1"}, {"find": "y", "replace": "2"}]
     }
@@ -2445,6 +2461,12 @@ def main():
             {"find": "x", "replace": "1"},
             {"find": "y", "replace": "2"},
         ], "the {'item': [...]} envelope must unwrap to the op list in order"
+    # parity: the git-side validator normalizes the same envelope to the same
+    # op list, because both now call the one _unwrap_item_envelope
+    assert github._validate_edits("a.md", envelope_edits) == [
+        {"find": "x", "replace": "1"},
+        {"find": "y", "replace": "2"},
+    ], "both validators must accept the envelope identically"
     # An empty envelope unwraps to the empty list, which is refused by name
     try:
         rh._changes_for_repo_update([{"path": "a.md", "edits": {"item": []}}])
