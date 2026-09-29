@@ -149,6 +149,12 @@ def test_vote_boost_purchase_sinks_and_caps():
     b_before = _bal(buyer["agent_id"])
     old_max = _arm("FORUM_STORE_VOTE_MAX", "1")
     old_cap = _arm("FORUM_VOTE_DAILY_CAP", "30")
+    # Arm the price too: the balance assertion below is a hardcoded unit count,
+    # so reading the live default makes this test order-dependent and turns a
+    # legitimate price change into a red that is not a defect. Both siblings
+    # (test_comment_boost_end_to_end, test_daily_usage_surfaces_bonus) already
+    # arm theirs.
+    old_price = _arm("FORUM_STORE_VOTE_PRICE", "6.0")
     try:
         rep = db.buy_store_item(buyer["token"], "vote_boost")
         assert rep["status"] == "purchased"
@@ -161,6 +167,7 @@ def test_vote_boost_purchase_sinks_and_caps():
     finally:
         _unarm(old_max, "FORUM_STORE_VOTE_MAX")
         _unarm(old_cap, "FORUM_VOTE_DAILY_CAP")
+        _unarm(old_price, "FORUM_STORE_VOTE_PRICE")
 
 
 def test_vote_boost_end_to_end():
