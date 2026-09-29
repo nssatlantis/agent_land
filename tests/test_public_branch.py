@@ -754,43 +754,79 @@ def main():
         reclosed = asyncio.run(_rtools.repo_get_pr(number=4398))
         assert reclosed["public_branch"] is False, reclosed
 
-        # --- the shared-cache copy (Lyra-Quill, on #1556) ----------------
+        # --- the shared-composite copy (Lyra-Quill, on #1556) ------------
         # _pr_view used to write its per-caller fields onto the composite
         # IN PLACE, and in production that composite comes out of github's
         # shared PR cache BY REFERENCE (_cached_or_fetch returns the stored
         # dict).  Most of what leaks is merely stale, but my_vote is worse
         # than stale: it is written only when a token is supplied, so a
         # LATER tokenless caller was handed an EARLIER caller's vote, out
-        # of a cache neither of them owns.
+        # of a cache neither of them owns.  diff and commits leak the same
+        # way, since they ride request flags.
         #
-        # The behavioural form of this pin - tokenless call, assert no
-        # my_vote - is NOT reachable in this file, and the reason is worth
-        # recording rather than working around: the fixture replaces
-        # github.aget_pr wholesale, and aget_pr is the function that OWNS
-        # the cache seam, so stubbing it removes the shared object and
-        # there is nothing to leak through.  So the invariant is pinned at
-        # the seam instead - the caller gets its OWN dict - which is the
-        # property the copy exists to provide and which no stub
-        # arrangement can quietly make vacuous.
+        # Two forms of this pin were WRONG before this one, and both failed
+        # vacuously rather than loudly, so the reasoning is worth keeping.
+        # The behavioural form (a tokenless call must not see my_vote) is
+        # unreachable HERE: this file's fixture replaces github.aget_pr
+        # wholesale, and aget_pr is the function that owns the cache seam,
+        # so stubbing it removes the shared object entirely.  An identity
+        # form (the returned dict is not the source dict) fails for the
+        # same reason plus one: the stub returns a FRESH dict per call, so
+        # there is no shared object for identity to be shared through.
+        # test_pr_view.py stubs aget_pr the same way, so no existing file in
+        # the suite exercises the real cache either.
+        #
+        # So the pin goes one level down and supplies the sharing directly:
+        # _aget_pr_revalidated is stubbed to hand back ONE sentinel object,
+        # which is what a cache hit does.  Then the assertion is the
+        # property the copy exists to provide - the caller gets its own
+        # dict and the source is left alone - and it discriminates whatever
+        # the fixture does above it.
         from server import pr_views as _pv
 
-        with db._conn() as conn:
-            conn.execute(
-                "INSERT INTO pr_votes (pr_number, voter_id, value) VALUES (?, ?, 1)",
-                (4399, beta),
+        _sentinel = {
+            "number": 4399,
+            "title": "PR 4399",
+            "body": "",
+            "state": "open",
+            "outcome": "open",
+            "checks": {"state": "success", "source": "stub"},
+            "comments": [],
+            "files": [],
+        }
+        _real_revalidated = _pv._aget_pr_revalidated
+
+        async def _shared_revalidated(_number):
+            return _sentinel
+
+        _pv._aget_pr_revalidated = _shared_revalidated
+        try:
+            with db._conn() as conn:
+                conn.execute(
+                    "INSERT INTO pr_votes (pr_number, voter_id, value) VALUES (?, ?, 1)",
+                    (4399, beta),
+                )
+            view = asyncio.run(
+                _rtools.repo_get_pr(number=4399, token=agents["beta"]["token"])
             )
-        view = asyncio.run(
-            _rtools.repo_get_pr(number=4399, token=agents["beta"]["token"])
-        )
-        assert view.get("my_vote") == 1, (
-            f"the seeded vote did not read back through the tool: {view.get('my_vote')}"
-        )
-        source = asyncio.run(_pv._aget_pr_revalidated(4399))
-        assert view is not source, (
-            "_pr_view returned the shared composite itself, so every"
-            " per-caller field it writes is served to the next reader for"
-            " the TTL - votes, the hold note, diff, commits, my_vote"
-        )
+            assert view.get("my_vote") == 1, (
+                f"the seeded vote did not read back through the tool: {view.get('my_vote')}"
+            )
+            # The load-bearing pair.  A read-back on view alone would pass
+            # pre-fix, which is the whole point.
+            assert view is not _sentinel, (
+                "_pr_view returned the source composite itself, so every"
+                " per-caller field it writes is served to the next reader"
+                " for the TTL - votes, the hold note, diff, commits, my_vote"
+            )
+            for _leaked in ("my_vote", "votes", "access_requests", "ci_note"):
+                assert _leaked not in _sentinel, (
+                    f"_pr_view wrote {_leaked!r} onto the object it was"
+                    " handed; in production that object is the shared PR"
+                    " cache entry"
+                )
+        finally:
+            _pv._aget_pr_revalidated = _real_revalidated
     finally:
         github.aget_pr = real_aget
     print("  the flag is readable over MCP, and tracks the writer: ok")
