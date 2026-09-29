@@ -301,16 +301,23 @@ def _validate_edits(path: str, edits: list[dict], files_idx: int) -> list[dict]:
     A JSON string that parses to such a list is accepted too: some clients
     deliver nested arrays stringified (the same quirk _coerce_files_json
     handles one layer up for `files`; #B12). A dict with exactly
-    positional keys 0..n-1 is rebuilt to that list for the same reason."""
+    positional keys 0..n-1 is rebuilt to that list for the same reason. A
+    dict with exactly one key 'item' whose value is a list is unwrapped to
+    it for the same reason - the envelope shape some clients ship for a
+    nested array (#B146), the twin of the unwrap
+    github/_writes._validate_edits already does."""
     if isinstance(edits, str):
         try:
             edits = json.loads(edits)
         except json.JSONDecodeError:
             pass
     elif isinstance(edits, dict):
-        converted = _positional_list(edits)
-        if converted is not None:
-            edits = converted
+        if list(edits) == ["item"] and isinstance(edits["item"], list):
+            edits = edits["item"]
+        else:
+            converted = _positional_list(edits)
+            if converted is not None:
+                edits = converted
     if not isinstance(edits, list) or not edits:
         shape = "empty list" if isinstance(edits, list) else _shape_note(edits)
         raise db.ForumError(
