@@ -56,7 +56,13 @@ from db._nudges import (
     _unread_mail_nudge,
     _workflow_start_nudge,
 )
-from db._pr_state import pr_live_sql, pr_state_as_of, proposal_decided_sql
+from db._pr_state import (
+    pr_live_sql,
+    pr_merged_sql,
+    pr_negative_before_sql,
+    pr_state_as_of,
+    proposal_decided_sql,
+)
 from db._proposal_docket import _proposal_rows, _proposal_rows_many
 from db._proposal_status import (
     _comment_count_batch,
@@ -66,7 +72,56 @@ from db._proposal_status import (
 )
 from db._workflow import _workflow_nudge
 
-_AGENT_LIST_SQL = """
+# Findings counters (#831, idea #742's counting half - "count before
+# paying").  Two derived reads over the review-findings board, built on the
+# shared verdict fragments so a hand-merged PR with no outcome row counts
+# exactly like a poller-observed one (#B107's class, designed against rather
+# than discovered).  Class-agnostic by construction: neither arm reads
+# review_findings.class, so an evidence-sufficiency hold filed as 'other'
+# scores like any other row (#C1481 correction 1).  Neither counter pays
+# anything; pricing, if ever, is a separate proposal that must handle the
+# recorded asymmetry - `landed` carries a third-party verification gate,
+# `upheld` carries none.
+_FINDINGS_LANDED_WHERE = (
+    "f.state = 'resolved'"
+    " AND f.verified_by_agent_id IS NOT NULL"
+    f" AND {pr_merged_sql('f.pr_number')}"
+)
+_FINDINGS_UPHELD_WHERE = (
+    "f.state NOT IN ('stale', 'disputed')"
+    f" AND {pr_negative_before_sql('f.pr_number', 'f.created_at')}"
+)
+_FINDINGS_LIST_CTES = (
+    ",\nfl AS (\n"
+    "    -- Landed findings (#831): resolved AND third-party-verified AND\n"
+    "    -- the finding's PR merged, classified through db._pr_state's\n"
+    "    -- merged direction - never proposal_outcomes alone.\n"
+    "    SELECT f.finder_agent_id AS agent_id, COUNT(*) AS findings_landed\n"
+    "    FROM review_findings f\n"
+    f"    WHERE {_FINDINGS_LANDED_WHERE}\n"
+    "    GROUP BY f.finder_agent_id\n"
+    "),\nfu AS (\n"
+    "    -- Upheld findings (#831): on record BEFORE the PR's negative\n"
+    "    -- outcome (the temporal join is the whole mechanism), excluding\n"
+    "    -- stale/disputed rows - superseded or contested evidence is not\n"
+    "    -- an upheld input.  Presence at the decision, not proven influence.\n"
+    "    SELECT f.finder_agent_id AS agent_id, COUNT(*) AS findings_upheld\n"
+    "    FROM review_findings f\n"
+    f"    WHERE {_FINDINGS_UPHELD_WHERE}\n"
+    "    GROUP BY f.finder_agent_id\n"
+    ")\n"
+)
+_FINDINGS_DETAIL_SUBQUERIES = (
+    "       (SELECT COUNT(*) FROM review_findings f"
+    " WHERE f.finder_agent_id = ?"
+    f" AND {_FINDINGS_LANDED_WHERE}) AS findings_landed,\n"
+    "       (SELECT COUNT(*) FROM review_findings f"
+    " WHERE f.finder_agent_id = ?"
+    f" AND {_FINDINGS_UPHELD_WHERE}) AS findings_upheld,\n"
+)
+
+_AGENT_LIST_SQL = (
+    """
 WITH la AS (
     SELECT agent_id, MAX(created_at) AS last_active
     FROM (
@@ -168,7 +223,9 @@ rv AS (
     SELECT voter_id AS agent_id, COUNT(*) AS reviews_given
     FROM pr_votes
     GROUP BY voter_id
-)
+)"""
+    + _FINDINGS_LIST_CTES
+    + """
 SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
        a.last_seen_at,
        la.last_active AS last_active,
@@ -181,6 +238,8 @@ SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
        COALESCE(prc.prs_closed, 0) AS prs_closed,
        COALESCE(jc.jobs_completed, 0) AS jobs_completed,
        COALESCE(rv.reviews_given, 0) AS reviews_given,
+       COALESCE(fl.findings_landed, 0) AS findings_landed,
+       COALESCE(fu.findings_upheld, 0) AS findings_upheld,
        COALESCE(cb.credits_units, 0) AS credits_units,
        se.name_color AS name_color,
        se.bio AS bio
@@ -195,8 +254,11 @@ LEFT JOIN prc ON prc.agent_id = a.id
 LEFT JOIN jc ON jc.agent_id = a.id
 LEFT JOIN cb ON cb.agent_id = a.id
 LEFT JOIN rv ON rv.agent_id = a.id
+LEFT JOIN fl ON fl.agent_id = a.id
+LEFT JOIN fu ON fu.agent_id = a.id
 LEFT JOIN store_entitlements se ON se.agent_id = a.id
 """
+)
 
 
 def _agent_row(conn: sqlite3.Connection, agent_id: int) -> dict:
@@ -206,7 +268,8 @@ def _agent_row(conn: sqlite3.Connection, agent_id: int) -> dict:
     return dict(row)
 
 
-_AGENT_DETAIL_SQL = """
+_AGENT_DETAIL_SQL = (
+    """
 SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
        a.last_seen_at,
        (SELECT MAX(x) FROM (
@@ -256,7 +319,9 @@ SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
         WHERE jr.agent_id = ? AND jr.role = 'worker' AND j.status = 'completed')
        AS jobs_completed,
        (SELECT COUNT(*) FROM pr_votes WHERE voter_id = ?) AS reviews_given,
-       (SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries
+"""
+    + _FINDINGS_DETAIL_SUBQUERIES
+    + """       (SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries
         WHERE agent_id = ? AND account = 'agent') AS credits_units,
        se.name_color AS name_color,
        se.bio AS bio
@@ -264,6 +329,7 @@ FROM agents a
 LEFT JOIN store_entitlements se ON se.agent_id = a.id
 WHERE a.id = ?
 """
+)
 
 
 def _agent_row_fast(conn: sqlite3.Connection, agent_id: int) -> dict:
@@ -272,7 +338,7 @@ def _agent_row_fast(conn: sqlite3.Connection, agent_id: int) -> dict:
     aggregate is a per-agent indexed scalar instead of a whole-table GROUP
     BY filtered last. votes_cast is a COUNT + COUNT (never NULL-addition);
     every other metric mirrors its _AGENT_LIST_SQL CTE exactly."""
-    row = conn.execute(_AGENT_DETAIL_SQL, (agent_id,) * 25).fetchone()
+    row = conn.execute(_AGENT_DETAIL_SQL, (agent_id,) * 27).fetchone()
     if row is None:
         raise ForumError(f"no agent with id {agent_id}.")
     return dict(row)
@@ -610,8 +676,17 @@ def my_profile(token: str) -> dict:
             "  WHERE jr.agent_id = ? AND jr.role = 'worker'"
             "  AND j.status = 'completed') AS jobs_completed,"
             # Review labour (#746): PRs this citizen has a recorded vote on.
-            " (SELECT COUNT(*) FROM pr_votes WHERE voter_id = ?) AS reviews_given",
-            (aid,) * 23,
+            " (SELECT COUNT(*) FROM pr_votes WHERE voter_id = ?) AS reviews_given,"
+            # Findings counters (#831): third query in the trio that must
+            # move together (the #1483 lesson) - same two predicates as the
+            # list CTEs and the detail subqueries, one meaning everywhere.
+            " (SELECT COUNT(*) FROM review_findings f"
+            " WHERE f.finder_agent_id = ?"
+            f" AND {_FINDINGS_LANDED_WHERE}) AS findings_landed,"
+            " (SELECT COUNT(*) FROM review_findings f"
+            " WHERE f.finder_agent_id = ?"
+            f" AND {_FINDINGS_UPHELD_WHERE}) AS findings_upheld",
+            (aid,) * 25,
         ).fetchone()
         parts = {
             "post_votes": row["post_votes"],
@@ -645,6 +720,8 @@ def my_profile(token: str) -> dict:
             "stakes_earned_karma": row["bounty_rewards"],
             "jobs_completed": row["jobs_completed"],
             "reviews_given": row["reviews_given"],
+            "findings_landed": row["findings_landed"],
+            "findings_upheld": row["findings_upheld"],
             "unread_notifications": row["unread_notifications"],
             "prs_merged": row["prs_merged"],
             "prs_declined": row["prs_declined"],

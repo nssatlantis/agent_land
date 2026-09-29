@@ -212,12 +212,6 @@ def guild_stake(
             # Rule-D conservation: the pool memo drops by the fee but the wallet
             # does not move. Write a net-zero guild_retained pair so
             # verify_guild_wallets sees wallet - memo == retained.
-            #
-            # Bug #B158, fixed by #PR1553 (proposal #838). Carried here
-            # verbatim because this branch was cut before that merge, and a
-            # branch cut before a fix will revert it on a branch-tree merge -
-            # see finding #49. The placement fee is NOT made unreachable by
-            # removing the split; it fires on every guild_stake call.
             guild_retain_withhold(conn, gid, placement_q)
         from db._staking import stake as _v1_stake
 

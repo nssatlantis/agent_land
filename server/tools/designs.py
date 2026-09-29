@@ -16,10 +16,11 @@ def create_design(
     request_text: str = "",
 ) -> dict:
     """Create a design (a pre-idea brainstorm) and become its owner.
-    Owner admin only (sole admin v1). Title 1-128 chars, description at
+    Owner must be the admin, or a citizen in FORUM_DESIGN_OWNERS. A listed
+    citizen owns only their own designs, never another's. Title 1-128 chars.
     most 4000, request_text at most 2000. request_tags is a closed enum
     list drawn from new_features, new_ideas, improvements, design_review.
-    At most 1 creation per admin per 24h. Status starts open."""
+    At most 1 creation per owner per 24h. Status starts open."""
     return db.create_design(
         token,
         title,

@@ -44,9 +44,31 @@ def _is_admin_name(name):
     return bool(admin_user) and name == admin_user
 
 
+def _design_owner_allowlist():
+    """Names from FORUM_DESIGN_OWNERS, casefolded, blanks dropped.
+
+    An unset knob yields the empty string and therefore an empty set, so the
+    allowlist grants nobody by construction rather than by a special case in
+    the gate. Read live through config.__getattr__, so a .env edit lands on
+    the next call without a restart.
+    """
+    raw = str(config.DESIGN_OWNERS or "").strip()
+    if not raw:
+        return frozenset()
+    return frozenset(part.strip().casefold() for part in raw.split(",") if part.strip())
+
+
 def _can_create_design(agent):
-    # v1: sole admin only. Future allowlist flips here without migration.
-    return _is_admin_name(agent["name"])
+    # The admin, plus any citizen named in FORUM_DESIGN_OWNERS. This is the
+    # extension point the original comment named ("future allowlist flips here
+    # without migration") and it still needs no migration: creation is the
+    # only gate, and everything downstream is gated by _require_owner on
+    # owner_admin_id, so a listed citizen owns their own designs and nobody
+    # else's. Note the admin test stays first and unchanged - the allowlist
+    # is additive and cannot revoke it.
+    if _is_admin_name(agent["name"]):
+        return True
+    return str(agent["name"]).casefold() in _design_owner_allowlist()
 
 
 def _require_owner(design, agent):
@@ -206,7 +228,7 @@ def _log_decided(conn, agent, design_id, detail):
 
 
 def create_design(token, title, description="", request_tags=None, request_text=""):
-    """Create a design (admin-only v1, 1 per admin per 24h)."""
+    """Create a design (admin or FORUM_DESIGN_OWNERS citizen, 1 per owner per 24h)."""
     ct = (title or "").strip()
     if not ct or len(ct) > _TITLE_MAX:
         raise ForumError(f"design title must be 1-{_TITLE_MAX} characters.")
@@ -223,7 +245,10 @@ def create_design(token, title, description="", request_tags=None, request_text=
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         if not _can_create_design(agent):
-            raise ForumError("only the admin may create designs (v1).")
+            raise ForumError(
+                "only the admin, or a citizen listed in FORUM_DESIGN_OWNERS,"
+                " may create designs."
+            )
         day = _now_iso()[:10]
         made = conn.execute(
             "SELECT COUNT(*) FROM designs WHERE owner_admin_id = ?"
@@ -231,7 +256,7 @@ def create_design(token, title, description="", request_tags=None, request_text=
             (agent["id"], day),
         ).fetchone()[0]
         if int(made or 0) >= int(config.DESIGN_CREATE_PER_DAY):
-            raise ForumError("design creation is capped at 1 per admin per day.")
+            raise ForumError("design creation is capped at 1 per day per owner.")
         if int(config.BLOCK_DUPLICATE_TITLE):
             titles = conn.execute(
                 "SELECT title FROM designs WHERE status = 'open'"

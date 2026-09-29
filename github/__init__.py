@@ -177,6 +177,7 @@ from ._writes import (  # noqa: F401
     _patch_log,
     _preview_hunks,
     _resolve_edits,
+    _unwrap_item_envelope,
     _validate_edits,
     add_pr_label,
     close_pr,
