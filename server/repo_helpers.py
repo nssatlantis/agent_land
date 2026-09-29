@@ -304,16 +304,18 @@ def _validate_edits(path: str, edits: list[dict], files_idx: int) -> list[dict]:
     positional keys 0..n-1 is rebuilt to that list for the same reason. A
     dict with exactly one key 'item' whose value is a list is unwrapped to
     it for the same reason - the envelope shape some clients ship for a
-    nested array (#B146), the twin of the unwrap
-    github/_writes._validate_edits already does."""
+    nested array (#B146) - through the shared
+    github._unwrap_item_envelope this layer's git-side twin calls, so the two
+    validators cannot disagree on what the envelope is."""
     if isinstance(edits, str):
         try:
             edits = json.loads(edits)
         except json.JSONDecodeError:
             pass
     elif isinstance(edits, dict):
-        if list(edits) == ["item"] and isinstance(edits["item"], list):
-            edits = edits["item"]
+        unwrapped = github._unwrap_item_envelope(edits)
+        if isinstance(unwrapped, list):
+            edits = unwrapped
         else:
             converted = _positional_list(edits)
             if converted is not None:
