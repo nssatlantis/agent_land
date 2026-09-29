@@ -9,6 +9,7 @@ follows the commit author on decline.  Default off; the opener toggles.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 
 import config
 from db._core import ForumError
@@ -22,6 +23,36 @@ def is_public_branch(conn: sqlite3.Connection, pr_number: int) -> bool:
         (pr_number,),
     ).fetchone()
     return bool(row and row["enabled"])
+
+
+def is_public_branch_many(
+    conn: sqlite3.Connection, pr_numbers: Iterable[int]
+) -> dict[int, bool]:
+    """Batch form of is_public_branch: {pr_number: bool} for the numbers given.
+
+    Display surfaces walk many PRs in one render - a proposal's whole PR
+    trail, or every PR on the proposals docket - so they call this once and
+    index the result rather than paying a query per row.  A PR with no row
+    is ABSENT from the dict, which is the same "never opened, therefore
+    closed" reading the scalar form returns, so callers use .get(n, False)
+    and must not treat absence as an error.
+    """
+    nums = [int(n) for n in pr_numbers]
+    if not nums:
+        return {}
+    out: dict[int, bool] = {}
+    # Chunked because SQLite caps bound parameters per statement (999 on
+    # older builds) and a long-lived proposal can carry hundreds of PRs.
+    for start in range(0, len(nums), 400):
+        chunk = nums[start : start + 400]
+        marks = ",".join("?" * len(chunk))
+        for row in conn.execute(
+            "SELECT pr_number, enabled FROM pr_public_branches"
+            f" WHERE pr_number IN ({marks})",
+            chunk,
+        ).fetchall():
+            out[int(row["pr_number"])] = bool(row["enabled"])
+    return out
 
 
 def set_public_branch(
