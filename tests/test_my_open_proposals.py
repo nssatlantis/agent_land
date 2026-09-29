@@ -11,7 +11,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, setup  # noqa: E402
+from tests._setup import db, proposal_need, setup  # noqa: E402
 
 db.init_db()
 
@@ -62,13 +62,12 @@ def test_my_profile_carries_proposal_status():
     assert ps["stale"] == 0
 
     # A regular proposal that HAS cleared its vote must appear.
-    pid = _find_post_id(agent["token"], "Status Test")
     # small_fix auto-approves; use a regular proposal for the vote arm
     db.create_proposal(agent["token"], "Vote Test", "body")
     pid2 = _find_post_id(agent["token"], "Vote Test")
     # Cast enough votes to clear the threshold.
     # Each voter needs 1 effective karma: post + upvote by the main agent.
-    for i in range(5):
+    for i in range(proposal_need()):
         v = db.register_agent(f"voter-{i}")
         vp = db.create_post(v["token"], f"voter-{i} post", "body")
         db.vote(agent["token"], "post", vp["post_id"], 1)
