@@ -197,8 +197,20 @@ async def finding_mark_resolved(token: str, finding_id: int, note: str) -> dict:
         # The prefix is deliberately NOT the shared "PR #N findings:" one.
         # The verify-time flip notice and the advisory nudge both use it,
         # and a resolver must not overwrite a reviewer's standing "flip?"
-        # prompt with a weaker "someone resolved something" notice; each
-        # stays separately readable instead.
+        # prompt with a weaker "someone resolved something" notice.
+        #
+        # And it is keyed PER FINDING, not per PR, which is the half that
+        # was wrong first time.  ref_id here is the PR number, so a
+        # per-PR prefix matched this row on the SECOND resolve of the same
+        # PR and _notify_tally's refresh did an in-place UPDATE of the
+        # body - silently destroying the first finding's id rather than
+        # coalescing it.  The earlier version of this comment claimed
+        # "each stays separately readable instead"; that was true of
+        # resolve-versus-verify and false of resolve-versus-resolve, and
+        # nobody checked the second case because the sentence read like
+        # the first.  One wake still names all of one voter's findings on
+        # a PR in the poller's prompt; this is the mailbox copy, and it
+        # must not lose a finding id.
         #
         # A self-resolve (a finder who is also an authorized fixer) is
         # left to _notify_tally's own `agent_id == actor_agent_id`
@@ -216,7 +228,7 @@ async def finding_mark_resolved(token: str, finding_id: int, note: str) -> dict:
                 f" #{finding_id} fixed (still unverified) - re-read at the"
                 f" live head and re-cast your vote if you were holding one",
                 actor_agent_id=who["agent_id"],
-                match_prefix=f"PR #{_pr} finding resolved:",
+                match_prefix=f"PR #{_pr} finding resolved: #{finding_id} ",
             )
     # State is rendered in the mirror, so a resolve moves the projection
     # (proposal #776).  Outside the txn, for the same reason as above.
