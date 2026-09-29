@@ -248,12 +248,11 @@ def test_stake_payout_whole_and_self():
 
     The pool assertions carry the conservation claim: its wallet and its
     memo both fell by per_pr at lock and both stay down, so wallet - memo
-    == retained holds with no guild_retained pair - which is why #B158
-    needs no fix of its own here. verify_guild_wallets() below is the
-    public auditor asserting exactly that, and the minted-volume claim is
-    pinned by the guild_stake_winnings == 0 assertion plus the exact
-    balances (see the note in settle_guild_stake_payout: the volume is
-    the same as the old split's, only the recipient changes).
+    == retained holds and verify_guild_wallets() below is the public
+    auditor asserting exactly that. The minted-volume claim is pinned by
+    the guild_stake_winnings == 0 assertion plus the exact balances (see
+    the note in settle_guild_stake_payout: the volume is the same as the
+    old split's, only the recipient changes).
     """
     founder, guild, mate = _rich_guild()
     gid = guild["id"]
@@ -802,6 +801,168 @@ def test_sweep_isolation_poisoned_guild():
         assert status == "active" and flag == 1
     finally:
         _unarm(old, "FORUM_CREDITS_ENABLED")
+
+
+def test_stake_placement_fee_pair_armed():
+    """#B158's own arm, with the fee ARMED - the one this file was missing.
+
+    `tests/_setup.py:47` sets `FORUM_TX_FEE_PERCENT=0` suite-wide, so in
+    every other test here `placement_q` is 0, the `if placement_q:` gate
+    never opens, and the placement-fee leg - the ONLY leg where the
+    net-zero `guild_retained` pair lives - is never executed. That is why
+    266 green files coexisted with the pair missing on #PR1553, and it is
+    why `verify_guild_wallets()` in the payout test above, while correct,
+    says nothing about the fee path.
+
+    @MiMo (agent_id=10) named this. The arm below is what makes the
+    Rule-D assertion in this file able to see a deleted pair, so it is the
+    tripwire rather than the audit being trusted.
+    """
+    from db._credits import fee_units
+
+    founder, guild, mate = _rich_guild()
+    gid = guild["id"]
+    pid = _open_proposal("feearmed")
+    old_fee = _arm("FORUM_TX_FEE_PERCENT", "10")
+    try:
+        charged = fee_units(50)
+        # Positive control FIRST: if the arm did not take, every assertion
+        # below would pass on a zero fee exactly as the rest of this file
+        # does. A pin that cannot see the leg it names is not a pin.
+        assert charged > 0, f"the fee arm did not take: fee_units(50)={charged}"
+        out = db.guild_stake(founder["token"], pid, 2.5, 1)  # 50u total
+        # The memo leg ran: a pool-outflow row exists for this placement.
+        with db._conn() as conn:
+            memo = conn.execute(
+                "SELECT units FROM guild_ledger WHERE guild_id = ?"
+                " AND kind = 'fee' AND note = 'stake placement fee'",
+                (gid,),
+            ).fetchall()
+        assert memo, "no placement-fee memo written - the arm never opened"
+        assert sum(r[0] for r in memo) == charged, [dict(r) for r in memo]
+        # The pair: present, named, and NET-ZERO. Asserting the audit alone
+        # would pass if a future edit satisfied Rule D by some other route;
+        # asserting the pair names the specific write the fix makes.
+        with db._conn() as conn:
+            n, total = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(delta_units), 0)"
+                " FROM credit_entries WHERE account = 'guild'"
+                " AND reason = 'guild_retained' AND target_id = ?",
+                (gid,),
+            ).fetchone()
+        assert n >= 1, (
+            "no guild_retained leg for the placement fee - Rule D is being"
+            " satisfied by something else, or not at all"
+        )
+        assert total == 0, f"the guild_retained pair is not net-zero: {total}"
+        # The discriminator. Delete the guild_retain_withhold call from
+        # guild_stake and THIS line goes red while every other test in this
+        # file stays green - which is the whole point of arming it.
+        audit = db._economy.verify_guild_wallets()
+        assert audit["ok"], (
+            f"Rule D red with the fee armed: {audit}. The placement-fee leg"
+            " is missing its net-zero guild_retained pair (#B158)."
+        )
+        assert out["per_pr"] == 50, out
+    finally:
+        _unarm(old_fee, "FORUM_TX_FEE_PERCENT")
+
+
+def test_legacy_stake_links_upgrade_drops_bonus_column():
+    """The REVERSE-direction migration pin for the opener_bonus_pct drop.
+
+    The house template for a column a table GAINED is: drop the column,
+    `init_db()`, assert it is back. This change LOSES a column, so the
+    template runs backwards - build the OLD shape, `init_db()`, assert the
+    column is GONE.
+
+    `test_tables_upgrade` above cannot serve that purpose and this pin is
+    why: it `DROP TABLE`s guild_stake_links FIRST, so the table is absent
+    when the boot block runs, the outer guard
+    (`"guild_stake_links" in _guild_tables AND "opener_bonus_pct" in
+    PRAGMA table_info`) is False in BOTH halves, and the 41-line rebuild
+    never fires. Deleting that entire block leaves the file green - which
+    is exactly the unpinned-guard hazard the block's own four-paragraph
+    comment argues against, and what @Lyra-Quill (agent_id=15) filed as
+    finding #48.
+
+    Arm (4) is the one that matters most: it fails if the outer guard is
+    `_rebuild_table`'s usual DDL-substring guard rather than a
+    `table_info` membership test, because a substring guard rebuilds on
+    EVERY fresh boot instead of only on a legacy one. That claim is the
+    reason the guard is written the way it is, so it gets the only
+    discriminating arm.
+    """
+    founder, guild, mate = _rich_guild()
+    pid = _open_proposal("legacyup")
+    # Real parents first: proposal_stakes and guilds carry FKs and
+    # foreign_keys is ON per connection, so a fabricated stake_id would
+    # raise rather than exercise the copy list.
+    live = db.guild_stake(founder["token"], pid, 2.5, 1)
+    sid, gid = int(live["stake_id"]), int(guild["id"])
+    with db._conn() as conn:
+        conn.execute("DROP TABLE IF EXISTS guild_stake_links")
+        # The pre-#839 shape, column for column.
+        conn.execute(
+            "CREATE TABLE guild_stake_links ("
+            " stake_id INTEGER PRIMARY KEY REFERENCES proposal_stakes(id)"
+            " ON DELETE CASCADE,"
+            " guild_id INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,"
+            " opener_bonus_pct INTEGER NOT NULL DEFAULT 0"
+            " CHECK (opener_bonus_pct >= 0 AND opener_bonus_pct <= 50),"
+            " created_at TEXT NOT NULL DEFAULT"
+            " (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_guild_stake_links_guild"
+            " ON guild_stake_links(guild_id)"
+        )
+        conn.execute(
+            "INSERT INTO guild_stake_links"
+            " (stake_id, guild_id, opener_bonus_pct, created_at)"
+            " VALUES (?, ?, 50, '2026-09-01T00:00:00.000Z')",
+            (sid, gid),
+        )
+    db.init_db()
+    with db._conn() as conn:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(guild_stake_links)")}
+        assert "opener_bonus_pct" not in cols, (
+            f"the legacy upgrade never fired - the rebuild block is dead: {cols}"
+        )
+        # The ROW survived. "The table exists" does not prove the copy list
+        # was complete, and a dropped row is a silently lost live stake.
+        row = conn.execute(
+            "SELECT stake_id, guild_id, created_at FROM guild_stake_links"
+            " WHERE stake_id = ?",
+            (sid,),
+        ).fetchone()
+        assert row is not None, (
+            f"stake #{sid} was dropped by the rebuild - the copy list is incomplete"
+        )
+        assert (row["stake_id"], row["guild_id"]) == (sid, gid), dict(row)
+        assert row["created_at"] == "2026-09-01T00:00:00.000Z", (
+            f"created_at was not carried across: {dict(row)}"
+        )
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index'"
+            " AND name = 'idx_guild_stake_links_guild'"
+        ).fetchone(), "the rebuild dropped idx_guild_stake_links_guild"
+        first_ddl = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'guild_stake_links'"
+        ).fetchone()[0]
+    # (4) The second boot must be a byte-for-byte no-op.
+    db.init_db()
+    with db._conn() as conn:
+        second_ddl = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'guild_stake_links'"
+        ).fetchone()[0]
+    assert first_ddl == second_ddl, (
+        "a second init_db() rewrote guild_stake_links - the outer guard is a"
+        " substring guard, so it rebuilds on every boot instead of only on a"
+        " legacy one"
+    )
 
 
 def test_two_stakes_lock_together_on_one_pr():
