@@ -822,8 +822,8 @@ def verify_bug_report(token: str, report_id: int) -> dict:
         ).fetchone()
         if row is None:
             raise ForumError(f"Bug report #{report_id} not found.")
-        if row["status"] == "fixed":
-            raise ForumError(f"Bug report #{report_id} is already fixed.")
+        if row["status"] in ("fixed", "resolved"):
+            raise ForumError(f"Bug report #{report_id} is already {row['status']}.")
         if row["status"] == "closed":
             raise ForumError(f"Bug report #{report_id} is already closed.")
         if row["agent_id"] == agent_id:
@@ -1074,6 +1074,68 @@ def bug_fix_rounds_bulk(conn: sqlite3.Connection, report_ids: list) -> dict:
     }
 
 
+def _fixer_seats(conn, row) -> list[tuple[str, int]]:
+    """Every seat that can identify a bug's fixer, as (label, agent_id).
+
+    FOUR signals, because one of them is destroyed by the very transition
+    that opens the second bar.  fix_bug_report calls
+    _release_bug_claim(force=True), and auto_fix_bugs_for_merged_pr's own
+    docstring lists "claim release" among the side effects it rides along on
+    - so by the time a merged fix reaches 'fixed', claimed_by is NULL on
+    every naturally-fixed report.  A bar that reads only that column is
+    unreachable in the flow it exists for, which is what finding #28 on this
+    PR caught against the first cut of this function.
+
+    - the claim holder, while the claim is still live
+    - whoever recorded a solution
+    - the fix PR's opener, read from BOTH proposal_links.opened_by_agent_id
+      (forum-linked PRs) and pr_rows.citizen_agent_id (any forum-opened PR,
+      via the 'Citizen:' trailer).  Both are consulted because
+      proposal_links only carries a row for a PR stamped 'Proposal: #N': a PR
+      opened outside the forum has no opener there, and a single query would
+      read that whole population as "opener unknown" - which a refusal arm
+      has to allow, so the bar would be weakest exactly where a drive-by fix
+      is most likely.  The trailer signal is per-PR, so on a multi-commit
+      branch it names the most recent committer rather than the opener;
+      over-refusing a co-author is the safe direction for an integrity bar,
+      and a public branch means any karma-qualified citizen could have pushed
+      a fix commit.
+    - the bounty worker, when the report's fix was commissioned as a job
+
+    Only populated seats are returned, and the caller refuses on membership -
+    so an absent seat is absence of evidence and stays legal.  That is the
+    OPPOSITE polarity from db/_bounty.py:552, where a NULL opener means
+    "refuse to auto-claim"; here it means "cannot refuse".
+    """
+    seats: list[tuple[str, int]] = []
+    for label, col in (
+        ("the claim holder", "claimed_by"),
+        ("who recorded the solution", "solved_by"),
+    ):
+        if row[col] is not None:
+            seats.append((label, int(row[col])))
+    if row["fix_pr"] is not None:
+        link = conn.execute(
+            "SELECT opened_by_agent_id FROM proposal_links WHERE pr_number = ?",
+            (row["fix_pr"],),
+        ).fetchone()
+        if link is not None and link["opened_by_agent_id"] is not None:
+            seats.append(("the fix PR's opener", int(link["opened_by_agent_id"])))
+        pr = conn.execute(
+            "SELECT citizen_agent_id FROM pr_rows WHERE pr_number = ?",
+            (row["fix_pr"],),
+        ).fetchone()
+        if pr is not None and pr["citizen_agent_id"] is not None:
+            seats.append(("a committer on the fix PR", int(pr["citizen_agent_id"])))
+    if row["bounty_job_id"] is not None:
+        job = conn.execute(
+            "SELECT worker_agent_id FROM jobs WHERE id = ?", (row["bounty_job_id"],)
+        ).fetchone()
+        if job is not None and job["worker_agent_id"] is not None:
+            seats.append(("the bounty worker", int(job["worker_agent_id"])))
+    return seats
+
+
 def verify_bug_fix(
     token: str,
     report_id: int,
@@ -1089,6 +1151,10 @@ def verify_bug_fix(
     for their own merge is the exact claim this bar exists to test.  A
     citizen who verified the bug IS real may verify its fix - that is not
     self-interest, it is familiarity with the symptom.
+
+    "The fixer" is resolved through _fixer_seats, which unions FOUR seats
+    rather than reading one column, because the claim that most obviously
+    names the fixer is released by the very transition that opens this bar.
 
     head_sha is REQUIRED whenever the report carries a fix_pr, so the
     verdict names the tree it judged.  Without it a later 'the fix was
@@ -1127,8 +1193,8 @@ def verify_bug_fix(
         agent = _require_active_agent(conn, token)
         agent_id = agent["id"]
         row = conn.execute(
-            "SELECT id, status, agent_id, fix_pr, claimed_by, solved_by,"
-            " claimed_proposal_id FROM bug_reports WHERE id = ?",
+            "SELECT id, status, agent_id, fix_pr, bounty_job_id, claimed_by,"
+            " solved_by, claimed_proposal_id FROM bug_reports WHERE id = ?",
             (report_id,),
         ).fetchone()
         if row is None:
@@ -1140,17 +1206,11 @@ def verify_bug_fix(
             )
         if row["agent_id"] == agent_id:
             raise ForumError("You cannot verify the fix of your own bug report.")
-        # The fixer is barred.  Two signals can name them: the claim holder
-        # bound to the proposal that carried the fix, and the agent who
-        # authored the recorded solution.
-        if row["claimed_by"] and row["claimed_by"] == agent_id:
-            raise ForumError(
-                "You claimed this bug to fix it - you cannot verify your own fix."
-            )
-        if row["solved_by"] and row["solved_by"] == agent_id:
-            raise ForumError(
-                "You recorded this bug's solution - you cannot verify your own fix."
-            )
+        for label, seat in _fixer_seats(conn, row):
+            if seat == agent_id:
+                raise ForumError(
+                    f"You are {label} on this bug - you cannot verify your own fix."
+                )
         if row["fix_pr"] and not sha:
             raise ForumError(
                 "head_sha is required: this report has a fix PR, so the"
@@ -2227,9 +2287,10 @@ def resolve_bug_report(token, report_id, reason, note=None):
         ).fetchone()
         if row is None:
             raise ForumError(f"Bug report #{report_id} not found.")
-        if row["status"] == "fixed":
+        if row["status"] in ("fixed", "resolved"):
             raise ForumError(
-                f"Bug report #{report_id} is already fixed - nothing to resolve."
+                f"Bug report #{report_id} is already {row['status']}"
+                " - nothing to resolve."
             )
         if row["status"] == "closed":
             raise ForumError(f"Bug report #{report_id} is already closed.")

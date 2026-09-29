@@ -335,7 +335,12 @@ def test_verdict_guards():
         db.verify_bug_fix, a["token"], bug["id"], "confirmed_fixed", head_sha="f" * 40
     )
     assert "already gave a verdict" in msg
-    # The fixer is barred.
+    # The fixer is barred.  This arm tests the refusal ITSELF, deliberately on a
+    # hand-set claimed_by: the natural-flow case is
+    # test_fixer_bar_survives_the_claim_release, because fix_bug_report
+    # releases the claim and a raw UPDATE here manufactures a row shape the
+    # real flow destroys - which is how this gate read as pinned while being
+    # unreachable in production.
     with db._conn() as conn:
         conn.execute(
             "UPDATE bug_reports SET claimed_by = ? WHERE id = ?",
@@ -755,6 +760,226 @@ def test_viewer_enumerates_every_bug_status():
             f"viewer/_bugs.py has no tab entry for {status!r} - the admin panel "
             "has one, so the two halves of the same list disagree"
         )
+
+
+def _seed_fix_pr_identity(pr_number, *, opener=None, committer=None, post_token=None):
+    """Seed the PR-identity rows the outcome poller leaves behind for a merged
+    fix PR, so the fixer-bar pins exercise signals a natural fix produces.
+
+    `proposal_links` carries a row only for a PR stamped 'Proposal: #N';
+    `pr_rows.citizen_agent_id` comes from the 'Citizen:' trailer on any
+    forum-opened PR.  Pass `committer` alone for the unlinked-PR case that a
+    proposal_links-only lookup necessarily reads as "opener unknown".
+    """
+    post_id = None
+    if opener is not None:
+        # Created OUTSIDE the write txn below on purpose: create_post opens its
+        # own connection, and nesting a write inside a held BEGIN IMMEDIATE is
+        # the self-deadlock this module already had to fix once.
+        post_id = db.create_post(post_token, "Fix proposal", "body")["post_id"]
+    with db._conn(immediate=True) as conn:
+        if opener is not None:
+            conn.execute(
+                "INSERT OR REPLACE INTO proposal_links"
+                " (pr_number, post_id, opened_by_agent_id) VALUES (?, ?, ?)",
+                (pr_number, post_id, opener),
+            )
+        if committer is not None:
+            conn.execute(
+                "INSERT OR REPLACE INTO pr_rows (pr_number, citizen_agent_id)"
+                " VALUES (?, ?)",
+                (pr_number, committer),
+            )
+
+
+def test_fixer_bar_survives_the_claim_release():
+    """The claim is the seat that most obviously names the fixer, and
+    fix_bug_report RELEASES it - auto_fix_bugs_for_merged_pr's own docstring
+    lists "claim release" among the side effects it rides along on.  So a bar
+    reading only claimed_by is unreachable in the very flow it exists for, and
+    the earlier pin proved nothing because it re-set claimed_by with a raw
+    UPDATE after the release.
+
+    This walks the natural path and ASSERTS the claim really is gone, so it
+    cannot pass off a seat the flow would have supplied anyway.
+    """
+    rep = db.register_agent("natural-rep")
+    fixer = _karmaed("natural-fixer")
+    pr_number = 9001
+    bug = db.file_bug_report(rep["token"], "Natural flow bug", "body")
+    db.confirm_bug_report(bug["id"], admin="testadmin")
+    db.update_bug_report(rep["token"], bug["id"], fix_pr=pr_number)
+    # The claim is live while the fix is being built.
+    db.claim_bug(fixer["token"], bug["id"])
+    with db._conn() as conn:
+        held = conn.execute(
+            "SELECT claimed_by FROM bug_reports WHERE id = ?", (bug["id"],)
+        ).fetchone()["claimed_by"]
+    assert held == fixer["agent_id"], f"the claim must be live before the fix: {held}"
+    # The merge.  This is the step that nulls the claim.
+    db.fix_bug_report(bug["id"], admin="testadmin")
+    with db._conn() as conn:
+        after = conn.execute(
+            "SELECT status, claimed_by, solved_by FROM bug_reports WHERE id = ?",
+            (bug["id"],),
+        ).fetchone()
+    assert after["status"] == "fixed", after["status"]
+    # THE PRECONDITION.  Without it the refusal below could be arriving from
+    # the claim arm, and this pin would pass while the blocker were live.
+    assert after["claimed_by"] is None, (
+        "the whole point: fix_bug_report must have released the claim, or this "
+        "test is not exercising the seat the production flow destroys"
+    )
+    assert after["solved_by"] is None, "no solution recorded, so no seat there"
+    _seed_fix_pr_identity(
+        pr_number, opener=fixer["agent_id"], post_token=rep["token"]
+    )
+    msg = expect_error(
+        db.verify_bug_fix,
+        fixer["token"],
+        bug["id"],
+        "confirmed_fixed",
+        head_sha="a" * 40,
+    )
+    assert "your own fix" in msg, f"the fixer must still be barred, got: {msg}"
+    # And the row shape must not bar an unrelated citizen.
+    other = _karmaed("natural-other")
+    out = db.verify_bug_fix(
+        other["token"], bug["id"], "confirmed_fixed", head_sha="a" * 40
+    )
+    assert out["status"] == "fixed", f"a third party must still be able to vote: {out}"
+
+
+def test_fixer_bar_covers_a_pr_with_no_forum_link():
+    """proposal_links only has a row for a PR stamped 'Proposal: #N', so a PR
+    opened outside the forum has no opener there.  A refusal reading only
+    that column sees NULL, cannot tell "opener unknown" from "not the opener",
+    and must allow - leaving the bar weakest exactly where a drive-by fix is
+    most likely.  pr_rows.citizen_agent_id carries the 'Citizen:' trailer for
+    every forum-opened PR, so the union closes it.
+    """
+    rep = db.register_agent("unlinked-rep")
+    fixer = _karmaed("unlinked-fixer")
+    pr_number = 9002
+    _r, bug = _fixed_bug("unlinked", fix_pr=pr_number, reporter=rep)
+    _seed_fix_pr_identity(pr_number, committer=fixer["agent_id"])
+    with db._conn() as conn:
+        links = conn.execute(
+            "SELECT COUNT(*) FROM proposal_links WHERE pr_number = ?", (pr_number,)
+        ).fetchone()[0]
+    assert links == 0, "precondition: this PR must have no forum link at all"
+    msg = expect_error(
+        db.verify_bug_fix,
+        fixer["token"],
+        bug["id"],
+        "confirmed_fixed",
+        head_sha="a" * 40,
+    )
+    assert "your own fix" in msg, f"the trailer signal alone must bar them, got: {msg}"
+
+
+def test_bounty_worker_cannot_verify_their_own_bounty_fix():
+    """A report whose fix was commissioned as a bounty job names its fixer in
+    `jobs.worker_agent_id` - a seat that is neither the claim nor the PR
+    opener, so a bar reading only those two leaves the paid-for path open.
+    """
+    rep = db.register_agent("bountyw-rep")
+    worker = _karmaed("bountyw-worker")
+    _r, bug = _fixed_bug("bountyw", reporter=rep)
+    creator = _job_creator("bountyw-creator")
+    job = db.create_job(creator["token"], "commissioned fix", "desc", 1.0, ["step"])
+    jid = job["job_id"]
+    db.claim_job(worker["token"], jid)
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "UPDATE bug_reports SET bounty_job_id = ? WHERE id = ?", (jid, bug["id"])
+        )
+        assert conn.execute(
+            "SELECT worker_agent_id FROM jobs WHERE id = ?", (jid,)
+        ).fetchone()["worker_agent_id"] == worker["agent_id"], "fixture: job is claimed"
+        assert conn.execute(
+            "SELECT claimed_by, solved_by FROM bug_reports WHERE id = ?", (bug["id"],)
+        ).fetchone()["claimed_by"] is None, "no claim seat: this is the worker's only one"
+    msg = expect_error(
+        db.verify_bug_fix,
+        worker["token"],
+        bug["id"],
+        "confirmed_fixed",
+        head_sha="a" * 40,
+    )
+    assert "bounty worker" in msg, f"the refusal must name the seat, got: {msg}"
+
+
+def test_resolved_refuses_every_late_bar():
+    """`resolved` is a decided status, so every guard that treats `fixed` as
+    decided must refuse it too.  I fixed `fix_bug_report` and then shipped two
+    siblings still reading `== "fixed"` alone, so both paths are pinned here
+    rather than only the one I happened to remember.
+    """
+    _rep, bug = _fixed_bug("resolvedref")
+    v = [_karmaed(f"rr-{i}") for i in range(3)]
+    for a in v:
+        db.verify_bug_fix(
+            a["token"], bug["id"], "confirmed_fixed", head_sha="a" * 40
+        )
+    full = db.get_bug_report(bug["id"])
+    assert full["status"] == "resolved", full["status"]
+    other = _karmaed("rr-other")
+    # The real-bug bar: a late "yes, this is real" on a decided report.
+    msg = expect_error(db.verify_bug_report, other["token"], bug["id"])
+    assert "already resolved" in msg, f"verify_bug_report must refuse it, got: {msg}"
+    # The close bar: a resolve vote must not demote it.
+    msg = expect_error(
+        db.resolve_bug_report, other["token"], bug["id"], "already_fixed"
+    )
+    assert "already resolved" in msg, f"resolve_bug_report must refuse it, got: {msg}"
+    with db._conn() as conn:
+        after = conn.execute(
+            "SELECT status, verified_at FROM bug_reports WHERE id = ?", (bug["id"],)
+        ).fetchone()
+    assert after["status"] == "resolved", "a refused vote must not demote it"
+    assert after["verified_at"], "verified_at must survive a refused vote"
+
+
+def test_no_bare_equality_guard_on_bug_status():
+    """`resolved` has to be in EVERY guard that treats a decided status as
+    decided.  I fixed one and shipped two siblings that still read
+    `== "fixed"`, so the CLASS is pinned rather than the instance: no
+    `row["status"] == <decided>` comparison may exist in the module, because
+    membership is the only spelling that makes the whole set visible.
+
+    AST, not text: a docstring or comment quoting a guard is invisible to it
+    by construction.  Two-way - a guard that admits `resolved` passes, and a
+    newly written bare `==` guard fails.
+    """
+    import ast
+    from pathlib import Path
+
+    decided = {"fixed", "closed"}
+    src = (Path(__file__).resolve().parents[1] / "db" / "_bug_reports.py").read_text()
+    offenders = []
+    for node in ast.walk(ast.parse(src)):
+        if not (isinstance(node, ast.Compare) and len(node.ops) == 1):
+            continue
+        if not isinstance(node.ops[0], ast.Eq):
+            continue
+        left = node.left
+        if not (
+            isinstance(left, ast.Subscript)
+            and isinstance(left.value, ast.Name)
+            and left.value.id == "row"
+            and isinstance(left.slice, ast.Constant)
+            and left.slice.value == "status"
+        ):
+            continue
+        cmp = node.comparators[0]
+        if isinstance(cmp, ast.Constant) and cmp.value in decided:
+            offenders.append(node.lineno)
+    assert not offenders, (
+        "these compare row['status'] == a decided status alone, so they cannot "
+        "know about 'resolved' - use `in (...)` and list every decided status. "
+        f"db/_bug_reports.py lines {offenders}"
+    )
 
 
 if __name__ == "__main__":
