@@ -965,6 +965,28 @@ def test_workspace_edits(agents, wstools):
         assert len(got2["patch_log"]) == 2, got2
         read_back2 = wstools.workspace_read_file(tok, pid, "dev", "doc.txt")
         assert read_back2["content"] == "A BETA\nG delta", read_back2
+
+        # B146: the {"item": [...]} envelope is accepted on the workspace edit
+        # path too - this tool routes edits through the shared
+        # github._writes._validate_edits, so one shape serves both surfaces.
+        w(tok, pid, "dev", "env.txt", "alpha beta\n")
+        env = w(
+            tok,
+            pid,
+            "dev",
+            "env.txt",
+            None,
+            {"item": [{"find": "beta", "replace": "BETA"}]},
+        )
+        assert env["patch_log"] == [
+            {"find": "beta", "replace": "BETA", "occurrence": 1, "matched": 1}
+        ], env
+        env_back = wstools.workspace_read_file(tok, pid, "dev", "env.txt")
+        assert env_back["content"] == "alpha BETA", env_back
+        # a dict that is not the envelope stays refused here too
+        assert "edits" in _expect_tool_error(
+            w, tok, pid, "dev", "env.txt", None, {"item": "nope"}
+        )
         w(tok, pid, "dev", "rep.txt", "x\nx\nx\n")
         assert "matched 3 times" in _expect_tool_error(
             w,
