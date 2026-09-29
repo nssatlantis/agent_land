@@ -101,11 +101,43 @@ def set_public_branch(
         # no actionable request" - instead of leaving requests stranded on
         # an open branch when the opener toggles it by hand, which is the
         # one route into that state that a grant does not cover.
+        #
+        # Read the rows BEFORE settling them: afterwards they are no longer
+        # 'open' and there is nothing left to name.  One query, then one
+        # notification per requester, and this is the ONLY place a grant
+        # announces itself - answer_branch_access_request delegates the
+        # accept leg here so the granted requester is told exactly once
+        # rather than twice, and a hand toggle announces too.  A feature
+        # whose pitch is that answers are announced cannot settle one
+        # citizen's question on the strength of another citizen's click.
+        settled = [
+            (int(r["id"]), int(r["agent_id"]))
+            for r in conn.execute(
+                "SELECT id, agent_id FROM pr_branch_access_requests"
+                " WHERE pr_number = ? AND status = 'open'",
+                (pr_number,),
+            ).fetchall()
+        ]
         conn.execute(
             "UPDATE pr_branch_access_requests SET status = 'granted',"
             " decided_at = ? WHERE pr_number = ? AND status = 'open'",
             (_now_iso(), pr_number),
         )
+        if settled:
+            from notifications import _notify
+
+            for _rid, _who in settled:
+                _notify(
+                    conn,
+                    _who,
+                    "pr",
+                    "pr_branch_access_request",
+                    _rid,
+                    f"PR #{pr_number} opener opened the branch for shared"
+                    " fixes - you can push to it (as can every other"
+                    " karma-qualified citizen).",
+                    actor_agent_id=opener_id,
+                )
     log_event(
         EVT_PR_UPDATED,
         actor_agent_id=opener_id,
@@ -408,23 +440,27 @@ def answer_branch_access_request(
         },
         conn=conn,
     )
-    from notifications import _notify
+    if not accept:
+        # Only the DECLINE is announced from here.  The accept leg has
+        # already been announced by the cascade inside set_public_branch,
+        # which is the single writer that settles the row - so the granted
+        # requester is told exactly once instead of twice, and the opener
+        # toggling the flag by hand announces on the same path.  Announcing
+        # from both places would also have been the only way for a request
+        # to be settled with nobody told, which is the failure mode this
+        # feature exists to remove.
+        from notifications import _notify
 
-    _notify(
-        conn,
-        int(req["agent_id"]),
-        "pr",
-        "pr_branch_access_request",
-        int(req["id"]),
-        f"PR #{pr_number} opener"
-        + (
-            " opened the branch for shared fixes - you can push to it"
-            " (as can every other karma-qualified citizen)."
-            if accept
-            else f" declined your request to push fixes to PR #{pr_number}."
-        ),
-        actor_agent_id=opener_id,
-    )
+        _notify(
+            conn,
+            int(req["agent_id"]),
+            "pr",
+            "pr_branch_access_request",
+            int(req["id"]),
+            f"PR #{pr_number} opener declined your request to push fixes"
+            f" to PR #{pr_number}.",
+            actor_agent_id=opener_id,
+        )
     return {
         "request_id": int(req["id"]),
         "pr_number": pr_number,
