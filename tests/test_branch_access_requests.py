@@ -320,6 +320,61 @@ def main():
         with db._conn() as conn:
             assert _statuses(conn, 5105) == [], "a closed-PR request wrote a row"
 
+        # --- a LAPSED row is not cascaded into a grant --------------------
+        # The two statements in the enable cascade key on a bare
+        # `status = 'open'` - the exact query the module's own docstring
+        # calls "precisely what would resurrect an expired row as though it
+        # were answerable".  Without the _STALE flush that runs first, a
+        # request that timed out days ago is swept into 'granted' AND
+        # announced with "alpha opened the branch".  Every half of that is
+        # wrong in the same direction: the copy would be accidentally TRUE
+        # (the branch really is open, so beta really does have access) while
+        # the ledger records an answer nobody gave and the citizen is told
+        # their question was decided by a click they never saw.
+        #
+        # So the pin is on both halves, because a flush that settles the row
+        # correctly while still announcing it would pass a status-only check.
+        # A FRESH pr number: this file's own lesson is that a reused one
+        # arrives carrying a stranger's proposal_links row from an earlier
+        # block, which is how four sweep pins on another branch passed
+        # against the wrong population.
+        with db._conn() as conn:
+            _linked_pr(conn, 5120, pid, alpha)
+        lapsed = _ask(agents["beta"]["token"], 5120, "too late to matter")
+        with db._conn(immediate=True) as conn:
+            conn.execute(
+                "UPDATE pr_branch_access_requests SET expires_at = ? WHERE id = ?",
+                ("2000-01-01T00:00:00.000Z", lapsed["request_id"]),
+            )  # Confirm the fixture really is the awkward state: lapsed AND still
+        # 'open', so the cascade's bare predicate WOULD have matched it.
+        with db._conn() as conn:
+            _pre = conn.execute(
+                "SELECT status, expires_at FROM pr_branch_access_requests WHERE id = ?",
+                (lapsed["request_id"],),
+            ).fetchone()
+        assert _pre["status"] == "open" and _pre["expires_at"] is not None, (
+            f"the fixture is not a lapsed-but-open row, so this block would"
+            f" prove nothing: {dict(_pre)}"
+        )
+        with db._conn() as conn:
+            db.set_public_branch(conn, 5120, alpha, True)
+        with db._conn() as conn:
+            assert _statuses(conn, 5120) == ["expired"], (
+                "the cascade granted a request that had already lapsed; the"
+                f" honest terminal state is 'expired'. Got {_statuses(conn, 5120)}"
+            )
+            _mail = conn.execute(
+                "SELECT COUNT(*) AS n FROM notifications"
+                " WHERE agent_id = ? AND kind = 'pr'"
+                " AND ref_type = 'pr_branch_access_request' AND ref_id = ?",
+                (beta, lapsed["request_id"]),
+            ).fetchone()["n"]
+        assert _mail == 0, (
+            "a lapsed request was ANNOUNCED as a grant. It gets no access by"
+            " the grant route, and the message would be true about access"
+            f" while false about the answer. Got {_mail} notification(s)"
+        )
+
         # --- expiry: one predicate, two readers, agreeing ----------------
         exp = _ask(agents["beta"]["token"], 5104, "will expire")
         with db._conn() as conn:
