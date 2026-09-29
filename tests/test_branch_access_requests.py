@@ -495,6 +495,7 @@ def main():
             "_STALE": "status = 'open' AND expires_at IS NOT NULL AND expires_at <= ?",
         }
         _clause_nodes: dict[str, ast.Constant] = {}
+        _clause_values: dict[str, str] = {}
         for _stmt in _engine_ast.body:
             if not isinstance(_stmt, ast.Assign) or len(_stmt.targets) != 1:
                 continue
@@ -505,27 +506,34 @@ def main():
                 f"{_tgt.id} is no longer a plain literal, so nothing can read"
                 f" it by value: {ast.dump(_stmt.value)[:120]}"
             )
+            # Narrowed to str HERE rather than at each use: ast.Constant.value
+            # is typed as a union, so a reader that assumes str is a mypy
+            # error six times over.  Asserting it is a str is also part of the
+            # contract - the pin below calls startswith() on it.
+            assert isinstance(_stmt.value.value, str), (
+                f"{_tgt.id} is not a string clause: {_stmt.value.value!r}"
+            )
             _clause_nodes[_tgt.id] = _stmt.value
+            _clause_values[_tgt.id] = _stmt.value.value
         assert set(_clause_nodes) == set(_EXPECTED_CLAUSES), (
             "a shared expiry clause was renamed or dropped; the readers"
             f" interpolate it by name. Present: {sorted(_clause_nodes)}"
         )
         for _name, _want in _EXPECTED_CLAUSES.items():
-            assert _clause_nodes[_name].value == _want, (
+            assert _clause_values[_name] == _want, (
                 f"{_name} was reshaped. It must stay the literal the readers"
                 " and the partial index agree on:\n"
                 f"  want {_want!r}\n"
-                f"  got  {_clause_nodes[_name].value!r}"
+                f"  got  {_clause_values[_name]!r}"
             )
         # And the two halves must remain a partition: both key on the same
         # status vocabulary, and one takes the IS NULL / future branch while
         # the other takes the non-null / lapsed one.  Asserting the exact
         # literals above already pins this, and it is stated here so the next
         # reader knows WHY the literals are spelled out rather than composed.
-        for _name, _node in _clause_nodes.items():
-            assert _node.value.startswith("status = 'open' AND "), (
-                f"{_name} no longer leads with the shared status predicate:"
-                f" {_node.value!r}"
+        for _name, _text in _clause_values.items():
+            assert _text.startswith("status = 'open' AND "), (
+                f"{_name} no longer leads with the shared status predicate: {_text!r}"
             )
 
         # NARRATIVE CHECK, because the first version of this rule was wrong
