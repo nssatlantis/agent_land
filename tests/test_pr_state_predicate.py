@@ -763,6 +763,25 @@ def test_direction_fragments(agents):
         # 7. stamped cache closed-not-merged: negative, same strict window.
         _stamp_cache_closed(conn, 991408, merged=False)
         assert _dirs(conn, 991408) == (0, 1, 0, 0)
+        # 8. MIXED PRECISION - the only arm that can see #168.  Every arm
+        #    above seeds BOTH sides of the comparison from the same millis
+        #    literal (t_out), so the two strings are identical and compare
+        #    FALSE: the strict boundary looks correct for the wrong reason.
+        #    Production never does that.  review_findings.created_at is the
+        #    schema DEFAULT's millisecond form (24 chars, '.' at index 19);
+        #    the GitHub-sourced stamps are second precision (20 chars, 'Z').
+        #    Unnormalised, '.' (0x2E) sorts under 'Z' (0x5A), so a
+        #    same-second filing reads as strictly before it - inflating
+        #    findings_upheld.  Seeded 20-char here; when_expr stays millis.
+        conn.execute(
+            "INSERT INTO proposal_outcomes (pr_number, post_id, status,"
+            " happened_at) VALUES (991409, ?, 'declined', ?)",
+            (post_id, "2026-09-26T12:00:00Z"),
+        )
+        assert _dirs(conn, 991409) == (0, 1, 0, 0), (
+            "a filing in the same second as a second-precision outcome is"
+            " not 'strictly before' it - bug #168"
+        )
     print("  direction fragments (merged/negative arms, strict window): ok")
 
 

@@ -151,19 +151,37 @@ def pr_negative_before_sql(pr_expr: str, when_expr: str) -> str:
     writer's stamp AND ``merged_at IS NULL`` - a closed row carrying a
     merge time is the merged direction, never this one.  Both expressions
     MUST be alias-qualified (same contract as pr_decided_sql).  Joinable
-    and parameter-free."""
+    and parameter-free.
+
+    BOTH SIDES ARE TRUNCATED TO SECOND PRECISION, and the truncation is
+    load-bearing rather than tidying.  ``when_expr`` is normally
+    review_findings.created_at, which carries the schema DEFAULT's
+    millisecond form (strftime '%Y-%m-%dT%H:%M:%fZ', 24 chars, '.' at
+    index 19), while every stamp compared against it - po.happened_at,
+    prd.closed_at, pw.closed_at - is GitHub-sourced second precision
+    ('YYYY-MM-DDTHH:MM:SSZ', 20 chars, 'Z' at index 19).  Unnormalised,
+    '.' (0x2E) sorts BELOW 'Z' (0x5A), so a finding created in the same
+    second as the decision reads as strictly before it and
+    findings_upheld over-counts (#168).  The two formats are named in
+    db/_core/_boot_foundation.py:178-180; do NOT read the substr() pairs
+    as a simplification - removing them restores the inflation, and
+    only the mixed-precision test arm can catch that."""
     return (
         f"(EXISTS (SELECT 1 FROM proposal_outcomes po"
         f" WHERE po.pr_number = {pr_expr}"
         " AND po.status IN ('declined', 'closed')"
-        f" AND {when_expr} < po.happened_at)"
+        f" AND substr({when_expr}, 1, 19)"
+        " < substr(po.happened_at, 1, 19))"
         f" OR EXISTS (SELECT 1 FROM pr_record prd"
         f" WHERE prd.pr_number = {pr_expr}"
-        f" AND {when_expr} < prd.closed_at)"
+        f" AND substr({when_expr}, 1, 19)"
+        " < substr(prd.closed_at, 1, 19))"
         f" OR EXISTS (SELECT 1 FROM pr_rows pw"
         f" WHERE pw.pr_number = {pr_expr} AND pw.state = 'closed'"
         " AND pw.verified_at IS NOT NULL AND pw.merged_at IS NULL"
-        f" AND pw.closed_at IS NOT NULL AND {when_expr} < pw.closed_at))"
+        " AND pw.closed_at IS NOT NULL"
+        f" AND substr({when_expr}, 1, 19)"
+        " < substr(pw.closed_at, 1, 19)))"
     )
 
 
