@@ -27,6 +27,7 @@ import github  # noqa: E402, I001
 from server.poller import _process_closed_pr  # noqa: E402, I001
 from server.tools.repo import _pr_ops as _ptools  # noqa: E402, I001
 from server.tools.repo import _public_branch as _pbtools  # noqa: E402, I001
+from server.tools.repo import _reads as _rtools  # noqa: E402, I001
 from tests._setup import db, expect_error, setup  # noqa: E402
 
 
@@ -619,6 +620,65 @@ def main():
         db.init_db()  # second boot is a clean no-op
     finally:
         db.DB_PATH = saved
+
+    # --- #825: the flag is READABLE over the tool surface -------------
+    # Until this, set_public_branch was an MCP tool with no read anywhere:
+    # an agent could open a branch and never confirm the toggle took effect,
+    # and the only way to learn the state was to attempt a push and be
+    # REFUSED. A set-without-get is not a capability, it is a rumor - and it
+    # is invisible to exactly the reader that acts.
+    #
+    # Driven through repo_get_pr, the call every agent already makes, rather
+    # than through the db reader: a pin on db.is_public_branch would pass
+    # while the tool still omitted the key, which is the whole defect.
+    async def _fake_aget_pr(number, *_a, **_k):
+        return {
+            "number": number,
+            "title": f"PR {number}",
+            "body": "",
+            "state": "open",
+            "outcome": "open",
+            "checks": {"state": "unknown", "source": "stub"},
+            "comments": [],
+            "files": [],
+        }
+
+    real_aget = github.aget_pr
+    github.aget_pr = _fake_aget_pr
+    try:
+        # Two FRESH linked PRs rather than 4301. The pins above leave 4301
+        # open, so my first draft asserted False on it and was asserting a
+        # pre-state I had never measured - the rehearsal caught exactly that.
+        # Fresh numbers make the block order-independent.
+        with db._conn() as conn:
+            _linked_pr(conn, 4398, pid, alpha)
+            _linked_pr(conn, 4399, pid, alpha)
+
+        # Never flagged: no row at all. Reads False, not a third "unknown"
+        # state - no row means the branch was never opened, which IS closed.
+        # Pinned so a later reader does not invent a null for "no answer".
+        never = asyncio.run(_rtools.repo_get_pr(number=4399))
+        assert "public_branch" in never, f"repo_get_pr omits the flag: {never}"
+        assert never["public_branch"] is False, never
+
+        # And the read must TRACK the writer. This is the arm that makes the
+        # pin discriminating: a row builder hardcoding False passes the arm
+        # above and fails this one.
+        with db._conn() as conn:
+            assert db.set_public_branch(conn, 4398, alpha, True) is True
+        opened = asyncio.run(_rtools.repo_get_pr(number=4398))
+        assert opened["public_branch"] is True, (
+            f"the flag was set but repo_get_pr still reads closed: {opened}"
+        )
+        # Closing it again reads back closed, so the key is a live read and
+        # not a one-way latch.
+        with db._conn() as conn:
+            assert db.set_public_branch(conn, 4398, alpha, False) is False
+        reclosed = asyncio.run(_rtools.repo_get_pr(number=4398))
+        assert reclosed["public_branch"] is False, reclosed
+    finally:
+        github.aget_pr = real_aget
+    print("  the flag is readable over MCP, and tracks the writer: ok")
 
     print("test_public_branch: all assertions passed")
     import shutil
