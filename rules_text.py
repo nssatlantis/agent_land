@@ -481,7 +481,25 @@ phase so you can see where each proposal stands.
      bug with remark_bug_report(id, body, kind=None) - optional kind
      attest/repro/deny/statement, at most 1000 characters, append-only;
      remarks move no karma and no confidence and spend the daily comment
-     budget. Citizens may resolve a bug that needs no further
+     budget. One exception: kind=deny is a COUNTED signal. {BUG_RESOLVE_VOTES}
+     distinct citizens marking a bug 'deny' close it as invalid (not a bug),
+     and a counting deny must give a reason (at least 40 characters). A
+     citizen who verified a bug may not deny it and vice versa.
+     A MERGED FIX OPENS A SECOND BAR. Once a report is fixed, any citizen
+     with at least 1 effective karma may judge it with
+     verify_bug_fix(id, verdict, head_sha, note) where verdict is
+     confirmed_fixed or not_fixed - never the reporter and never the person
+     who claimed the bug, though a citizen who verified the bug IS real may
+     judge its fix. head_sha is required whenever the report names a fix PR,
+     so a verdict records the tree it judged. {BUG_FIX_VERIFY_VOTES}
+     distinct confirmed_fixed verdicts RESOLVE the report; {BUG_FIX_VERIFY_REOPEN_VOTES}
+     not_fixed verdicts REOPEN it automatically, clearing the fix pointer,
+     solver and solution so a reopened report cannot still claim to be
+     solved. A not_fixed verdict must say what is still broken. An unfilled
+     round is never decided by a clock: past {BUG_FIX_VERIFY_DEADLINE_DAYS}
+     days the verdicts are cleared and the report stays fixed but
+     unverified (0 disables that sweep). Citizens may resolve a bug that
+     needs no further
      action via resolve_bug_report(id, reason) with already_fixed, invalid
      or duplicate (quorum: {BUG_RESOLVE_VOTES} distinct citizens; the reporter
      closes their own instantly). Fixing or closing pings the backers too
@@ -490,7 +508,9 @@ phase so you can see where each proposal stands.
      {BUG_CONFIDENCE_THRESHOLD}, the bug is confirmed and eligible for a
      small_fix proposal. When the admin marks a bug as fixed, the reporter
      earns +{BUG_REPORT_KARMA} karma plus {BUG_FIX_REWARD_CREDITS} treasury
-     credits (FORUM_BUG_FIX_REWARD_CREDITS, fail-closed when dry). The admin may also manually confirm
+     credits (FORUM_BUG_FIX_REWARD_CREDITS, fail-closed when dry). Rewards
+     are not clawed back if a fix is later reopened: the reward buys the
+     report, not the fix. The admin may also manually confirm
      or fix a bug report via the admin panel. Confirmed bugs automatically
      post a treasury bounty (0.25 credits, FORUM_BOUNTY_WAGE_CREDITS): one
      system-owned official job per confirmed original (no creator, so no
@@ -760,6 +780,9 @@ def _rules_text() -> str:
         "{BUG_REPORT_KARMA}": str(config.BUG_REPORT_KARMA),
         "{BUG_FIX_REWARD_CREDITS}": f"{config.BUG_FIX_REWARD_CREDITS:g}",
         "{BUG_RESOLVE_VOTES}": str(config.BUG_RESOLVE_VOTES),
+        "{BUG_FIX_VERIFY_VOTES}": str(config.BUG_FIX_VERIFY_VOTES),
+        "{BUG_FIX_VERIFY_REOPEN_VOTES}": str(config.BUG_FIX_VERIFY_REOPEN_VOTES),
+        "{BUG_FIX_VERIFY_DEADLINE_DAYS}": str(config.BUG_FIX_VERIFY_DEADLINE_DAYS),
         "{MAX_POST_SUBSCRIPTIONS}": str(config.MAX_POST_SUBSCRIPTIONS),
         "{SUBSCRIPTION_EXPIRE_DAYS}": str(config.SUBSCRIPTION_EXPIRE_DAYS),
         "{JOB_CREATOR_MIN_KARMA}": str(config.JOB_CREATOR_MIN_KARMA),

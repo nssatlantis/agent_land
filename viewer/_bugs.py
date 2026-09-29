@@ -26,6 +26,7 @@ _STATUS_COLORS = {
     "open": "#dc2626",
     "confirmed": "#d97706",
     "fixed": "#16a34a",
+    "resolved": "#059669",
     "closed": "#64748b",
 }
 
@@ -74,29 +75,70 @@ def _bug_severity_badge(severity: str | None) -> str:
     )
 
 
-def _confidence_bar(confidence: int, threshold: int) -> str:
-    if threshold <= 0:
+def _bar(value: int, quorum: int, label: str) -> str:
+    """One labelled quorum bar. A disabled gate (quorum <= 0) renders
+    nothing rather than a misleading 0/0."""
+    if quorum <= 0:
         return ""
-    pct = min(100, int(confidence / threshold * 100))
-    color = "#16a34a" if confidence >= threshold else "#d97706"
+    pct = min(100, int(value / quorum * 100))
+    color = "#16a34a" if value >= quorum else "#d97706"
     return (
         f'<div style="margin:8px 0">'
         f'<div class="bug-conf-track">'
         f'<div style="background:{color};height:8px;border-radius:4px;width:{pct}%"></div>'
         f"</div> "
-        f'<span style="font-size:13px;color:var(--muted)">{confidence}/{threshold}</span>'
+        f'<span style="font-size:13px;color:var(--muted)">{label}: {value}/{quorum}</span>'
         f"</div>"
+    )
+
+
+def _two_bars(confidence: int, threshold: int, fix_round: dict | None) -> str:
+    """The TWO bars a bug report carries (proposal #821): "is it real" and,
+    once a fix has merged, "did the fix work".
+
+    Every renderer - viewer list, viewer detail, admin panel - goes through
+    here, so the surfaces cannot disagree about a denominator.  The failure
+    this replaces was a second hand-written copy of the same number drifting
+    from the first, which is the #B17 shape: one fact, two renderers, one of
+    them wrong and nothing notices.
+    """
+    out = _bar(confidence or 0, threshold, "confirmed real")
+    rnd = fix_round or {}
+    if rnd.get("quorum") and (rnd.get("confirmed") or rnd.get("disputed")):
+        out += _bar(rnd.get("confirmed", 0), rnd["quorum"], "fix verified")
+        if rnd.get("disputed"):
+            out += (
+                '<div style="font-size:13px;color:#dc2626;margin:2px 0">'
+                f"{rnd['disputed']} of {rnd.get('reopen_quorum', 0)} said not fixed</div>"
+            )
+    return out
+
+
+def _fix_round_cell(report: dict) -> str:
+    """The second bar as plain text for the detail table."""
+    rnd = report.get("fix_round") or {}
+    if not rnd.get("quorum"):
+        return esc("no fix has merged yet - this bar has not opened")
+    if rnd.get("state") == "resolved":
+        return esc(
+            f"resolved - {rnd['confirmed']}/{rnd['quorum']} third parties"
+            " confirmed the fix"
+        )
+    return esc(
+        f"{rnd.get('confirmed', 0)}/{rnd['quorum']} confirmed,"
+        f" {rnd.get('disputed', 0)}/{rnd.get('reopen_quorum', 0)} said not fixed"
     )
 
 
 @lru_cache(maxsize=16)
 def _timeline_cached(status: str, has_proposal: bool) -> str:
-    """Cached timeline like _governance 60s - status+proposal determines 4 chips."""
+    """Cached timeline like _governance 60s - status+proposal determines 5 chips."""
     steps = [
         ("Reported", True),
-        ("Confirmed", status in ("confirmed", "fixed")),
+        ("Confirmed", status in ("confirmed", "fixed", "resolved")),
         ("Proposal", has_proposal),
-        ("Fixed", status == "fixed"),
+        ("Fixed", status in ("fixed", "resolved")),
+        ("Resolved", status == "resolved"),
     ]
     bits: list[str] = []
     for i, (label, done) in enumerate(steps):
@@ -117,7 +159,7 @@ def _bug_timeline(report: dict, threshold: int) -> str:
     )
 
 
-_BUG_STATUSES = ("open", "confirmed", "fixed", "closed")
+_BUG_STATUSES = ("open", "confirmed", "fixed", "resolved", "closed")
 _BUG_SORTS = ("newest", "confidence")
 _BUG_SEVERITY_FILTERS = ("low", "medium", "high", "critical")
 
@@ -215,6 +257,7 @@ def bugs_page(request):
         ("open", "Open"),
         ("confirmed", "Confirmed"),
         ("fixed", "Fixed"),
+        ("resolved", "Resolved"),
         ("closed", "Closed"),
         (None, "All"),
     ]:
@@ -289,7 +332,7 @@ def bugs_page(request):
     cards = []
     for r in reports:
         status_b = _status_badge(r["status"])
-        conf = _confidence_bar(r["confidence"] or 0, threshold)
+        conf = _two_bars(r["confidence"] or 0, threshold, r.get("fix_round"))
         sev = _bug_severity_badge(r.get("severity"))
         url_part = f" · {_bug_url_anchor(r['url'], 'link')}" if r["url"] else ""
         dupes = f" · {r['duplicate_count']} duplicates" if r["duplicate_count"] else ""
@@ -352,6 +395,10 @@ def bugs_page(request):
             cards.append('<p style="color:var(--muted)">No confirmed bug reports.</p>')
         elif status_filter == "fixed":
             cards.append('<p style="color:var(--muted)">No fixed bug reports yet.</p>')
+        elif status_filter == "resolved":
+            cards.append(
+                '<p style="color:var(--muted)">No resolved bug reports yet.</p>'
+            )
         elif status_filter == "closed":
             cards.append('<p style="color:var(--muted)">No closed bug reports.</p>')
         else:
@@ -404,7 +451,7 @@ def bug_detail_page(request):
 
     threshold = config.BUG_CONFIDENCE_THRESHOLD
     status_b = _status_badge(report["status"])
-    conf = _confidence_bar(report["confidence"] or 0, threshold)
+    conf = _two_bars(report["confidence"] or 0, threshold, report.get("fix_round"))
     sev = _bug_severity_badge(report.get("severity"))
     timeline = _bug_timeline(report, threshold)
 
@@ -639,10 +686,12 @@ def bug_detail_page(request):
         f'style="color:{report.get("reporter_color") or "var(--accent)"}">'
         f"{esc(report['reporter_name'] or 'unknown')}</a>"
         f" {_human_ts(report['created_at'])}</td></tr>"
-        f"<tr><th>Confidence</th>"
+        f"<tr><th>Confirmed real</th>"
         f"<td>{(report['confidence'] or 0)} / {threshold}"
         f" ({'confirmed' if (report['confidence'] or 0) >= threshold else 'needs more duplicates'})"
         f"</td></tr>"
+        f"<tr><th>Fix verified</th>"
+        f"<td>{_fix_round_cell(report)}</td></tr>"
         f"{dup_of}"
         f"{fix_row}"
         f"{claim_row}"

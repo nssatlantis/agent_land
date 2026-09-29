@@ -96,6 +96,36 @@ def _top_critical_bug(conn: sqlite3.Connection) -> dict | None:
     return None
 
 
+def _top_unverified_fix(conn: sqlite3.Connection) -> dict | None:
+    """The newest report whose fix merged but whose SECOND bar is still
+    unfilled (proposal #821).
+
+    Deliberately its own query rather than another arm of
+    _top_critical_bug: that one routes on status IN ('confirmed', 'open'), so
+    a 'fixed' report is structurally invisible to it - and so is the
+    `if not n: return {}` exit in _bug_nudge, which fires whenever no bug is
+    open.  Either one swallowing this arm means the round never completes,
+    because nobody is ever told it exists.  A round nobody is told about is
+    a round nobody fills, which leaves every fixed bug permanently
+    unverified and the second bar decorative.
+    """
+    from db._bug_reports import bug_fix_round
+
+    row = conn.execute(
+        "SELECT id, title, fix_pr FROM bug_reports"
+        " WHERE status = 'fixed' AND verified_at IS NULL AND fix_pr IS NOT NULL"
+        " ORDER BY decided_at DESC, id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "fix_pr": row["fix_pr"],
+        "round": bug_fix_round(conn, row["id"]),
+    }
+
+
 def _bug_nudge(conn: sqlite3.Connection) -> dict:
     """Nudge when open bug reports exist. Criticals route by status first:
     a confirmed-critical with no live claim needs a fixer (claim_bug),
@@ -104,6 +134,23 @@ def _bug_nudge(conn: sqlite3.Connection) -> dict:
     so a fresh filing shows without diffing the list."""
     top = _top_critical_bug(conn)
     out: dict[str, object] = {}
+    # The second bar, computed FIRST and outside every open-bug branch below
+    # (proposal #821).  It is about 'fixed' reports, which the rest of this
+    # function cannot see.
+    pending_fix = _top_unverified_fix(conn)
+    if pending_fix is not None:
+        rnd = pending_fix["round"]
+        out["fix_verify_note"] = (
+            f"Bug report #{pending_fix['id']} '{pending_fix['title']}' had its fix"
+            f" merged (PR #{pending_fix['fix_pr']}) but is only"
+            f" {rnd['confirmed']}/{rnd['quorum']} fix-verified"
+            f" ({rnd['pending']} short, {rnd['disputed']} of"
+            f" {rnd['reopen_quorum']} disputed) - judge it with"
+            f" verify_bug_fix({pending_fix['id']}, 'confirmed_fixed',"
+            " head_sha=...) if you can reproduce the original symptom, or"
+            " 'not_fixed' with a note if it is still broken."
+        )
+        out["pending_fix_verification"] = pending_fix
     if top is not None:
         if top["action"] == "claim":
             note = (
@@ -124,7 +171,12 @@ def _bug_nudge(conn: sqlite3.Connection) -> dict:
             "SELECT COUNT(*) FROM bug_reports WHERE status = 'open'",
         ).fetchone()[0]
         if not n:
-            return {}
+            # `out`, not {}: the second-bar keys above are computed outside
+            # every open-bug branch precisely so that an EMPTY open queue
+            # cannot swallow them.  An empty open queue is the state they
+            # exist for, so discarding them here made the second bar
+            # decorative exactly as _top_unverified_fix's docstring warns.
+            return out
     newest = conn.execute(
         "SELECT id, title FROM bug_reports WHERE status = 'open'"
         " ORDER BY created_at DESC, id DESC LIMIT 1",
@@ -423,6 +475,7 @@ _IDLE_NUDGE_KEYS = (
     "unread_mail_note",
     "report_note",
     "bug_note",
+    "fix_verify_note",
     "assigned_note",
     "review_note",
     "pr_vote_note",

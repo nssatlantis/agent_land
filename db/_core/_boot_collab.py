@@ -6,6 +6,7 @@ from ._migrate import (
     _ensure_column,
     _ensure_column_with_backfill,
     _rebuild_table,
+    _widen_bug_status_check,
     _widen_notifications_check,
 )
 
@@ -236,7 +237,8 @@ def run(conn) -> set:
                 body            TEXT NOT NULL,
                 url             TEXT,
                 status          TEXT NOT NULL DEFAULT 'open'
-                                CHECK (status IN ('open', 'confirmed', 'fixed')),
+                                CHECK (status IN ('open', 'confirmed', 'fixed',
+                                                  'resolved', 'closed')),
                 confidence      INTEGER NOT NULL DEFAULT 1,
                 created_at      TEXT NOT NULL DEFAULT
                     (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -330,6 +332,19 @@ def run(conn) -> set:
         "CREATE INDEX IF NOT EXISTS idx_bug_reports_claimed_by"
         " ON bug_reports(claimed_by)"
     )
+    # Second bar + the 'resolved' status (proposal #821).  verified_at is an
+    # ordinary added column and goes in by ALTER like every other one here.
+    _ensure_column(conn, "bug_reports", "verified_at", "TEXT")
+    # The status CHECK cannot be ALTERed - SQLite has no such statement - so
+    # the table is rebuilt with the same _rebuild_table pattern that widened
+    # posts.proposal_kind and notifications.kind.  Idempotent: once the stored
+    # DDL mentions 'resolved' it no-ops.
+    #
+    # This call goes LAST in the bug block on purpose.  The rebuild derives its
+    # copy list from the live table_info, so it preserves whatever columns
+    # exist at the moment it runs; keeping it last leaves every _ensure_column
+    # in this block on the same side of it.
+    _widen_bug_status_check(conn)
     # Bug-comment links: fresh databases carry the table via schema.sql;
     # existing ones get it via CREATE TABLE IF NOT EXISTS (no backfill -
     # comment #B cites accrue live from here on).

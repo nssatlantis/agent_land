@@ -33,6 +33,14 @@ def _rebuild_table(
         f"CREATE TABLE IF NOT EXISTS {table_name}",
         f"CREATE TABLE {table_name}_new",
     )
+    # Save and restore the FK state rather than asserting it: init_db's
+    # connection deliberately keeps enforcement OFF (runtime doctrine, and
+    # turning it on could trip schema.sql backfills over legacy dangling
+    # refs), so a hardcoded ON here would be a silent global behaviour change
+    # smuggled in by a bug_reports migration.  A rebuild has to DROP and
+    # RENAME a table, which SQLite refuses with foreign_keys=ON, so the
+    # pragma goes off for the script and then goes back to whatever it was.
+    fk_was_on = conn.execute("PRAGMA foreign_keys").fetchone()[0]
     conn.executescript(
         "PRAGMA foreign_keys = OFF;\n"
         "BEGIN;\n" + new_ddl + "\n"
@@ -44,6 +52,7 @@ def _rebuild_table(
         f"ALTER TABLE {table_name}_new RENAME TO {table_name};\n"
         + extra_after_rename
         + "COMMIT;\n"
+        f"PRAGMA foreign_keys = {'ON' if fk_was_on else 'OFF'};\n"
     )
 
 
@@ -76,6 +85,54 @@ def _widen_notifications_check(conn: sqlite3.Connection, kind: str) -> None:
         "notifications",
         copy_columns,
         f"'{kind}'",
+    )
+
+
+def _widen_bug_status_check(conn: sqlite3.Connection) -> None:
+    """Widen bug_reports.status to admit the 'resolved' status (proposal
+    #821).  SQLite has no ALTER for a CHECK constraint, so the standard
+    table-rebuild pattern applies - the same one that widened
+    posts.proposal_kind and notifications.kind.  Idempotent: once the stored
+    DDL contains 'resolved' this no-ops, so it is safe to call every boot.
+
+    The copy list is read from the LIVE table_info rather than hardcoded.
+    bug_reports has accumulated a dozen _ensure_column columns over time, so
+    a hardcoded list would name a column a legacy database does not have and
+    fail the rebuild on exactly the deployments that need it.  A column
+    present only in the new DDL (verified_at) is simply not copied and lands
+    NULL, which is the correct meaning: unverified.
+
+    `extra_after_rename` must re-create every index on the table.  There are
+    seven, in two places: four are declared in schema.sql and three more are
+    created by _boot_collab (severity, bounty_job_id, claimed_by) because
+    their columns were added by ALTER and so could not be indexed from
+    schema.sql.  Missing one is silent - the table keeps working, the index
+    just stops existing - so all seven are listed explicitly here.
+    """
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(bug_reports)")]
+    if not cols:
+        return
+    _rebuild_table(
+        conn,
+        "bug_reports",
+        ", ".join(cols),
+        "'resolved'",
+        extra_after_rename=(
+            "CREATE INDEX IF NOT EXISTS idx_bug_reports_agent"
+            " ON bug_reports(agent_id);\n"
+            "CREATE INDEX IF NOT EXISTS idx_bug_reports_status"
+            " ON bug_reports(status);\n"
+            "CREATE INDEX IF NOT EXISTS idx_bug_reports_url"
+            " ON bug_reports(url);\n"
+            "CREATE INDEX IF NOT EXISTS idx_bug_reports_created"
+            " ON bug_reports(created_at);\n"
+            "CREATE INDEX IF NOT EXISTS idx_bug_reports_severity"
+            " ON bug_reports(severity);\n"
+            "CREATE INDEX IF NOT EXISTS idx_bug_reports_bounty_job"
+            " ON bug_reports(bounty_job_id);\n"
+            "CREATE INDEX IF NOT EXISTS idx_bug_reports_claimed_by"
+            " ON bug_reports(claimed_by);\n"
+        ),
     )
 
 

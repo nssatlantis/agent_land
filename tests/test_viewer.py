@@ -943,9 +943,13 @@ def test_todos_panel_legend_toggle_and_fragments():
     }
     drill = _todos_panel(p, tlist=12, list_data=list_data)
     assert ">All</a>" in drill and ">Open</a>" in drill and ">Done</a>" in drill
+    # The "All" segment keeps ?tlist=12, so a drilled-in board is not
+    # abandoned: _todo_filter_toggle's contract is "links keep the board
+    # position (tlist / tq / tall)". It used to drop tlist here; this pin
+    # was dark, so it encoded the older behaviour while the product moved on.
     assert (
-        '<a href=\'/posts/12#sec-todos\' class="active" aria-current="page">All</a>'
-        in drill
+        "<a href='/posts/12?tlist=12#sec-todos'"
+        ' class="active" aria-current="page">All</a>' in drill
     )
     assert "?tlist=12&tfilter=open#sec-todos" in drill, "toggle keeps the list"
     assert "\u2190 all lists</a>" in drill
@@ -992,8 +996,8 @@ def test_todos_panel_filter_scope_note_and_fallback():
     html = _todos_panel(p, tlist=12, list_data=list_data, tfilter="bogus")
     assert "showing " not in html
     assert (
-        '<a href=\'/posts/12#sec-todos\' class="active" aria-current="page">All</a>'
-        in html
+        "<a href='/posts/12?tlist=12#sec-todos'"
+        ' class="active" aria-current="page">All</a>' in html
     )
 
 
@@ -1050,7 +1054,13 @@ def test_todos_panel_tall_branch_and_cap():
     assert "collapse all" in tall
     assert "/posts/12#sec-todos" in tall
     assert ">#11</span>" in tall and ">#21</span>" in tall
-    assert "?tall=1" not in tall, "no expand link while expanded"
+    # Narrowed from a bare "?tall=1" substring on purpose (#B111). The
+    # intent is "no expand link while expanded" - true - but in tall mode the
+    # filter toggle deliberately re-emits ?tall=1 so switching filter keeps
+    # the board expanded, so the bare token also matched correct behaviour
+    # and "fixing" it that way would revert the improvement. "expand all" is
+    # a clean discriminator: the collapse link reads "collapse all".
+    assert "expand all" not in tall, "no expand link while expanded"
     # Over-cap boards keep drill-in with a quiet note instead.
     big = dict(
         p,
@@ -3261,95 +3271,18 @@ def test_skill_cell_tooltip_quotes_closed():
 
 
 if __name__ == "__main__":
-    test_ci_chip_success()
-    test_ci_chip_failure()
-    test_ci_chip_pending()
-    test_ci_chip_none()
-    test_ci_page_stats_cache_reuse()
-    test_ci_page_stats_cache_falls_back_to_event_total()
-    test_proposal_lock_banner_superseded()
-    test_proposal_lock_banner_supersedes()
-    test_proposal_lock_banner_none()
-    test_proposal_prs_panel_empty()
-    test_proposal_prs_panel_with_prs()
-    test_proposal_prs_panel_declined()
-    test_proposal_votes_panel_non_proposal()
-    test_proposal_votes_panel_with_votes()
-    test_proposal_votes_panel_no_votes()
-    test_poll_panel_none()
-    test_poll_panel_renders_open_poll()
-    test_poll_panel_renders_concluded()
-    test_proposal_stats_empty()
-    test_proposal_stats_with_proposals()
-    test_open_prs_by_agent_empty()
-    test_open_prs_by_agent_with_prs()
-    test_collaborators_panel()
-    test_open_pr_cell()
-    test_prs_rows_html_escapes_untrusted()
-    test_prs_outcome_chip_classes()
-    test_prs_citizen_cell_fallback()
-    test_prs_rows_html_empty_and_unreachable()
-    test_prs_rows_html_votes_tabs_and_history()
-    test_prs_rows_html_ci_from_map()
-    test_profile_cards_tag_stats()
-    test_prs_hold_chip_states()
-    test_prs_rows_html_linkify_batch()
-    test_todos_panel_shows_list_and_item_ids()
-    test_todos_panel_list_mode_shows_list_level_claims()
-    test_docket_card_shows_list_claim_summary()
-    test_docket_card_shows_findings_chip()
-    test_pr_findings_panel_renders_proof_meta_and_empty_state()
-    test_docket_summary_strip()
-    test_collaborative_page_removed()
-    test_lineage_families_group_chains()
-    test_lineage_mode_renders_and_route_removed()
-    test_nav_fragments_economy()
-    test_economy_store_panel()
-    test_economy_ledger_union_tabs()
-    test_wallet_party_link()
-    test_process_rows_no_double_escape()
-    test_human_ts_until_future_expiry_not_just_now()
-    test_process_rows_slow_block_last_renders_span()
-    test_stake_last_txt_no_double_escape()
-    test_job_age_badge_no_double_escape()
-    test_pulse_panels_render_live_fragments()
-    test_activity_trend_caches_events_window()
-    test_activity_tabs_expose_all_domains()
-    test_activity_body_renders_summary_and_rows()
-    test_fragments_match_full_page_bodies()
-    test_analytics_page_has_governance_section()
-    test_governance_analytics_route_removed()
-    test_pulse_page_removed()
-    test_analytics_page_has_pulse_section()
-    test_fragment_pulse_panels_matches_analytics_page()
-    test_analytics_poll_includes_pulse_panels()
-    test_economy_invoices_panel()
-    test_economy_overview_cached()
-    test_economy_fragment_shares_cached_overview()
-    test_economy_correctness_bundle_a()
-    test_economy_labels_bundle_b()
-    test_economy_store_empty_and_unavailable()
-    test_jobs_tab_for_status_unit()
-    test_economy_comment_targets()
-    test_outflow_units_membership()
-    test_economy_seal_labels_forced()
-    test_fragments_echo_query_params()
-    test_fragments_body_preserves_query_selection()
-    test_record_page_default_shows_operative_view()
-    test_record_page_amendments_view_swaps_body()
-    test_record_page_toc_and_anchors()
-    test_record_page_stamp_present()
-    test_event_calendar_renders_grid()
-    test_static_theme_gates_and_surface_vars()
-    test_tag_text_color_luminance()
-    test_tag_chips_solid_badge()
-    test_page_shell_has_theme_toggle()
-    test_job_card_long_running_marker()
-    test_job_card_rotates_marker()
-    test_fragments_redirect_without_x_fragment()
-    test_storage_table_rows_counts_and_index_attribution()
-    test_storage_table_rows_dbstat_pages_are_counts_not_pageno()
-    test_storage_table_rows_degrades_when_dbstat_absent()
-    test_post_thread_sections_split_and_collapse()
-    test_skill_cell_tooltip_quotes_closed()
+    # Every module-level test_* def runs, discovered from the module namespace
+    # rather than hand-listed (#B111). A hand-listed tail silently stops
+    # running a def the day someone adds one and forgets the tail, while the
+    # def still scores as coverage: 28 defs here were dark when the CI ratchet
+    # landed, across five clusters. globals() preserves definition order, so
+    # the run stays deterministic and a new def needs no tail edit at all.
+    _tests = [
+        _fn
+        for _name, _fn in list(globals().items())
+        if _name.startswith("test_") and callable(_fn)
+    ]
+    for _test in _tests:
+        _test()
+    print(f"  {len(_tests)} test functions discovered and run")
     print("\n== test_viewer: all passed ==")
