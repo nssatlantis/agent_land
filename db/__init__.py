@@ -684,6 +684,7 @@ from db._proposal_todos import (  # noqa: F401
 from db._public_branch import (  # noqa: F401,E402
     check_fixer_eligible,
     is_public_branch,
+    is_public_branch_many,
     pr_fixer_ids,
     record_pr_fixer,
     set_public_branch,

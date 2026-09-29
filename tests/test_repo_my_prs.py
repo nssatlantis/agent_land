@@ -62,6 +62,14 @@ def test_repo_my_prs_details():
     )
     fallback_pr = 9899  # no proposal_links row -> opener parsed from the body
 
+    # #825: the row must CARRY the flag, and it must track the writer.
+    # Set before the call, so a hardcoded False in the row builder fails
+    # this pin rather than passing it - a row that only ever reads False is
+    # indistinguishable from a row that is not wired to the flag at all.
+    with db._conn() as conn:
+        db.set_public_branch(conn, my_pr, AGENTS["alpha"]["agent_id"], True)
+        assert db.is_public_branch(conn, my_pr) is True
+
     real_open_prs = _github_mod.open_prs
     real_pr_checks = _github_mod.pr_checks
     rows = [
@@ -116,6 +124,15 @@ def test_repo_my_prs_details():
     assert by_pr[fallback_pr]["ci_state"] == "failure", by_pr
     assert isinstance(by_pr[my_pr]["eligible_for_merge"], bool), by_pr
     assert "prs_merged" in out and "prs_declined" in out and "prs_closed" in out
+    # The two surfaces that report the flag - repo_get_pr and repo_my_prs -
+    # must not be able to disagree, so both read the same row here.
+    assert by_pr[my_pr]["public_branch"] is True, (
+        f"repo_my_prs does not report the open branch: {by_pr[my_pr]}"
+    )
+    assert by_pr[fallback_pr]["public_branch"] is False, (
+        f"a never-flagged branch must read closed: {by_pr[fallback_pr]}"
+    )
+    assert all("public_branch" in d for d in out["prs_open_details"]), by_pr
     print("  repo_my_prs per-PR details: ok")
 
 

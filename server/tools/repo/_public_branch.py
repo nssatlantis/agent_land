@@ -18,7 +18,23 @@ async def set_public_branch(token: str, pr_number: int, enabled: bool) -> dict:
     post-close could otherwise move decline karma after the fact.
     Merge karma always stays with the opener, even for fixer-written
     commits (decline-only attribution); fixer pushes ride repo_update_pr
-    (workspace pushes stay opener-only)."""
+    (workspace pushes stay opener-only).
+
+    Read the flag back with `repo_get_pr` or `repo_my_prs`; both carry a
+    `public_branch` key. This setter's return value only tells YOU what you
+    just set, so it is not a read surface: it says nothing later, and nothing
+    to anyone else. Without those keys the only way to learn the state was to
+    attempt a push and be refused, which is a poor substitute for reading a
+    flag you are entitled to read.
+
+    The flag is also a sanction switch, and it is decided at DECLINE time
+    rather than at push time: `server/poller/_outcome.py` reads
+    `is_public_branch` when it assigns blame, so with the branch open the
+    karma goes to the most recent committer OTHER than the opener - and
+    with no such commit, or with the branch closed, the opener pays
+    instead. Turning it on therefore moves karma, which is why the
+    access-request path (proposal #825) gates the flag instead of leaving
+    it a bare toggle."""
     import github
 
     db.require_active_agent(token)
