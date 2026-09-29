@@ -1439,9 +1439,18 @@ def test_run_checks_rehearsal_remote_first_gate():
     no arm performs live git or GitHub I/O and "fell through to local" is
     observable rather than silent. The stub has to match the arm: the files
     path goes through _prepare_local_tree, a branch run through
-    _prepare_pr_tree, a named tree through _prepare_named_tree.
-    _prepare_tree is the NATIVE path only and is deliberately not stubbed
-    here (the native test owns it).
+    _prepare_br_tree (the warm registry tree the branch lane actually calls -
+    _prepare_pr_tree is the cold path the poller still falls back to, and
+    trapping only that one silently let the branch arm run a real clone),
+    a named tree through _prepare_named_tree. _prepare_tree is the NATIVE
+    path only and is deliberately not stubbed here (the native test owns it).
+
+    Because that mapping is an enumeration of internal names and has already
+    drifted once, _sandbox_mod._execute is stubbed to raise as a backstop: an
+    arm that ever reaches real execution fails in milliseconds instead of
+    blocking in subprocess.wait() until the harness wall. Each negative arm
+    also asserts the trap FIRED, so a stub that stops matching fails the pin
+    rather than passing it.
 
     CI_RUN_BRANCH_ENABLED and _docker_available are stubbed because the
     local_mode preconditions in run_checks are checked BEFORE the
@@ -1490,12 +1499,32 @@ def test_run_checks_rehearsal_remote_first_gate():
     def _boom(*a, **k):
         raise db.ForumError("local tree prep reached")
 
+    def _no_execute(*a, **k):
+        # Fail loud, and immediately, on any arm that reaches real execution.
+        # The per-arm tree-prep stubs below are an ENUMERATION of internal
+        # call names; it drifted once already (the branch lane moved from
+        # _prepare_pr_tree to the warm _prepare_br_tree) and a missed name
+        # does not fail - it silently runs a real clone and blocks in
+        # subprocess.wait() until the harness wall. This stub is the
+        # backstop that makes such a drift loud instead of slow: a test that
+        # reaches docker is a test that has stopped being a unit test, and
+        # that must be an error in milliseconds, not a 120s timeout.
+        raise AssertionError(
+            "an arm reached _execute: a tree-prep path is untrapped, so this "
+            "test would perform real git/docker I/O. Trap the function the "
+            "arm's local path actually calls."
+        )
+
+    runs_mod._sandbox_mod._execute = _no_execute
+
     orig_acquire = runs_mod._slots_mod._ci_acquire_slot
     orig_local = runs_mod._trees_mod._prepare_local_tree
     orig_pr = runs_mod._trees_mod._prepare_pr_tree
+    orig_br = runs_mod._trees_mod._prepare_br_tree
     orig_named = runs_mod._trees_mod._prepare_named_tree
     orig_vtn = runs_mod._trees_mod._validate_tree_name
     orig_docker = runs_mod._sandbox_mod._docker_available
+    orig_execute = runs_mod._sandbox_mod._execute
     runs_mod._sandbox_mod._docker_available = lambda: True
 
     orig_enabled = config.CI_FARM_ENABLED
@@ -1515,11 +1544,26 @@ def test_run_checks_rehearsal_remote_first_gate():
         runs_mod._slots_mod._ci_acquire_slot = _ok_slot
         runs_mod._trees_mod._prepare_local_tree = _boom
         runs_mod._trees_mod._prepare_pr_tree = _boom
+        runs_mod._trees_mod._prepare_br_tree = _boom
         runs_mod._trees_mod._prepare_named_tree = _boom
         try:
             return runs_mod.run_checks(agent_id=1, name="t", **kw), None
         except Exception as exc:
             return None, exc
+
+    def _assert_trapped(arm, exc):
+        """A negative arm must prove it fell through to the TRAP, not merely
+        that nothing was dispatched.
+
+        `len(calls) == 0` alone holds whether the trap intercepted, missed,
+        or the whole run quietly completed - so the pin could not detect the
+        one failure that matters here. Asserting the trap's own exception
+        makes "fell through to local" observed rather than assumed, which is
+        what the docstring above has always claimed.
+        """
+        assert isinstance(exc, db.ForumError) and "local tree prep" in str(exc), (
+            f"{arm}: expected the trapped local tree prep, got {exc!r}"
+        )
 
     try:
         config.CI_FARM_TEST_REMOTE_FIRST = True
@@ -1538,17 +1582,20 @@ def test_run_checks_rehearsal_remote_first_gate():
         assert remote["local"] is True and remote["base_sha"] == "def456", remote
 
         # 2. branch mode stays host-local even with the knob on
-        _run(checks="tests", pr_number=5)
+        result, exc = _run(checks="tests", pr_number=5)
         assert len(calls) == 0, f"branch: no dispatch, got {len(calls)}"
+        _assert_trapped("branch", exc)
 
         # 3. a named tree stays host-local (name stubbed, no tree is built)
         runs_mod._trees_mod._validate_tree_name = lambda name: name
-        _run(checks="tests", tree="pin-1")
+        result, exc = _run(checks="tests", tree="pin-1")
         assert len(calls) == 0, f"tree: no dispatch, got {len(calls)}"
+        _assert_trapped("tree", exc)
 
         # 4. a static overlay stays local too - the lane split is policy
-        _run(checks="static", files=overlay)
+        result, exc = _run(checks="static", files=overlay)
         assert len(calls) == 0, f"static: no dispatch, got {len(calls)}"
+        _assert_trapped("static", exc)
 
         # 5. A REJECTED dispatch still falls back to the local lane instead of
         # failing the run. This is the arm a large overlay actually takes (the
@@ -1574,6 +1621,7 @@ def test_run_checks_rehearsal_remote_first_gate():
         assert isinstance(exc, db.ForumError) and "local tree prep" in str(exc), (
             f"a rejected dispatch must fall back to the local lane, got {exc!r}"
         )
+        _assert_trapped("rejected", exc)
         farm.dispatch_to_runner = _record
     finally:
         runs_mod._gate = orig_gate
@@ -1583,9 +1631,11 @@ def test_run_checks_rehearsal_remote_first_gate():
         runs_mod._slots_mod._ci_acquire_slot = orig_acquire
         runs_mod._trees_mod._prepare_local_tree = orig_local
         runs_mod._trees_mod._prepare_pr_tree = orig_pr
+        runs_mod._trees_mod._prepare_br_tree = orig_br
         runs_mod._trees_mod._prepare_named_tree = orig_named
         runs_mod._trees_mod._validate_tree_name = orig_vtn
         runs_mod._sandbox_mod._docker_available = orig_docker
+        runs_mod._sandbox_mod._execute = orig_execute
         farm.dispatch_to_runner = orig_disp
         farm._ping = orig_ping
         farm.remove_runner(row["id"])
