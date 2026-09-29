@@ -2223,8 +2223,22 @@ def test_rereview_wakes_again_for_a_finding_resolved_after_the_first_wake():
     pid = _proposal(agents, "alpha", "rrafter")
     with db._conn(immediate=True) as conn:
         _link(conn, pid, 6301, alpha)
-        first = _finding(conn, pid, zeta, 6301)
-        db.finding_mark_resolved(conn, first, alpha, "shipped", ())
+        # BOTH findings exist before the first sweep, and the LATER-FILED one
+        # (the higher id) is resolved FIRST.  That order is the whole point.
+        #
+        # The first version of this test created the second finding AFTER the
+        # first sweep, so `second.id > first.id` held by construction - it
+        # only ever exercised ascending order, which is the ONE order in which
+        # a high-water mark is a valid stand-in for a set.  Finding ids are
+        # assigned when a finding is FILED, so an author who fixes a
+        # later-filed finding before an earlier-filed one is ordinary, and
+        # under `id > covered` the second resolve is discarded with no
+        # outcome row, no log line and no ledger entry.  64 tests and a 5/5
+        # green CI all agreed the old shape was fine.
+        low = _finding(conn, pid, zeta, 6301)
+        high = _finding(conn, pid, zeta, 6301)
+        assert high > low, f"the fixture did not produce two ordered ids: {low}, {high}"
+        db.finding_mark_resolved(conn, high, alpha, "shipped", ())
     _only_endpoint(zeta)
     restore = _wake_cfg(AGENT_WAKE_DEBOUNCE_SECONDS=0)
     real, _ = _stub(_oc_routes())
@@ -2238,10 +2252,15 @@ def test_rereview_wakes_again_for_a_finding_resolved_after_the_first_wake():
     wake.send_wake = _capture
     try:
         wake.wake_sweep()
-        assert len([s for s in sent if "6301" in s]) == 1, sent
+        first_wake = [s for s in sent if "6301" in s]
+        assert len(first_wake) == 1, sent
+        assert f"#{high}" in first_wake[0], first_wake[0]
+        assert f"#{low}" not in first_wake[0], (
+            "the first wake named a finding that had not been resolved yet:"
+            f" {first_wake[0]}"
+        )
         with db._conn(immediate=True) as conn:
-            second = _finding(conn, pid, zeta, 6301)
-            db.finding_mark_resolved(conn, second, alpha, "shipped", ())
+            db.finding_mark_resolved(conn, low, alpha, "shipped", ())
         wake.wake_sweep()
     finally:
         wake.send_wake = real_send
@@ -2250,10 +2269,13 @@ def test_rereview_wakes_again_for_a_finding_resolved_after_the_first_wake():
     later = [s for s in sent if "6301" in s]
     assert len(later) == 2, (
         "a finding resolved after the first wake earned no second wake, so"
-        f" the blocker it names would sit unnoticed: {sent}"
+        " the blocker it names would sit unnoticed - and the drop is silent,"
+        f" with no outcome and no ledger row. Sent: {sent}"
     )
-    assert f"#{second}" in later[1], later[1]
-    assert f"#{first}" not in later[1], (
+    assert f"#{low}" in later[1], (
+        f"the second wake did not name the finding that was newly resolved: {later[1]}"
+    )
+    assert f"#{high}" not in later[1], (
         f"the second wake re-names an already-covered finding: {later[1]}"
     )
 

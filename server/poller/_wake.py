@@ -790,34 +790,33 @@ def build_fix_resolved_prompt(pr_number: int, finding_ids: list[int]) -> str:
     )
 
 
-def _rereview_covered_through(
+def _rereview_covered_ids(
     conn: sqlite3.Connection, pr_number: int, voter_id: int
-) -> int | None:
-    """The highest finding id a DELIVERED wake for this pair already named,
-    or None if nothing was ever delivered to it.
+) -> set[int] | None:
+    """Every finding id this pair's DELIVERED wakes have already named.
 
-    The seen-set is NOT "row exists" and NOT "a delivery happened", for
-    exactly the reason _delivered is not: that made a deferred wake
-    permanently lost, because the row existed so the pair never became a
-    candidate again.  `notified_at` is the delivery receipt and is what
-    this keys on.
+    A SET, and that is the whole correction.  The first version stored the
+    highest id and re-armed on `id > max`, which looks equivalent and is
+    not: finding ids are assigned when a finding is FILED, so an author who
+    resolves a later-filed finding before an earlier-filed one drops that
+    second finding below the watermark, and it is then discarded with no
+    outcome row, no log line and no ledger entry.  The reviewer's -1 would
+    outlive the condition that lifted it, which is the precise harm
+    proposal #849 exists to remove.
 
-    Returning the COVERAGE rather than a bool is the second correction.
-    A bool records only "this voter was told", never "told about WHICH
-    findings", so a finding resolved *after* a wake was dropped forever:
-    the pair was closed, the new candidate was discarded at the caller's
-    `continue`, and nothing anywhere recorded the loss.  Comparing the
-    candidate ids against this is what lets one wake name three findings
-    AND lets a fourth, resolved later, still earn its own.
+    None means "never delivered" - the pair has said nothing, so every
+    candidate is uncovered.  An empty set is NOT the same thing and is not
+    conflated with it: a delivery that named nothing is not a delivery.
     """
     row = conn.execute(
-        "SELECT notified_at, covered_max_finding_id FROM agent_wake_rereview"
+        "SELECT notified_at, covered_finding_ids FROM agent_wake_rereview"
         " WHERE pr_number = ? AND voter_id = ?",
         (pr_number, voter_id),
     ).fetchone()
     if row is None or row["notified_at"] is None:
         return None
-    return row["covered_max_finding_id"]
+    raw = row["covered_finding_ids"] or ""
+    return {int(part) for part in raw.split(",") if part.strip()}
 
 
 def _rereview_last_delivered_at(
@@ -851,25 +850,53 @@ def _mark_rereview_seen(
     voter_id: int,
     *,
     notified: bool,
-    covered_max_finding_id: int | None = None,
+    covered_finding_ids: set[int] | None = None,
 ) -> None:
+    """Record what this pair was told, and WHEN it was told it.
+
+    The coverage column is a SET UNION, never a max.  The first version
+    used COALESCE, which holds a max only by accident: a caller passing a
+    smaller value would silently shrink the watermark and re-deliver
+    findings the citizen was already told about, and the SQL accepted it.
+    Given that the max form was itself wrong (see _rereview_covered_ids),
+    the arithmetic that decides coverage should not depend on the caller's
+    filter having been right - so the union is computed here, structurally.
+
+    Union rather than replace: a delivery names what it covered and must
+    never erase what an earlier delivery covered, or that earlier delivery's
+    findings become candidates again on the very next tick.
+    """
     stamp = _iso_now()
+    unioned = ""
+    if covered_finding_ids:
+        prior = conn.execute(
+            "SELECT covered_finding_ids FROM agent_wake_rereview"
+            " WHERE pr_number = ? AND voter_id = ?",
+            (pr_number, voter_id),
+        ).fetchone()
+        have = set()
+        if prior is not None and prior["covered_finding_ids"]:
+            have = {
+                int(part) for part in prior["covered_finding_ids"].split(",") if part
+            }
+        unioned = ",".join(str(f) for f in sorted(have | set(covered_finding_ids)))
     conn.execute(
         "INSERT INTO agent_wake_rereview"
         "  (pr_number, voter_id, first_seen_at, notified_at,"
-        "   covered_max_finding_id)"
+        "   covered_finding_ids)"
         " VALUES (?, ?, ?, ?, ?)"
         " ON CONFLICT(pr_number, voter_id) DO UPDATE SET"
         "   notified_at = excluded.notified_at,"
-        "   covered_max_finding_id ="
-        "     COALESCE(excluded.covered_max_finding_id,"
-        "              agent_wake_rereview.covered_max_finding_id)",
+        "   covered_finding_ids ="
+        "     CASE WHEN excluded.covered_finding_ids = ''"
+        "          THEN agent_wake_rereview.covered_finding_ids"
+        "          ELSE excluded.covered_finding_ids END",
         (
             pr_number,
             voter_id,
             stamp,
             stamp if notified else None,
-            covered_max_finding_id,
+            unioned,
         ),
     )
 
@@ -964,9 +991,16 @@ def _rereview_for_endpoint(
         # finding resolved after the wake still has id above the coverage
         # watermark, so it re-arms the pair - which is what stops a
         # second, later resolve from being dropped without a trace.
-        covered = _rereview_covered_through(conn, pr_number, agent_id)
+        covered = _rereview_covered_ids(conn, pr_number, agent_id)
         if covered is not None:
-            uncovered = [f for f in finding_ids if f > covered]
+            # A delivered pair is closed ONLY over the findings it NAMED -
+            # and "named" is set membership, not a high-water mark.  A
+            # `f > covered` comparison is the bug review found: ids ascend
+            # at FILING time, so an author who resolves a later-filed
+            # finding first and an earlier-filed one second puts that
+            # second finding below the mark, and this `continue` would then
+            # discard it with no outcome, no log line and no ledger row.
+            uncovered = [f for f in finding_ids if f not in covered]
             if not uncovered:
                 continue
             finding_ids = uncovered
@@ -991,7 +1025,15 @@ def _rereview_for_endpoint(
                 if int(c["pr_number"]) == pr_number
             ]
             if covered is not None:
-                fresh = [f for f in fresh if f > covered]
+                # Set membership, for the same reason as the first filter
+                # above - and this is the SECOND site of that comparison, so
+                # a sweep that was finding "one value, N sites" until now.
+                # It is the more consequential of the two: this block runs
+                # only AFTER a debounce, so an ordered test here silently
+                # narrows a population that was already filtered correctly
+                # moments earlier, and the narrowing is invisible because
+                # the sweep reports a debounce either way.
+                fresh = [f for f in fresh if f not in covered]
             if not fresh:
                 reason = "verified-during-debounce"
             else:
@@ -1017,7 +1059,7 @@ def _rereview_for_endpoint(
             pr_number,
             agent_id,
             notified=reason is None,
-            covered_max_finding_id=(max(finding_ids) if reason is None else None),
+            covered_finding_ids=(set(finding_ids) if reason is None else None),
         )
         if reason is not None:
             _discard_rereview(conn, pr_number, agent_id)

@@ -558,13 +558,29 @@ CREATE TABLE IF NOT EXISTS agent_wake_rereview (
     voter_id       INTEGER NOT NULL REFERENCES agents(id),
     first_seen_at  TEXT NOT NULL,
     notified_at    TEXT,
-    -- Highest finding id a DELIVERED wake for this pair already named.
-    -- Without it the pair records only "this voter was told", never
-    -- "told about WHICH findings", so a finding resolved after the wake
-    -- was silently dropped forever: the pair was closed, the new
-    -- candidate was discarded, and nothing recorded the loss.  The pair
-    -- becomes due again as soon as a candidate id exceeds this.
-    covered_max_finding_id INTEGER,
+      -- Every finding id a DELIVERED wake for this pair already named, as a
+      -- comma-separated set.  Without it the pair records only "this voter
+      -- was told", never "told about WHICH findings", so a finding resolved
+      -- after the wake was silently dropped forever: the pair was closed,
+      -- the new candidate was discarded, and nothing recorded the loss.
+      --
+      -- This was `covered_max_finding_id INTEGER` and re-armed on
+      -- `id > max`, which is WRONG and was found by review rather than by
+      -- any test.  Finding ids are assigned at finding_add time, not at
+      -- resolve time, so an author who fixes a later-filed finding FIRST
+      -- and an earlier-filed one SECOND pushes that second one below the
+      -- watermark - and it is dropped forever, with no outcome row, no log
+      -- line and no ledger entry, which is the exact failure this feature
+      -- exists to prevent.  A max is only a valid stand-in for a set when
+      -- arrival order is id order, and resolve order is not id order.
+      --
+      -- Set membership is order-blind by construction.  Stored as text
+      -- because the alternative - a resolved_at column on review_findings,
+      -- compared against notified_at - is the semantically cleaner read but
+      -- lands a new column on an EXISTING table, which drags the whole
+      -- migration path into a PR about waking reviewers.  The set lives on
+      -- a table this same PR creates, so nothing here needs _ensure_column.
+      covered_finding_ids TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (pr_number, voter_id)
 );
 CREATE INDEX IF NOT EXISTS idx_agent_wake_rereview_voter
