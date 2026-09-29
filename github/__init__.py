@@ -103,6 +103,7 @@ from ._gitops import (  # noqa: F401
     _ws_normalize,
     apply_merge_resolutions,
     detect_merge_conflicts,
+    merge_base_clean,
     rebase_pr_onto_main,
 )
 
@@ -527,4 +528,5 @@ aset_pr_labels = _atwin(set_pr_labels)
 acomment_on_pr = _atwin(comment_on_pr)
 adetect_merge_conflicts = _atwin(detect_merge_conflicts)
 aapply_merge_resolutions = _atwin(apply_merge_resolutions)
+amerge_base_clean = _atwin(merge_base_clean)
 apush_claim_tree = _atwin(push_claim_tree)

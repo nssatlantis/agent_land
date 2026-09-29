@@ -39,6 +39,7 @@ from ._govern import (  # noqa: F401
 from ._pr_ops import (  # noqa: F401
     repo_close_pr,
     repo_comment_on_pr,
+    repo_merge_base,
     repo_resolve_conflicts,
     repo_update_pr,
     vote_on_prs,

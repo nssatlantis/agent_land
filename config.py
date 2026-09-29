@@ -458,7 +458,8 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # before the keep-alive expires and the socket is reclaimed.
     "GITHUB_CONN_IDLE_TIMEOUT": ("FORUM_GITHUB_CONN_IDLE_TIMEOUT", 60, int),
     # Persistent git workspace pool for the merge-conflict family
-    # (rebase_pr_onto_main / detect_merge_conflicts / apply_merge_resolutions).
+    # (rebase_pr_onto_main / detect_merge_conflicts /
+    # apply_merge_resolutions / merge_base_clean).
     # "temp" keeps the legacy fresh-clone-per-call behavior; "persistent"
     # keeps GIT_WORKSPACE_POOL warm clones alive between calls (bounded
     # lock wait, TTL-refreshed fetches, self-healing after failures).

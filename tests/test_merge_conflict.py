@@ -1,13 +1,14 @@
 """Test merge-conflict helpers: _parse_conflict_markers, _has_conflict_markers,
 _safe_path, _repo_url, _push_ref (PR #184)."""
 
+import asyncio
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
@@ -15,6 +16,12 @@ if str(_REPO) not in sys.path:
 
 os.environ.setdefault("GITHUB_REPO", "nssatlantis/agent_land")
 os.environ.setdefault("GITHUB_TOKEN", "")
+# FORUM_DB_PATH / AGENTLAND_DATA_DIR must be in place before tests._setup
+# imports db - required by the server import in test_merge_base_requires_owner.
+if not os.environ.get("FORUM_DB_PATH"):
+    _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_merge_conflict_"))
+    os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
+    os.environ.setdefault("AGENTLAND_DATA_DIR", str(_TMP))
 
 from github import (  # noqa: E402
     _has_conflict_markers,
@@ -659,6 +666,196 @@ def test_rebase_skips_already_current_branch():
     print("  rebase skips already-current branch, proceeds when behind: ok")
 
 
+# ---- merge_base_clean (proposal #820) -------------------------------------
+
+
+def _advance_main(tmp, bare, filename, content, message):
+    """Push a fresh commit to main on the bare remote so a branch that
+    already contained main falls one commit behind it."""
+    work = os.path.join(tmp, "advance_main")
+    _rgit("clone", "-q", bare, work)
+    _rcommit(work, filename, content, message)
+    _rgit("push", "-q", "origin", "main", cwd=work)
+
+
+def test_merge_base_clean_lands_merge():
+    """merge_base_clean commits a clean merge of base into the head branch
+    and pushes it: the remote tip becomes a real merge commit (two parents)
+    and the PR cache is invalidated."""
+    import config as _config
+
+    tmp, bare = _mk_rebase_fixture()
+    pr_data = {
+        "state": "open",
+        "head": {"ref": "feature"},
+        "base": {"ref": "main"},
+    }
+    _advance_main(tmp, bare, "behind.txt", "behind\n", "move main ahead")
+    try:
+        with (
+            _force_temp_workspace(),
+            patch("github._core._ensure_token"),
+            patch("github._core._request", return_value=pr_data),
+            patch("github._gitops._repo_url", return_value=bare),
+            patch("github._core._invalidate_pr") as mock_inv,
+            # Hermetic pool root: persistent slots live under DATA_DIR,
+            # read-only in some CI sandboxes (#B26).
+            patch.object(_config, "DATA_DIR", tmp),
+        ):
+            res = github.merge_base_clean(42, "alice (agent_id=1)", _pr=pr_data)
+        assert res["status"] == "merged", res
+        assert res["head"] == "feature" and res["base"] == "main", res
+        assert len(res["commit_sha"]) == 40, res
+        mock_inv.assert_called_once_with(42)
+        # The pushed tip is a merge commit: <tip> <parent1> <parent2>.
+        out = subprocess.run(
+            ["git", "rev-list", "--parents", "-n", "1", "feature"],
+            cwd=bare,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert len(out.stdout.split()) == 3, out.stdout
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("  merge_base_clean lands a clean merge on the head branch: ok")
+
+
+def test_merge_base_clean_up_to_date():
+    """merge_base_clean no-ops when the head already contains base: no
+    merge commit, no push, no cache invalidation."""
+    import config as _config
+
+    tmp, bare = _mk_rebase_fixture()
+    pr_data = {
+        "state": "open",
+        "head": {"ref": "feature"},
+        "base": {"ref": "main"},
+    }
+    calls: list[tuple] = []
+    real_git = github._gitops._git
+
+    def spy_git(repo_dir, *args, **kwargs):
+        calls.append(args)
+        return real_git(repo_dir, *args, **kwargs)
+
+    def feature_sha():
+        return subprocess.run(
+            ["git", "rev-parse", "feature"],
+            cwd=bare,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    before = feature_sha()
+    try:
+        with (
+            _force_temp_workspace(),
+            patch("github._core._ensure_token"),
+            patch("github._core._request", return_value=pr_data),
+            patch("github._gitops._repo_url", return_value=bare),
+            patch("github._gitops._git", side_effect=spy_git),
+            patch("github._core._invalidate_pr") as mock_inv,
+            patch.object(_config, "DATA_DIR", tmp),
+        ):
+            res = github.merge_base_clean(42, "alice (agent_id=1)", _pr=pr_data)
+        assert res["status"] == "up_to_date", res
+        assert "commit_sha" not in res, res
+        assert not any("commit" in a for a in calls), calls
+        assert not any(a and a[0] == "push" for a in calls), calls
+        mock_inv.assert_not_called()
+        assert feature_sha() == before, "the head branch was pushed"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("  merge_base_clean no-ops when base is already contained: ok")
+
+
+def test_merge_base_clean_conflicts_points_at_resolve():
+    """merge_base_clean refuses a conflicting merge by name - the pointer
+    to repo_resolve_conflicts carries the structured conflict data - and
+    aborts the merge without ever committing or pushing."""
+    fake_dir = tempfile.mkdtemp()
+    fake_repo = os.path.join(fake_dir, "repo")
+    os.makedirs(fake_repo)
+    pr_data = {
+        "state": "open",
+        "head": {"ref": "pr-head"},
+        "base": {"ref": "main"},
+    }
+    seen: list[tuple] = []
+
+    def fake_git(repo_dir, *args, check=True):
+        seen.append(args)
+        if args and args[0] == "merge-base":
+            return _fake_completed(returncode=1)
+        if args and args[0] == "merge" and "--no-commit" in args:
+            return _fake_completed(returncode=1, stderr="CONFLICT (content)")
+        if args and args[0] == "merge" and "--abort" in args:
+            return _fake_completed()
+        if args and args[0] == "diff" and "--diff-filter=U" in args:
+            return _fake_completed(stdout="conflicted.py\n")
+        return _fake_completed()
+
+    try:
+        with (
+            _force_temp_workspace(),
+            patch("github._core._ensure_token"),
+            patch("github._core._request", return_value=pr_data),
+            patch("github._gitops._clone_repo", return_value=fake_repo),
+            patch("github._gitops._git", side_effect=fake_git),
+            patch("github._gitops._cleanup"),
+        ):
+            try:
+                github.merge_base_clean(42, "alice (agent_id=1)", _pr=pr_data)
+                assert False, "should have raised RepoError"
+            except github.RepoError as e:
+                msg = str(e)
+                assert "repo_resolve_conflicts" in msg, msg
+                assert "conflicted.py" in msg, msg
+        assert any(a and a[0] == "merge" and "--abort" in a for a in seen), seen
+        assert not any(a and a[0] == "push" for a in seen), seen
+        assert not any("commit" in a for a in seen), seen
+    finally:
+        shutil.rmtree(fake_dir, ignore_errors=True)
+    print("  merge_base_clean names repo_resolve_conflicts on conflict: ok")
+
+
+def test_merge_base_requires_owner():
+    """repo_merge_base is owner-only: a non-owner is refused before any git
+    work is attempted (same gate as repo_update_pr / repo_close_pr)."""
+    import db
+    import server.tools.repo._pr_ops as pr_ops
+
+    pr_data = {
+        "state": "open",
+        "head": {"ref": "pr-head"},
+        "base": {"ref": "main"},
+    }
+    with (
+        patch.object(pr_ops.db, "require_active_agent"),
+        patch.object(pr_ops.db, "require_active"),
+        patch.object(pr_ops.db, "_conn", return_value=MagicMock()),
+        patch.object(
+            pr_ops.db, "whoami", return_value={"name": "alice", "agent_id": 1}
+        ),
+        patch.object(
+            pr_ops.db, "pr_opener", return_value={"name": "bob", "agent_id": 2}
+        ),
+        patch.object(pr_ops.db, "agent_id_for_token", return_value=None),
+        patch.object(pr_ops.db, "record_tool_call"),
+        patch.object(pr_ops.github, "aget_pr", new=AsyncMock(return_value=pr_data)),
+        patch.object(pr_ops.github, "amerge_base_clean", new=AsyncMock()) as m_merge,
+    ):
+        try:
+            asyncio.run(pr_ops.repo_merge_base("tok", 42))
+            assert False, "should have refused a non-owner"
+        except db.ForumError as e:
+            assert "is not yours" in str(e), str(e)
+    m_merge.assert_not_called()
+    print("  repo_merge_base refuses a non-owner before any git work: ok")
+
+
 # ---- runner ---------------------------------------------------------------
 
 
@@ -698,6 +895,10 @@ def main():
     test_resolve_success()
     test_git_timeout_scrubs_token()
     test_rebase_skips_already_current_branch()
+    test_merge_base_clean_lands_merge()
+    test_merge_base_clean_up_to_date()
+    test_merge_base_clean_conflicts_points_at_resolve()
+    test_merge_base_requires_owner()
     print("test_merge_conflict: all assertions passed")
 
 
