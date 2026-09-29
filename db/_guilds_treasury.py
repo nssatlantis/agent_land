@@ -135,20 +135,19 @@ def guild_stake(
     proposal_id: int,
     per_pr_credits: float,
     max_prs: int,
-    bonus_pct: int = 0,
 ) -> dict:
     """Stake pool units on a proposal (credits only). The founder
     stakes as conduit - v1 lock mechanics run untouched - while the pool
-    funds each lock just-in-time and takes the winnings. Caps read the
-    pool, not the founder: exposure per proposal <= 33% of balance,
-    total committed < 75% of balance. Winnings default 100% pool with an
-    optional 0-50% opener bonus fixed ex ante. Staking is spending:
-    unlocked roster, co-sign band recorded, velocity-exempt (escrowed)."""
+    funds each lock just-in-time. Caps read the pool, not the founder:
+    exposure per proposal <= 33% of balance, total committed < 75% of
+    balance. On merge the PR's opener is paid the WHOLE per_pr bounty and
+    the pool is not re-credited, so the caps above bound the guild's real
+    cost rather than an inflated stake (proposal #839). Staking is
+    spending: unlocked roster, co-sign band recorded, velocity-exempt
+    (escrowed)."""
     from db._proposal_status import _proposal_status_for
     from db._staking import _normalize_per_pr
 
-    if int(bonus_pct) < 0 or int(bonus_pct) > 50:
-        raise ForumError("opener bonus is 0-50% (ex ante).")
     if int(max_prs) < 1:
         raise ForumError("max_prs must be at least 1.")
     per_pr = _normalize_per_pr(float(per_pr_credits), "credits")
@@ -225,9 +224,8 @@ def guild_stake(
             conn=conn,
         )
         conn.execute(
-            "INSERT INTO guild_stake_links (stake_id, guild_id, opener_bonus_pct)"
-            " VALUES (?, ?, ?)",
-            (out["stake_id"], gid, int(bonus_pct)),
+            "INSERT INTO guild_stake_links (stake_id, guild_id) VALUES (?, ?)",
+            (out["stake_id"], gid),
         )
         import events
 
@@ -241,7 +239,6 @@ def guild_stake(
                 "proposal_id": int(proposal_id),
                 "per_pr": per_pr,
                 "max_prs": int(max_prs),
-                "bonus_pct": int(bonus_pct),
             },
             conn=conn,
         )
@@ -250,7 +247,6 @@ def guild_stake(
             "guild_id": gid,
             "per_pr": per_pr,
             "max_prs": int(max_prs),
-            "bonus_pct": int(bonus_pct),
         }
 
 
@@ -296,45 +292,45 @@ def settle_guild_stake_payout(
     amount: int,
     pr_number: int,
 ) -> None:
-    """Split merged-PR winnings: the opener's ex-ante bonus via the same
-    always-settling principal return v1 uses, the pool's share as a memo
-    PLUS a matching guild mint (proposal #611 - mints to the pool's own
-    wallet, not the treasury). The mint is load-bearing, not double
-    counting: the conduit lock burned real units (v1 spend with no
-    destination), so without it the pool memo would be a claim without
-    backing. Total mint volume equals v1's (bonus to opener + rest to
-    the pool == full payout to opener). Zero bonus pays the pool whole."""
-    from db._credits import _insert_entry, return_principal
+    """Pay merged-PR winnings to the PR's opener IN FULL (proposal #839).
 
-    bonus = amount * int(link["opener_bonus_pct"]) // 100
-    if bonus > 0:
+    The opener receives the whole per_pr bounty through the same
+    always-settling principal return v1 uses for a personal stake, and the
+    pool keeps nothing: no second leg, no guild_memo, no
+    guild_stake_winnings mint. The old opener_bonus_pct split existed only
+    to hand the opener a slice of a guild stake, and its zero value (the
+    DEFAULT) paid the pool whole while the opener - who did the work - got
+    nothing beyond the unchanged 0.5cr pr_merge baseline.
+
+    Conservation needs no compensating leg here. At lock the pool's wallet
+    and its memo both fall by per_pr; with no re-credit they stay down
+    together, so wallet - memo == retained holds unchanged. The guild is
+    genuinely per_pr poorer per merged PR - that is the bounty it bought.
+
+    On supply: return_principal re-enters escrowed units into circulation
+    ("the value left a wallet when the lock was written; it re-enters
+    circulation here"), so the payout mints per_pr back out of the burn
+    the conduit lock took. Total minted volume is UNCHANGED by this
+    proposal - the old split minted the same amount in two parts (bonus to
+    the opener, remainder to the pool as guild_stake_winnings) and this
+    mints it in one part to the opener. Only the distribution changes.
+
+    self-stake and decline-refund legs are deliberately untouched: those
+    return money the pool never spent on a bounty, so they still route
+    poolward (see settle_guild_stake_self and the refund path).
+
+    pr_number is now unused but stays in the signature: _staking.py passes
+    it positionally, and it documents which PR earned the bounty."""
+    from db._credits import return_principal
+
+    if amount > 0:
         return_principal(
             opener_id,
-            bonus,
+            amount,
             "stake_paid",
             target_type="proposal_stake",
             target_id=link["stake_id"],
             conn=conn,
-        )
-    rest = amount - bonus
-    if rest > 0:
-        _insert_entry(
-            conn,
-            None,
-            "guild",
-            rest,
-            "guild_stake_winnings",
-            "guild",
-            int(link["guild_id"]),
-        )
-        conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, units, note)"
-            " VALUES (?, 'stake', ?, ?)",
-            (
-                link["guild_id"],
-                rest,
-                f"stake winnings (PR #{pr_number}, bonus {bonus}u to opener)",
-            ),
         )
 
 

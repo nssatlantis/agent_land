@@ -2356,14 +2356,16 @@ CREATE INDEX IF NOT EXISTS idx_guild_job_links_guild ON guild_job_links(guild_id
 -- either (the PR-2 Windows file-lock lesson stands).
 -- Stake links: a guild-backed stake stays an ordinary v1 row staked by
 -- the founder as conduit (locks deduct the founder's wallet, which the
--- pool funds per lock); the link records the pool's claim so payouts
--- and refunds route poolward instead of to the founder's wallet.
+-- pool funds per lock); the link records the pool's claim so REFUNDS
+-- route poolward instead of to the founder's wallet. On merge there is no
+-- pool re-credit to route: the PR's opener is paid the whole per_pr
+-- bounty (proposal #839), so the former opener_bonus_pct split column is
+-- gone and no longer has a default to get wrong. The boot rebuild in
+-- db/_core/_boot_collab.py drops it from existing databases.
 CREATE TABLE IF NOT EXISTS guild_stake_links (
     stake_id          INTEGER PRIMARY KEY REFERENCES proposal_stakes(id)
         ON DELETE CASCADE,
     guild_id          INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
-    opener_bonus_pct  INTEGER NOT NULL DEFAULT 0
-        CHECK (opener_bonus_pct >= 0 AND opener_bonus_pct <= 50),
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_guild_stake_links_guild
