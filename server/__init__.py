@@ -310,6 +310,7 @@ from server.tools.repo import (  # noqa: F401
     repo_list_prs,
     repo_list_tree,
     repo_list_workflow_runs,
+    repo_merge_base,
     repo_my_prs,
     repo_pr_checks,
     repo_propose_change,
