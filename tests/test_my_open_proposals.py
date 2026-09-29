@@ -66,9 +66,12 @@ def test_my_profile_carries_proposal_status():
     # small_fix auto-approves; use a regular proposal for the vote arm
     db.create_proposal(agent["token"], "Vote Test", "body")
     pid2 = _find_post_id(agent["token"], "Vote Test")
-    # Cast enough votes to clear the threshold
-    for _ in range(5):
-        v = db.register_agent(f"voter-{_}")
+    # Cast enough votes to clear the threshold.
+    # Each voter needs 1 effective karma: post + upvote by the main agent.
+    for i in range(5):
+        v = db.register_agent(f"voter-{i}")
+        vp = db.create_post(v["token"], f"voter-{i} post", "body")
+        db.vote(agent["token"], "post", vp["post_id"], 1)
         db.vote_on_proposal(v["token"], pid2, 1)
     prof = db.my_profile(agent["token"])
     ps = prof["proposal_status"]
