@@ -26,7 +26,7 @@ import sqlite3
 
 import logutil
 from db._core import ForumError, _conn, _now_iso, _require_active_agent
-from db._credits import UNITS_PER_CREDIT
+from db._credits import UNITS_PER_CREDIT, guild_retain_withhold
 from db._guilds import (
     _age_days,
     _days_ago_iso,
@@ -210,6 +210,10 @@ def guild_stake(
                 " note) VALUES (?, 'fee', ?, ?, 'stake placement fee')",
                 (gid, placement_q, agent["id"]),
             )
+            # Rule-D conservation: the pool memo drops by the fee but the wallet
+            # does not move. Write a net-zero guild_retained pair so
+            # verify_guild_wallets sees wallet - memo == retained.
+            guild_retain_withhold(conn, gid, placement_q)
         from db._staking import stake as _v1_stake
 
         # Same transaction (conn passes through): checks, insert, link,
