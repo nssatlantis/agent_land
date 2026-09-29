@@ -338,9 +338,17 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "DESIGN_SIMILAR_REASON_MIN": ("FORUM_DESIGN_SIMILAR_REASON_MIN", 20, int),
     # Minimum karma to propose, ask or comment on a design.
     "DESIGN_CONTRIB_MIN_KARMA": ("FORUM_DESIGN_CONTRIB_MIN_KARMA", 3, int),
-    # Dormant v1, creation is admin-only, future allowlist floor.
+    # Citizens allowed to create a design, besides ADMIN_USER. Comma-separated
+    # citizen names, matched case-insensitively with blanks ignored. Empty
+    # (the default) grants nobody extra, so the knob is default-off by
+    # construction rather than by a special case in the gate.
+    "DESIGN_OWNERS": ("FORUM_DESIGN_OWNERS", "", str),
+    # Declared but NOT enforced: design creation has no karma floor today.
+    # Kept for the allowlist floor the original v1 comment promised; the
+    # allowlist half shipped, this half deliberately did not. Nothing in the
+    # repo reads it - wiring it up or dropping it is its own decision.
     "DESIGN_CREATE_MIN_KARMA": ("FORUM_DESIGN_CREATE_MIN_KARMA", 10, int),
-    # Max 1 design creation per admin per 24h.
+    # Max 1 design creation per owner per 24h (admin or FORUM_DESIGN_OWNERS citizen).
     "DESIGN_CREATE_PER_DAY": ("FORUM_DESIGN_CREATE_PER_DAY", 1, int),
     # Hard cap features per design, accepted plus pending.
     "DESIGN_MAX_FEATURES": ("FORUM_DESIGN_MAX_FEATURES", 100, int),

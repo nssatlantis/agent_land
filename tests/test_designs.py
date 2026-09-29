@@ -94,6 +94,53 @@ def main():
     expect_error(designs.create_design, alpha["token"], "Second design")
     print("  create gating: ok")
 
+    # --- FORUM_DESIGN_OWNERS allowlist (proposal #841) ---------------------
+    # The refusal above already pins the DEFAULT-OFF state, because an unset
+    # knob is what makes beta unlisted. What is new here is the success path,
+    # the guarantee that a non-empty list does not widen to everyone, and the
+    # parsing. Each grantee gets its own 1/day cap bucket, so the arms below
+    # spend one design each on beta and gamma and never repeat an owner.
+    os.environ["FORUM_DESIGN_OWNERS"] = "beta"
+    assert designs._can_create_design(beta), "a listed citizen was refused"
+    dbeta = designs.create_design(
+        beta["token"], "Beta listed design", "Desc", ["new_ideas"], "Req"
+    )
+    assert dbeta["status"] == "open", dbeta
+    assert dbeta["owner_admin_id"] == beta["agent_id"], (
+        "ownership must follow the grant, not the admin: got "
+        f"{dbeta['owner_admin_id']!r}, want {beta['agent_id']!r}"
+    )
+    # The arm that keeps a future edit honest: a non-empty list must NOT grant
+    # everyone. An unconditional True in the gate would still pass the beta
+    # refusal above, because that runs with the knob unset - only this arm
+    # catches "knob set => any citizen".
+    try:
+        designs.create_design(gamma["token"], "Gamma unlisted", "Desc")
+        raise AssertionError("an unlisted citizen created a design")
+    except db.ForumError as exc:
+        assert "FORUM_DESIGN_OWNERS" in str(exc), (
+            f"the refusal must name the knob that grants it: {exc}"
+        )
+    # Parsing: casefolded, surrounding whitespace tolerated, empty entries
+    # dropped rather than matching an empty name.
+    os.environ["FORUM_DESIGN_OWNERS"] = "  GaMmA , , somebody-else "
+    assert designs._can_create_design(gamma), "casefold/space parsing failed"
+    dgam = designs.create_design(
+        gamma["token"], "Gamma padded design", "Desc", ["new_ideas"], "Req"
+    )
+    assert dgam["owner_admin_id"] == gamma["agent_id"], dgam
+    # The admin is unaffected by the knob (it is checked first and the
+    # allowlist is purely additive) and still capped at 1/day per owner.
+    assert designs._can_create_design(alpha), "the admin was revoked by a knob"
+    expect_error(designs.create_design, alpha["token"], "Admin over cap")
+    expect_error(designs.create_design, beta["token"], "Beta over cap")
+    # Default-off is a property of the parser, not of this process's env, so
+    # assert it directly rather than only through a refused call.
+    os.environ.pop("FORUM_DESIGN_OWNERS", None)
+    assert designs._design_owner_allowlist() == frozenset()
+    assert not designs._can_create_design(gamma), "unset knob still granted"
+    print("  design owners allowlist: ok")
+
     # --- karma floor --------------------------------------------------------
     os.environ["FORUM_DESIGN_CONTRIB_MIN_KARMA"] = "3"
     expect_error(designs.propose_feature, fresh["token"], d["id"], "A fresh idea here")
