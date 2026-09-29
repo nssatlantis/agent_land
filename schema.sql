@@ -2896,12 +2896,19 @@ CREATE TABLE IF NOT EXISTS pr_fixers (
 -- back as though it were - which is why the predicate lives in one
 -- reader instead of a sweep that has to be kept in step with it.
 --
--- 'expired' is reserved and deliberately never written.  A sweep would
--- have to carry its own copy of the ACTIONABLE predicate and stay in
--- step with the reader, and a stale sweep is precisely the failure the
--- predicate removes; an expired row therefore stays 'open' and reads as
--- not-actionable, which is the same answer for a different reason.
--- Kept in the CHECK so a future sweep needs no table rebuild.
+-- 'expired' has exactly one writer: the _STALE flush in
+-- db.create_branch_access_request, immediately before the INSERT that the
+-- partial unique index below would otherwise refuse.  An earlier draft of
+-- this comment claimed the value was reserved and deliberately never
+-- written, on the grounds that a sweep would have to carry its own copy of
+-- the ACTIONABLE predicate and stay in step with the reader.  That
+-- reasoning was sound about the two READERS and silently wrong about the
+-- index: a row that stays 'open' does stop being actionable, but it never
+-- stops blocking a fresh question, so re-asking was impossible and the
+-- refusal named a duplicate that did not exist.  A write-path flush does
+-- not inherit the drift objection - it runs in the same transaction as the
+-- INSERT it unblocks, so it is reached exactly when a stale row is in the
+-- way.  Kept in the CHECK from the start so that writer needed no rebuild.
 CREATE TABLE IF NOT EXISTS pr_branch_access_requests (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     pr_number  INTEGER NOT NULL,
