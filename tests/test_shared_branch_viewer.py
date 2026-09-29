@@ -26,10 +26,12 @@ hand-built fragment:
 """
 
 import ast
+import asyncio
 import os
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_sharedview_"))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
@@ -277,20 +279,60 @@ def main():
     page = _fn_node("viewer/_prs.py", "pr_diff_page")
     panel_calls = _calls(page, "_shared_branch_panel")
     assert len(panel_calls) == 1, "read the flag once, compose it everywhere"
-    first_return = min(
+
+    # --- ...and the 404 itself, driven (finding #38 / #36) ---------------
+    # FIRST, because this is the reader-level proof and it is the assertion
+    # that reds on the pre-fix head. The defect was in the COMPOSITION, not
+    # the helper, so it drives pr_diff_page with a number no PR exists for:
+    # the 404 carried "Closed - only the opener may push ... a decline charges
+    # the opener" directly above "No pull request #N".
+    from viewer import _prs as _prs_mod  # noqa: PLC0415
+
+    real_diff = _prs_mod._pr_diff
+
+    async def _no_such_pr(_n):  # noqa: ANN001, ANN202
+        return None, True
+
+    _prs_mod._pr_diff = _no_such_pr
+    try:
+        resp = asyncio.run(
+            _prs_mod.pr_diff_page(SimpleNamespace(path_params={"number": "999999"}))
+        )
+    finally:
+        _prs_mod._pr_diff = real_diff
+    missing_html = resp.body.decode("utf-8", "replace")
+    assert resp.status_code == 404, resp.status_code
+    assert "No pull request" in missing_html, missing_html[:400]
+    assert "Closed" not in missing_html, (
+        "the 404 states a branch state for a PR that does not exist"
+    )
+    assert "Open for shared fixes" not in missing_html
+    # Not an unreadable read either: a 404 is a confident answer that there
+    # is no PR, not a failed read, and the two must not read alike.
+    assert "could not be read" not in missing_html
+
+    # SECOND, the structural guard that makes the above impossible to
+    # regress by accident: THREE states held by ORDER, not by convention. The
+    # read sits AFTER the 404 return (no such PR -> no branch to describe)
+    # and BEFORE the GitHub-degraded return (the PR exists, GitHub is down).
+    # Ordering, not a code comment, is what keeps the 404 clean.
+    returns = sorted(
         node.lineno for node in ast.walk(page) if isinstance(node, ast.Return)
     )
-    assert panel_calls[0].lineno < first_return, (
-        "the panel is forum-backed, so it must be read BEFORE the GitHub "
-        "degraded returns - that is exactly when a would-be fixer needs it"
+    assert returns[0] < panel_calls[0].lineno < returns[1], (
+        "the shared-branch read must sit after the 404 return and before the "
+        f"GitHub-degraded return; returns={returns} read@{panel_calls[0].lineno}"
     )
-    # composed in all three returns: two early + the main body
+    # Count only READS of the name, not the assignment that binds it: the
+    # question is how many returns composite the panel into their output.
     body_uses = sum(
         1
         for node in ast.walk(page)
-        if isinstance(node, ast.Name) and node.id == "shared_panel"
+        if isinstance(node, ast.Name)
+        and node.id == "shared_panel"
+        and isinstance(node.ctx, ast.Load)
     )
-    assert body_uses >= 3, f"shared_panel composed {body_uses}x, expected 3+"
+    assert body_uses == 2, f"shared_panel composited {body_uses}x, expected 2"
 
     # --- every class we emit has a rule ---------------------------------
     # Two pre-existing chips do NOT (.todo-pill.flag, .pr-chip.pr-evidence),
