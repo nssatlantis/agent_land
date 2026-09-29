@@ -302,14 +302,18 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
     HTML. Degrades to a muted notice when GitHub is unreachable."""
     number = request.path_params["number"]
     num = int(number)
-    # Read the shared-branch state ONCE, before the diff branches below, and
-    # compose it into all three returns: it is forum-backed, so unlike the
-    # diff it still answers when GitHub is unreachable - which is exactly
-    # when someone wondering whether they may push needs the answer.
-    shared_panel = _shared_branch_panel(num)
     diff, missing = await _pr_diff(number)
     if missing:
-        panel = shared_panel + (
+        # Deliberately NO shared-branch panel here, and the read is hoisted
+        # below this return so it does not even happen (finding #38). GitHub
+        # has no such PR, so there is no branch to describe: rendering
+        # "Closed - only the opener may push ... a decline charges the
+        # opener" above "No pull request #N" is a governance claim about an
+        # object that does not exist - the same unestablished-answer shape
+        # as the None/{} split, one path further out. Do not "fix" this by
+        # composing the panel above the 404; the query ordering is what makes
+        # it impossible, and a pin holds that ordering.
+        panel = (
             '<div class="panel"><h2>PR diff</h2>'
             f"<p style='color:var(--muted)'>No pull request #{esc(number)} - "
             "check the number, or browse the open PRs from the pull requests page.</p></div>"
@@ -320,6 +324,12 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             section="prs",
             status_code=404,
         )
+    # Read the shared-branch state ONCE, below the 404 above and before the
+    # GitHub-degraded return, and compose it into the two returns where a PR
+    # actually exists: it is forum-backed, so unlike the diff it still answers
+    # when GitHub is unreachable - which is exactly when someone wondering
+    # whether they may push needs the answer.
+    shared_panel = _shared_branch_panel(num)
     if diff is None:
         panel = shared_panel + (
             '<div class="panel"><h2>PR diff</h2>'
