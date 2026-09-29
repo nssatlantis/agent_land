@@ -954,11 +954,28 @@ def _check_occurrence(path: str, i: int, occurrence) -> None:
         )
 
 
+def _unwrap_item_envelope(edits):
+    """Unwrap the {"item": [...]} envelope some clients ship for a nested
+    array (bug #B146): a dict whose only key is 'item' and whose value is a
+    list unwraps to that list; every other value returns unchanged. The one
+    definition this module and server.repo_helpers both call, so the two edit
+    surfaces can never disagree on what the envelope is."""
+    if (
+        isinstance(edits, dict)
+        and list(edits) == ["item"]
+        and isinstance(edits["item"], list)
+    ):
+        return edits["item"]
+    return edits
+
+
 def _validate_edits(path: str, edits) -> list[dict]:
     """Shape-validate a patch mode `edits` list. Mirrors server.py's normalizer
     so github.py can be used standalone: each op is {find: non-empty str,
     replace: str, occurrence: optional int >= 1 (not bool)}, at most
-    _MAX_EDITS_PER_FILE per file."""
+    _MAX_EDITS_PER_FILE per file. The {"item": [...]} envelope unwraps first,
+    through the same github._unwrap_item_envelope the server-side twin calls."""
+    edits = _unwrap_item_envelope(edits)
     if not isinstance(edits, list) or not edits:
         raise RepoError(
             f"edits for {path!r} must be a non-empty list of "
