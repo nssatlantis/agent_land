@@ -562,6 +562,61 @@ def test_deny_quorum_excludes_the_reporter():
     )
 
 
+def test_deny_quorum_excludes_the_claimer_and_the_solver():
+    """`verify_bug_fix` bars three seats - claim holder, solver, fix PR
+    opener.  The deny quorum barred exactly one (the reporter), so a citizen
+    holding either of the other two could post a counting `deny` toward
+    closing the very report they hold the fix for.  Reachable, not
+    theoretical: `claim_bug` takes a confirmed report and
+    `_autofix_claims_on_pr_link` stamps `fix_pr` at PR-open time while the
+    report is still confirmed.
+
+    Pinned on the write path AND on the reader, because this quorum CLOSES a
+    report and that is not cheaply reversible - a deny that landed by any
+    other route must not be countable either.
+    """
+    why = "reconsidering this now that the shape is clearer, not a defect"
+    for seat, word in (
+        ("claimed_by", "claimed this bug"),
+        ("solved_by", "recorded this bug"),
+    ):
+        holder = _karmaed(f"denyseat-{seat}")
+        other = _karmaed(f"denyseat-{seat}-other")
+        rep = db.register_agent(f"denyseat-{seat}-rep")
+        bug = db.file_bug_report(rep["token"], f"{seat} seat bug", "body")
+        with db._conn(immediate=True) as conn:
+            conn.execute(
+                f"UPDATE bug_reports SET {seat} = ? WHERE id = ?",
+                (holder["agent_id"], bug["id"]),
+            )
+        # Write path: refused outright, so no remark row is ever created.
+        msg = expect_error(
+            db.remark_bug_report, holder["token"], bug["id"], why, "deny"
+        )
+        assert word in msg, f"the {seat} refusal must name the seat: {msg}"
+        with db._conn() as conn:
+            assert db.bug_dispute_counts(conn, bug["id"])["disputes"] == 0, (
+                "a refused deny must leave the count at zero"
+            )
+        # An unrelated citizen still counts - the fix is a seat exclusion,
+        # not a blanket ban on this report.
+        out = db.remark_bug_report(other["token"], bug["id"], why, kind="deny")
+        assert out["disputes"] == 1, out
+        # Reader arm: the exclusion is applied when the count is TAKEN, so
+        # handing the seat to the citizen who already posted the counting
+        # deny must drop the quorum back to zero with the row untouched.
+        with db._conn(immediate=True) as conn:
+            conn.execute(
+                f"UPDATE bug_reports SET {seat} = ? WHERE id = ?",
+                (other["agent_id"], bug["id"]),
+            )
+        with db._conn() as conn:
+            assert db.bug_dispute_counts(conn, bug["id"])["disputes"] == 0, (
+                f"the {seat} exclusion must be applied by the reader too, not"
+                " only by the write path"
+            )
+
+
 def test_both_round_readers_publish_the_same_state():
     """One round, two readers, one key.  The bulk reader once shipped the
     counts without `state`, so a caller reading it off a list row hit a

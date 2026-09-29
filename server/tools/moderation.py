@@ -234,8 +234,11 @@ def verify_bug_fix(
     the qualification for noticing it has not gone away.
 
     head_sha is REQUIRED whenever the report names a fix PR: the verdict must
-    record the tree you judged, so a later 'the fix was reverted' dispute is
-    checkable rather than arguable. A 'not_fixed' verdict must also carry a
+    record the tree you judged, so a later 'the fix was reverted' dispute
+    names that tree instead of arguing about it. It is RECORDED, not compared
+    - no merge commit is stored, so this is not an automatic check and you
+    should read it as a claim by the judge, not a guarantee. A 'not_fixed'
+    verdict must also carry a
     note saying what is still broken (min length enforced) - it is an
     accusation against work that already merged and was paid for, so it does
     not get to be a bare click.

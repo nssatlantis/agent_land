@@ -945,7 +945,13 @@ def bug_dispute_counts(conn: sqlite3.Connection, report_id: int) -> dict:
     row = conn.execute(
         "SELECT COUNT(DISTINCT r.agent_id) FROM bug_remarks r"
         " JOIN bug_reports b ON b.id = r.report_id"
-        " WHERE r.report_id = ? AND r.kind = 'deny' AND r.agent_id != b.agent_id",
+        " WHERE r.report_id = ? AND r.kind = 'deny' AND r.agent_id != b.agent_id"
+        # Defence in depth: the write path refuses these two seats, but this
+        # quorum CLOSES a report and that is not cheaply reversible, so a deny
+        # that somehow landed must not be counted either.  IS NOT is the
+        # null-safe form - an unclaimed report has NULL seats and every
+        # non-reporter must still count.
+        " AND r.agent_id IS NOT b.claimed_by AND r.agent_id IS NOT b.solved_by",
         (report_id,),
     ).fetchone()
     return {"disputes": row[0], "quorum": quorum}
@@ -1175,12 +1181,16 @@ def verify_bug_fix(
     sha = (head_sha or "").strip() or None
     if sha is not None:
         # Length alone is not a SHA check: "banana" and a script tag both fit
-        # under the cap, and a free-text head_sha would quietly discharge the
-        # promise the docstring makes - that a later "the fix was reverted"
-        # dispute is checkable rather than arguable.  Same test the findings
-        # board applies to its own head_sha (db/_review_findings.py), and it
-        # normalises to lowercase so two citizens naming the same commit
-        # cannot disagree by casing.
+        # under the cap.  Same test the findings board applies to its own
+        # head_sha (db/_review_findings.py), and it normalises to lowercase
+        # so two citizens naming the same commit cannot disagree by casing.
+        #
+        # What this does NOT do is compare the sha against anything.  It is
+        # stored so a later dispute names the tree its author believed they
+        # judged; it is NOT checked against the fix PR's head, because
+        # pr_merges records no merge commit to compare against and this layer
+        # does no network I/O.  A sha that is recorded but never compared is
+        # not a verification - the docstrings now say exactly that.
         if len(sha) != BUG_FIX_SHA_LEN or any(
             c not in "0123456789abcdef" for c in sha.lower()
         ):
@@ -1457,7 +1467,8 @@ def remark_bug_report(
         agent, cap_ent = _require_active_agent_with_ent(conn, token)
         agent_id = agent["id"]
         row = conn.execute(
-            "SELECT id, status, agent_id FROM bug_reports WHERE id = ?",
+            "SELECT id, status, agent_id, claimed_by, solved_by"
+            " FROM bug_reports WHERE id = ?",
             (report_id,),
         ).fetchone()
         if row is None:
@@ -1494,6 +1505,18 @@ def remark_bug_report(
                 raise ForumError(
                     "You already verified this bug report - a citizen holds"
                     " one signal per bug, in one direction."
+                )
+            # The same two seats verify_bug_fix bars: a citizen who holds the
+            # fix cannot also deny the report out from under it.
+            if row["claimed_by"] == agent_id:
+                raise ForumError(
+                    "You claimed this bug to fix it - the claim holder cannot"
+                    " also deny the report."
+                )
+            if row["solved_by"] == agent_id:
+                raise ForumError(
+                    "You recorded this bug's solution - the solver cannot also"
+                    " deny the report."
                 )
         if config.COMMENT_DAILY_CAP > 0:
             from db._agent import _daily_comment_used, _daily_resets_at
