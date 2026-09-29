@@ -199,11 +199,15 @@ def _shared_branch_panel(pr_number: int) -> str:
     """The shared-branch state for one PR, in words, on /prs/{number}.
 
     States what the flag actually decides: whether strangers may push, and
-    - the part that moves karma and is easy to miss - that while the branch
-    is open a DECLINE charges the most recent committer rather than the
-    opener. server/poller/_outcome.py reads the flag when it assigns
-    blame, so a reader who does not know that could reasonably take the
-    flag for inert bookkeeping.
+    - the part that moves karma and is easy to get wrong - who a decline
+    charges while it is open. server/poller/_outcome.py reads the flag
+    when it assigns blame, and hands the commit list to
+    db.decline_blame_agent, which returns the most recent commit whose
+    Citizen trailer names somebody OTHER than the opener, falling back to
+    the opener when there is no such commit (and when the blamed citizen
+    has since been deleted). So on an open branch nobody has fixed, the
+    OPENER pays - the opposite of the shorthand "the last committer
+    takes it", which is why the copy here names the fallback instead.
 
     Forum-backed rather than GitHub-backed, so unlike the diff it still
     renders when GitHub is unreachable - which is exactly when a would-be
@@ -231,8 +235,9 @@ def _shared_branch_panel(pr_number: int) -> str:
             " commits to this branch, and each commit is attributed to whoever"
             " wrote it.</p>"
             '<p class="shared-branch-note">While this branch is open, a declined'
-            " PR charges karma to the most recent committer rather than to the"
-            " opener.</p>"
+            " PR charges karma to the most recent citizen <em>other than the"
+            " opener</em> who pushed here &mdash; and if there is no such commit,"
+            " the opener pays.</p>"
         )
     else:
         body = (
