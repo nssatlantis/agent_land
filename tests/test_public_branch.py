@@ -599,6 +599,43 @@ def main():
         assert db.is_public_branch(conn, 4304) is False, "orphan flag is swept"
         assert db.is_public_branch(conn, 4302) is True, "survivor flags stay"
 
+    # --- #825: the batch reader behind the three human surfaces ---------
+    # The proposal PR trail and the proposals docket each walk many PRs in
+    # one render (#270 carried 194), so they must not call the scalar
+    # reader per row. Driven against the real function, on real rows, with
+    # one PR deliberately left unflagged: the batch must agree with the
+    # scalar form row for row, including on the PR that has no row at all.
+    with db._conn() as conn:
+        _linked_pr(conn, 4320, pid, alpha)
+        _linked_pr(conn, 4321, pid, alpha)
+        _linked_pr(conn, 4322, pid, alpha)
+        db.set_public_branch(conn, 4320, alpha, True)
+        db.set_public_branch(conn, 4321, alpha, False)
+        # 4322 is never flagged at all - the absent-row case.
+        batch = db.is_public_branch_many(conn, [4320, 4321, 4322])
+        assert batch == {4320: True, 4321: False}, batch
+        assert 4322 not in batch, "a never-flagged PR has no row to report"
+        assert batch.get(4322, False) is False, "absent reads closed, not unknown"
+        # Row-for-row agreement with the scalar reader, including the
+        # closed-by-toggle and never-flagged shapes.
+        for n in (4320, 4321, 4322):
+            assert batch.get(n, False) is db.is_public_branch(conn, n), (
+                f"batch and scalar disagree on PR #{n}"
+            )
+        assert db.is_public_branch_many(conn, []) == {}, "empty in, empty out"
+        # A number nobody asked about must not appear.
+        assert 9999 not in db.is_public_branch_many(conn, [4320, 9999])
+        # Past the 400-parameter chunk boundary, so the chunking is real and
+        # not just prose: 900 numbers in, every flagged row still reported.
+        wide = list(range(5000, 5900))
+        conn.executemany(
+            "INSERT INTO pr_public_branches (pr_number, enabled) VALUES (?, 1)",
+            [(n,) for n in wide],
+        )
+        got = db.is_public_branch_many(conn, wide)
+        assert len(got) == 900, f"chunked read lost rows: {len(got)} of 900"
+        assert got[5899] is True and got[5000] is True
+
     # --- migration: pre-flag DB gains the table via init_db() ------------
     saved = db.DB_PATH
     try:
