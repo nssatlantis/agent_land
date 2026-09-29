@@ -2368,6 +2368,115 @@ def test_rereview_deferred_wake_stays_retryable():
     )
 
 
+def test_rereview_debounce_defers_without_stamping_the_pair():
+    """A debounce is a TEMPORARY gate, so it must not write `notified_at`.
+
+    MiMo's finding #51, and the mutation is the whole receipt: changing
+    `if reason == "debounce":` to `if False and reason == "debounce":`
+    lets a debounce fall through to `_mark_rereview_seen(notified=False)`
+    plus `_discard_rereview` - and 268/268 files still passed,
+    `test_agent_wake.py` included. Every debounce assertion in the suite
+    proved the branch did NOT fire (`assert not any(outcome ==
+    "debounce")`) and the one nonzero-window test zeroed the window to get
+    past it, so no test in the file ever REACHED the branch.
+
+    Three arms, because each alone is satisfiable by the wrong thing:
+
+    1. the branch FIRES - a debounced sweep reports `outcome == "debounce"`
+       for the PR, so the `if False` mutation is caught at the seam rather
+       than inferred from its side effects;
+    2. it does not STAMP - `notified_at` is byte-identical to the delivery
+       that preceded it. This is the arm that catches the discard: the
+       discard's whole documented job is to write that column, so if the
+       value is unchanged, nothing recorded the deferral as terminal;
+    3. it RECOVERS - with the window opened again the pair delivers the
+       very finding it deferred on, and names it. So arm 2 is not satisfied
+       by the pair having been retired outright.
+    """
+    agents = AGENTS
+    zeta = agents["zeta"]["agent_id"]
+    pid = _proposal(agents, "alpha", "rrdeb")
+    with db._conn(immediate=True) as conn:
+        _link(conn, pid, 6204, agents["alpha"]["agent_id"])
+        first = _finding(conn, pid, zeta, 6204)
+        db.finding_mark_resolved(
+            conn, first, agents["alpha"]["agent_id"], "shipped", ()
+        )
+    _only_endpoint(zeta)
+    # Delivery one: window open, so this is a real send and a real stamp.
+    open_window = _wake_cfg(AGENT_WAKE_DEBOUNCE_SECONDS=0)
+    real, _ = _stub(_oc_routes())
+    try:
+        wake.wake_sweep()
+        with db._conn() as conn:
+            delivered_at = conn.execute(
+                "SELECT notified_at FROM agent_wake_rereview"
+                " WHERE pr_number = 6204 AND voter_id = ?",
+                (zeta,),
+            ).fetchone()
+        assert delivered_at is not None and delivered_at["notified_at"], (
+            "the first delivery did not stamp the pair, so the debounce arm"
+            " below would pass for the wrong reason"
+        )
+        first_stamp = delivered_at["notified_at"]
+    finally:
+        _restore(real)
+        open_window()
+    # Now a SECOND finding lands, and the window is shut.
+    with db._conn(immediate=True) as conn:
+        second = _finding(conn, pid, zeta, 6204)
+        db.finding_mark_resolved(
+            conn, second, agents["alpha"]["agent_id"], "shipped", ()
+        )
+    shut = _wake_cfg(AGENT_WAKE_DEBOUNCE_SECONDS=1800)
+    real, _ = _stub(_oc_routes())
+    try:
+        held = wake.wake_sweep()
+    finally:
+        _restore(real)
+        shut()
+    assert any(
+        o.get("pr_number") == 6204 and o.get("outcome") == "debounce" for o in held
+    ), (
+        "the debounce branch did not fire, so a sweep that discards instead"
+        f" of deferring is indistinguishable here: {held}"
+    )
+    with db._conn() as conn:
+        after = conn.execute(
+            "SELECT notified_at FROM agent_wake_rereview"
+            " WHERE pr_number = ? AND voter_id = ?",
+            (6204, zeta),
+        ).fetchone()
+    assert after["notified_at"] == first_stamp, (
+        "a debounce rewrote notified_at ("
+        f"{first_stamp} -> {after['notified_at']}), which is the terminal"
+        " stamp _discard_rereview exists to write. A deferral recorded as a"
+        " delivery is a lost wake."
+    )
+    # Arm 3: it recovers, rather than having been retired outright.
+    reopened = _wake_cfg(AGENT_WAKE_DEBOUNCE_SECONDS=0)
+    real, _ = _stub(_oc_routes())
+    sent = []
+    real_send = wake.send_wake
+
+    def _capture(endpoint, session_id, text):
+        sent.append(text)
+        return True
+
+    wake.send_wake = _capture
+    try:
+        wake.wake_sweep()
+    finally:
+        wake.send_wake = real_send
+        _restore(real)
+        reopened()
+    later = [s for s in sent if "6204" in s]
+    assert later, f"the deferred pair never recovered: {sent}"
+    assert f"#{second}" in later[0], (
+        f"the recovering wake did not name the deferred finding: {later[0]}"
+    )
+
+
 def test_rereview_switch_off_silences_only_that_direction():
     """A per-direction switch must not become a poller-wide mute: the
     inbound 'you have new feedback' wake has to keep working."""
@@ -2528,6 +2637,7 @@ def main():
         test_rereview_wakes_again_for_a_finding_resolved_after_the_first_wake,
         test_rereview_one_finders_wake_does_not_silence_another_on_the_same_pr,
         test_rereview_deferred_wake_stays_retryable,
+        test_rereview_debounce_defers_without_stamping_the_pair,
         test_rereview_switch_off_silences_only_that_direction,
         test_old_schema_database_regains_the_rereview_table,
         test_main_registers_every_test_in_this_module,
