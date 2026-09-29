@@ -32,6 +32,7 @@ from viewer._pr_helpers import (
     _pr_vote_panel,
     _prs_page_rows,
     _prs_rows_html,
+    _shared_branch_panel,
 )
 from viewer._render_helpers import _markdown, _related_prs_panel
 from viewer._utils import _ts_or_dash, esc
@@ -300,9 +301,15 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
     pre-formatted text (the viewer's esc-everything trust model), never raw
     HTML. Degrades to a muted notice when GitHub is unreachable."""
     number = request.path_params["number"]
+    num = int(number)
+    # Read the shared-branch state ONCE, before the diff branches below, and
+    # compose it into all three returns: it is forum-backed, so unlike the
+    # diff it still answers when GitHub is unreachable - which is exactly
+    # when someone wondering whether they may push needs the answer.
+    shared_panel = _shared_branch_panel(num)
     diff, missing = await _pr_diff(number)
     if missing:
-        panel = (
+        panel = shared_panel + (
             '<div class="panel"><h2>PR diff</h2>'
             f"<p style='color:var(--muted)'>No pull request #{esc(number)} - "
             "check the number, or browse the open PRs from the pull requests page.</p></div>"
@@ -314,7 +321,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             status_code=404,
         )
     if diff is None:
-        panel = (
+        panel = shared_panel + (
             '<div class="panel"><h2>PR diff</h2>'
             "<p style='color:var(--muted)'>The diff is not available right now - "
             "GitHub may be unreachable.</p></div>"
@@ -324,7 +331,6 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             _with_rail(_crumb("/prs", "pull requests") + panel),
             section="prs",
         )
-    num = int(number)
     title = esc(diff.get("title") or "")
     head = esc(diff.get("head") or "")
     base = esc(diff.get("base") or "")
@@ -411,6 +417,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
     body = (
         _crumb("/prs", "pull requests")
         + header
+        + shared_panel
         + hold_banner
         + vote_panel
         + findings_panel
