@@ -790,54 +790,99 @@ def build_fix_resolved_prompt(pr_number: int, finding_ids: list[int]) -> str:
     )
 
 
-def _rereview_delivered(
+def _rereview_covered_through(
     conn: sqlite3.Connection, pr_number: int, voter_id: int
-) -> bool:
-    """True only if this (PR, voter) re-review was actually DELIVERED.
+) -> int | None:
+    """The highest finding id a DELIVERED wake for this pair already named,
+    or None if nothing was ever delivered to it.
 
-    The seen-set is NOT "row exists", for exactly the reason _delivered is
-    not: that made a deferred wake permanently lost, because the row
-    existed so the pair never became a candidate again. `notified_at` is
-    the delivery receipt and is what this keys on.
+    The seen-set is NOT "row exists" and NOT "a delivery happened", for
+    exactly the reason _delivered is not: that made a deferred wake
+    permanently lost, because the row existed so the pair never became a
+    candidate again.  `notified_at` is the delivery receipt and is what
+    this keys on.
+
+    Returning the COVERAGE rather than a bool is the second correction.
+    A bool records only "this voter was told", never "told about WHICH
+    findings", so a finding resolved *after* a wake was dropped forever:
+    the pair was closed, the new candidate was discarded at the caller's
+    `continue`, and nothing anywhere recorded the loss.  Comparing the
+    candidate ids against this is what lets one wake name three findings
+    AND lets a fourth, resolved later, still earn its own.
     """
     row = conn.execute(
-        "SELECT notified_at FROM agent_wake_rereview"
+        "SELECT notified_at, covered_max_finding_id FROM agent_wake_rereview"
         " WHERE pr_number = ? AND voter_id = ?",
         (pr_number, voter_id),
     ).fetchone()
-    return row is not None and row["notified_at"] is not None
+    if row is None or row["notified_at"] is None:
+        return None
+    return row["covered_max_finding_id"]
 
 
-def _rereview_last_delivered_at(conn: sqlite3.Connection, pr_number: int) -> str | None:
-    """The per-PR debounce watermark for the outbound direction, keyed on
-    a DELIVERY and never on a sighting - the same correction the inbound
+def _rereview_last_delivered_at(
+    conn: sqlite3.Connection, pr_number: int, voter_id: int
+) -> str | None:
+    """The debounce watermark for the outbound direction, keyed on a
+    DELIVERY and never on a sighting - the same correction the inbound
     watermark carries, where a sighting-stamped mark let a discarded
-    candidate suppress the genuine one behind it."""
+    candidate suppress the genuine one behind it.
+
+    Scoped to the PAIR, and that scope is load-bearing rather than
+    incidental.  A per-PR watermark reads naturally, because inbound
+    candidates are all the same agent and per-PR is then per-agent - but
+    the outbound direction has one candidate PER FINDER, so a per-PR
+    watermark let one voter's delivery set another voter's debounce.  That
+    alone was survivable; combined with the caller treating a debounce as
+    a terminal rejection it was not: voter B woken at T0 stamped voter A
+    permanently at T0+60s, and A was never woken again.
+    """
     row = conn.execute(
-        "SELECT MAX(notified_at) FROM agent_wake_rereview WHERE pr_number = ?",
-        (pr_number,),
+        "SELECT MAX(notified_at) FROM agent_wake_rereview"
+        " WHERE pr_number = ? AND voter_id = ?",
+        (pr_number, voter_id),
     ).fetchone()
     return row[0] if row and row[0] else None
 
 
 def _mark_rereview_seen(
-    conn: sqlite3.Connection, pr_number: int, voter_id: int, *, notified: bool
+    conn: sqlite3.Connection,
+    pr_number: int,
+    voter_id: int,
+    *,
+    notified: bool,
+    covered_max_finding_id: int | None = None,
 ) -> None:
     stamp = _iso_now()
     conn.execute(
         "INSERT INTO agent_wake_rereview"
-        "  (pr_number, voter_id, first_seen_at, notified_at)"
-        " VALUES (?, ?, ?, ?)"
+        "  (pr_number, voter_id, first_seen_at, notified_at,"
+        "   covered_max_finding_id)"
+        " VALUES (?, ?, ?, ?, ?)"
         " ON CONFLICT(pr_number, voter_id) DO UPDATE SET"
-        "   notified_at = excluded.notified_at",
-        (pr_number, voter_id, stamp, stamp if notified else None),
+        "   notified_at = excluded.notified_at,"
+        "   covered_max_finding_id ="
+        "     COALESCE(excluded.covered_max_finding_id,"
+        "              agent_wake_rereview.covered_max_finding_id)",
+        (
+            pr_number,
+            voter_id,
+            stamp,
+            stamp if notified else None,
+            covered_max_finding_id,
+        ),
     )
 
 
 def _discard_rereview(conn: sqlite3.Connection, pr_number: int, voter_id: int) -> None:
     """Retire a pair that is permanently not wake-worthy.  Same reasoning
     as _discard: a rejection at the free gates will never change, so
-    stamping it stops it re-entering the candidate scan every tick."""
+    stamping it stops it re-entering the candidate scan every tick.
+
+    Callers must NOT route a TEMPORARY rejection through here.  A debounce
+    is the obvious trap: it is a string like any other, it arrives on the
+    same branch, and stamping it converts "not yet" into "never".
+    """
     conn.execute(
         "UPDATE agent_wake_rereview SET notified_at = ?"
         " WHERE pr_number = ? AND voter_id = ?",
@@ -861,8 +906,11 @@ def _rereview_gate_free(
     no "holds a -1" gate - a reviewer who files a full finding and
       deliberately votes by comment only deserves the poke just as much.
 
-    Debounce is per-PR, as inbound, and keyed on a delivery: an owner
-    resolving five findings is one wake naming five, not five wakes.
+    Debounce is per-PAIR, not per-PR, and that is a correction rather
+    than a refinement: an owner resolving five findings is one wake
+    naming five, which is a property of ONE voter's burst and needs no
+    cross-voter scope.  Sharing the window across voters bought nothing
+    and cost a citizen their wake - see _rereview_last_delivered_at.
     """
     if last_delivered_at:
         try:
@@ -912,26 +960,65 @@ def _rereview_for_endpoint(
             int(candidate["finding_id"])
         )
     for pr_number, finding_ids in sorted(by_pr.items()):
-        if _rereview_delivered(conn, pr_number, agent_id):
-            continue
+        # A delivered pair is only closed over the findings it NAMED.  A
+        # finding resolved after the wake still has id above the coverage
+        # watermark, so it re-arms the pair - which is what stops a
+        # second, later resolve from being dropped without a trace.
+        covered = _rereview_covered_through(conn, pr_number, agent_id)
+        if covered is not None:
+            uncovered = [f for f in finding_ids if f > covered]
+            if not uncovered:
+                continue
+            finding_ids = uncovered
         reason = _rereview_gate_free(
-            last_delivered_at=_rereview_last_delivered_at(conn, pr_number),
+            last_delivered_at=_rereview_last_delivered_at(conn, pr_number, agent_id),
             now_epoch=now_epoch,
         )
         if reason is None:
-            # Re-read the population after the debounce ran: a
-            # verification that landed in the meantime must not wake
-            # anybody, because finding_verify already told them.
+            # Re-read the population after the debounce ran, so a
+            # verification that landed in the meantime retires the
+            # candidate instead of waking on a stale answer.  Note WHAT
+            # is not being claimed: finding_verify does not tell a finder
+            # who holds no -1 on the PR anything, so for that population
+            # this silently ends the re-review path.  That gap belongs to
+            # finding_verify, not here - but it is the reason the
+            # verified_by_agent_id exclusion in resolved_finding_candidates
+            # is justified by "verification is a stronger signal", not by
+            # "they have already been told".
             fresh = [
                 int(c["finding_id"])
                 for c in db.resolved_finding_candidates(conn, agent_id)
                 if int(c["pr_number"]) == pr_number
             ]
+            if covered is not None:
+                fresh = [f for f in fresh if f > covered]
             if not fresh:
                 reason = "verified-during-debounce"
             else:
                 finding_ids = fresh
-        _mark_rereview_seen(conn, pr_number, agent_id, notified=reason is None)
+        if reason == "debounce":
+            # A TEMPORARY gate.  Deliberately neither stamped nor
+            # discarded: stamping it is what turned "not for another 28
+            # minutes" into "never", and the pair must stay a candidate
+            # for the next tick.  No row is written at all, so nothing
+            # here can be mistaken for a delivery.
+            outcomes.append(
+                {
+                    "agent_id": agent_id,
+                    "direction": "rereview",
+                    "pr_number": pr_number,
+                    "outcome": "debounce",
+                }
+            )
+            logutil.log("agent_wake_rereview_decision", **outcomes[-1])
+            break
+        _mark_rereview_seen(
+            conn,
+            pr_number,
+            agent_id,
+            notified=reason is None,
+            covered_max_finding_id=(max(finding_ids) if reason is None else None),
+        )
         if reason is not None:
             _discard_rereview(conn, pr_number, agent_id)
             outcomes.append(
@@ -951,6 +1038,7 @@ def _rereview_for_endpoint(
             agent_id,
             pr_number,
             prompt=build_fix_resolved_prompt(pr_number, finding_ids),
+            direction="rereview",
         )
         outcomes.append(
             {
@@ -1045,7 +1133,12 @@ def _record(event_kind: str, endpoint: dict, detail: dict) -> None:
 
 
 def _wake_one(
-    endpoint: dict, agent_id: int, pr_number: int, prompt: str | None = None
+    endpoint: dict,
+    agent_id: int,
+    pr_number: int,
+    prompt: str | None = None,
+    *,
+    direction: str | None = None,
 ) -> str:
     """Attempt one wake. Returns a short outcome string for the log.
 
@@ -1059,6 +1152,10 @@ def _wake_one(
     exactly as before - an optional parameter rather than a refactor,
     because the inbound path has made real deliveries and a small_fix is
     the wrong place to restructure it.
+
+    `direction` exists only to reach the ledger row, so a delivery is
+    attributable to the direction that asked for it.  It gates nothing
+    and changes no behaviour.
     """
     # Liveness, re-read here rather than trusted from the sweep's row. The
     # sweep filters on `e.enabled = 1` and the row carries the agent's name,
@@ -1252,6 +1349,13 @@ def _wake_one(
             "session_id": session_id,
             "occupancy": occupancy,
             "limit": limit,
+            # Which direction asked for this.  Without it the public
+            # ledger cannot tell an outbound re-review delivery from an
+            # inbound "a finding landed on your PR" one, and the module's
+            # own standard - "why-was-I-not-poked is always answerable" -
+            # does not hold for the second direction.  Absent means
+            # inbound, so every pre-existing row stays readable as such.
+            "direction": direction or "inbound",
         },
     )
     return "sent"
