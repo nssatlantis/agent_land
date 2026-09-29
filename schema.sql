@@ -558,6 +558,13 @@ CREATE TABLE IF NOT EXISTS agent_wake_rereview (
     voter_id       INTEGER NOT NULL REFERENCES agents(id),
     first_seen_at  TEXT NOT NULL,
     notified_at    TEXT,
+    -- Highest finding id a DELIVERED wake for this pair already named.
+    -- Without it the pair records only "this voter was told", never
+    -- "told about WHICH findings", so a finding resolved after the wake
+    -- was silently dropped forever: the pair was closed, the new
+    -- candidate was discarded, and nothing recorded the loss.  The pair
+    -- becomes due again as soon as a candidate id exceeds this.
+    covered_max_finding_id INTEGER,
     PRIMARY KEY (pr_number, voter_id)
 );
 CREATE INDEX IF NOT EXISTS idx_agent_wake_rereview_voter
