@@ -3,7 +3,11 @@ supply fixed, buy fees ride their own excluded reason, same-day buys
 accrue zero (bond-day weighting), distribution math is exact with
 remainder carryover, dry treasuries hold maturities, early redemption
 takes the haircut, forfeiture releases-then-splits, sweeps are
-idempotent, caps refuse, and boot creates the tables.
+idempotent, caps refuse, and boot creates the tables. The daily pool is split
+guarantee-first, so no eligible bond is floored to zero while the pool can
+cover them all; the yield projection is pinned against that same engine rather
+than against itself; and a bond the pool cannot cover is still stamped, so the
+skip leaves a trace instead of freezing a watermark.
 """
 
 import os
@@ -218,11 +222,11 @@ def test_remainder_distributed_exactly_carry_lands_zero():
 
     This test USED to be `test_carryover_holds_remainder` and asserted
     `(acc, carry) == (2, 1)` - i.e. it pinned the stranded remainder as
-    correct behaviour. That expectation is the bug (#B157): the remainder was
-    a unit that floor division could not place, and carry was where it idled
-    until a later day could place it. `_apportion` places it immediately, so
-    the same sweep now pays (3, 0). The conservation invariant below is
-    unchanged and is the part that actually matters.
+    correct behaviour. That expectation was the bug (#B157): the remainder was
+    a unit floor division could not place, and carry was where it idled until
+    a later day could place it. `_apportion` places it immediately, so the
+    same sweep now pays (3, 0). The conservation invariant below is unchanged
+    and is the part that actually matters.
     """
     holder = _make_holder("bd-carry")
     sid = bond_series_open("carry-7", 7)["series_id"]
@@ -255,8 +259,8 @@ def test_remainder_distributed_exactly_carry_lands_zero():
         got = {x["id"]: x for x in my_bonds(holder["token"])["bonds"]}
         acc = got[b1["bond_id"]]["accrued_units"] + got[b2["bond_id"]]["accrued_units"]
         assert (acc, int(carry)) == (3, 0), (acc, carry)
-        # Conservation: every pool unit is either paid out or carried, never
-        # both and never neither. Unchanged by the apportionment.
+        # Conservation: every pool unit is either paid out or carried,
+        # never both and never neither. Unchanged by the apportionment.
         assert int(carry) == pool - acc, (carry, pool, acc)
     finally:
         _unarm_fee(saved)
@@ -1113,7 +1117,7 @@ def test_apportion_is_exact_and_never_starves_when_pool_covers():
     The V3 case is the 2026-09-29 sweep verbatim (pool 63, faces
     20/4/250/10); the thin case is the pool-3 shape from #678. Both must sum
     to exactly `pool` and, because `pool >= len(faces)`, must leave nobody on
-    zero. `pool < len(faces)` is a separate pin (see the boundary test).
+    zero. `pool < len(faces)` is a separate pin (the boundary test).
     """
     from db._bonds import _apportion
 
@@ -1129,14 +1133,14 @@ def test_apportion_is_exact_and_never_starves_when_pool_covers():
     assert sum(thin) == 3, thin
     assert min(thin) >= 1, thin
 
-    # Exactness across a spread of shapes, including equal faces and a
-    # single bond, so a remainder-index bug cannot hide behind one fixture.
+    # Exactness across a spread of shapes, including equal faces and a single
+    # bond, so a remainder-index bug cannot hide behind one fixture.
     shapes = [
         (1, [1]),
         (1, [1, 1, 1, 1]),
         (2, [1, 1]),
         (7, [1, 2, 3, 4, 5, 6, 7]),
-        (13, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
+        (13, [1] * 13),
         (100, [1, 99]),
         (100, [99, 1]),
         (1000, [1, 2, 3]),
@@ -1159,8 +1163,9 @@ def test_apportion_is_exact_and_never_starves_when_pool_covers():
 def test_apportion_boundary_at_and_below_pool_count():
     """Pin the guarantee cutoff itself, so the documented limit is enforced
     rather than assumed. At `pool == n` every bond gets exactly one unit; at
-    `pool == n - 1` there are not enough units and the guarantee is off, so
-    this documents that a zero share is still reachable below the line."""
+    `pool == n - 1` there are not enough units, the guarantee is off, and a
+    zero share is still reachable - pinned as reachable, not pretended away.
+    """
     from db._bonds import _apportion
 
     faces = [20, 4, 250, 10]
@@ -1170,8 +1175,6 @@ def test_apportion_boundary_at_and_below_pool_count():
 
     below = _apportion(3, faces)
     assert sum(below) == 3, below
-    # Below the line the guarantee does not apply - that is the documented
-    # boundary, and a bond can legitimately receive 0 here.
     assert min(below) == 0, below
 
 
@@ -1179,8 +1182,8 @@ def test_minimum_face_bond_accrues_end_to_end():
     """Regression for #B157, end to end through the real sweep.
 
     RED on main: with faces 250/4 the old split pays `pool * 4 // 254`, which
-    is 0 for any pool under 64, and the `if share:` guard then skips the row
-    so the bond silently stops accruing.
+    is 0 for any pool under 64, and the `if share:` guard then skipped the row
+    so the bond silently stopped accruing.
     """
     holder = _make_holder("bd-minface", seed_units=20000)
     peer = _make_holder("bd-minface-peer")
@@ -1210,6 +1213,50 @@ def test_minimum_face_bond_accrues_end_to_end():
         assert small_acc >= 1, (small_acc, pool, big_acc)
         # Distributed in full, nothing stranded in the carryover.
         assert small_acc + big_acc == pool, (small_acc, big_acc, pool)
+    finally:
+        _unarm_fee(saved)
+
+
+def test_zero_share_still_advances_last_accrual_day():
+    """The detector for the NEXT #B157, and the fix for how this one hid.
+
+    The sweep used to skip a zero-share row WHOLE (`if share:`), so the bond's
+    `last_accrual_day` froze and nothing anywhere recorded that it had been
+    skipped - which is exactly why bond #4 could go to zero for days with no
+    visible cause. Every swept row is now stamped, zero shares included.
+
+    The arm is deliberately built BELOW the guarantee line (pool < number of
+    bonds) so the skip really happens: an assert that the split contains a
+    zero guards this pin against being vacuous, which is the trap in a test
+    that only ever exercises the guaranteed path.
+    """
+    from db._bonds import _apportion
+
+    holder = _make_holder("bd-zero-stamp")
+    sid = bond_series_open("zero-stamp-7", 7)["series_id"]
+    saved = _arm_fee(10.0)
+    try:
+        peer = _make_holder("bd-zero-stamp-peer")
+        db.transfer_credits(holder["agent_id"], peer["agent_id"], 1000)
+        bonds = [buy_bond(holder["token"], sid, 1.0) for _ in range(3)]
+        for x in bonds:
+            _backdate(x["bond_id"], bought="2020-01-01T00:00:00.000Z")
+        with db._conn() as conn:
+            opened = conn.execute(
+                "SELECT created_at FROM bond_series WHERE id = ?", (sid,)
+            ).fetchone()[0]
+            base = _trailing_fee_intake_units(conn, max(_since_7d(), opened))
+        pool = int(base * 15.0 / 700)
+        assert pool == 2, pool  # below len(faces)=3: no guarantee applies
+        shares = _apportion(pool, [20, 20, 20])
+        assert sum(shares) == pool, shares
+        assert min(shares) == 0, shares  # the skip this pin is about
+        _reset_sweep_day()
+        sweep_bond_day()
+        got = {x["id"]: x for x in my_bonds(holder["token"])["bonds"]}
+        stamped = [got[x["bond_id"]]["last_accrual_day"] for x in bonds]
+        assert all(stamped), stamped
+        assert len(set(stamped)) == 1, stamped
     finally:
         _unarm_fee(saved)
 
@@ -1247,42 +1294,73 @@ def test_legacy_carryover_is_consumed_and_cleared():
         _unarm_fee(saved)
 
 
-def test_preview_discloses_break_even_for_starved_and_healthy():
-    """The preview already modelled the floor honestly; what it could not
-    say was the condition. These two fields make the trap visible before the
-    buy, which is the whole point - the buy I got wrong was honest at the
-    time and silently voided the next day."""
-    from db._bonds import preview_bond_yield
+def test_preview_agrees_with_the_sweep_engine():
+    """The projection is pinned AGAINST `_apportion`, not against itself.
 
-    holder = _make_holder("bd-preview-floor", seed_units=20000)
-    peer = _make_holder("bd-preview-floor-peer")
-    sid = bond_series_open("preview-floor-7", 7, min_face_credits=0.2)["series_id"]
+    This is the arm that was missing, and its absence is why a 5/5 CI shipped
+    a preview describing the rule the same branch was deleting. The old pin
+    asserted the preview's own break-even formula: correct before the repair,
+    wrong after it - and since the pin and the code agreed with each other, it
+    stayed green through both. A pin that agrees with the code it tests cannot
+    tell you the code is wrong.
+
+    Here the expected value is derived from the ENGINE on inputs rebuilt from
+    the database, so the two can genuinely disagree. Both red arms are the
+    bug's own shape: a 4-unit face beside a 250-unit bond, in a pool that
+    covers both, is paid - and is reported as paid.
+    """
+    from db._bonds import _apportion, preview_bond_yield
+
+    holder = _make_holder("bd-preview-agree", seed_units=20000)
+    peer = _make_holder("bd-preview-agree-peer")
+    sid = bond_series_open("preview-agree-7", 7, min_face_credits=0.2)["series_id"]
     saved = _arm_fee(10.0)
     try:
         db.transfer_credits(holder["agent_id"], peer["agent_id"], 15000)
-        big_bond = buy_bond(holder["token"], sid, 12.5)
-        # Backdate so it is inside the preview's eligible set: a bond bought
+        big = buy_bond(holder["token"], sid, 12.5)
+        # Backdate so it is inside the preview's eligible set; a bond bought
         # today is excluded by the sweep's `bought_at < today` gate, which
         # would make the series look empty and the trap invisible.
-        _backdate(big_bond["bond_id"], bought="2020-01-01T00:00:00.000Z")
-        small = preview_bond_yield(holder["token"], sid, 0.2)
-        big = preview_bond_yield(holder["token"], sid, 12.0)
-        # Formula is pinned, not just presence: break-even is the eligible
-        # face at which `pool * face // denom` stops reaching 1.
-        for row in (small, big):
-            assert row["break_even_eligible_face_units"] == (
-                row["pool_today_units"] * row["face_units"] - row["face_units"]
-            ), row
-            assert row["accrues"] == (
-                row["eligible_face_units"] <= row["break_even_eligible_face_units"]
-            ), row
-        # 250u already outstanding, so a 4u face is over its break-even and a
-        # 240u one is not - the exact shape that stranded a real bond.
-        assert small["accrues"] is False, small
-        assert small["eligible_face_units"] > small["break_even_eligible_face_units"], (
-            small
-        )
-        assert big["accrues"] is True, big
+        _backdate(big["bond_id"], bought="2020-01-01T00:00:00.000Z")
+        row = preview_bond_yield(holder["token"], sid, 0.2)
+
+        # Rebuild the engine's inputs from the database, independently.
+        with db._conn() as conn:
+            faces = [
+                int(r["face_units"])
+                for r in conn.execute(
+                    "SELECT face_units FROM treasury_bonds"
+                    " WHERE series_id = ? AND status = 'active'",
+                    (sid,),
+                ).fetchall()
+            ]
+        assert faces == [250], faces
+        assert row["eligible_bond_count"] == len(faces), row
+        assert row["eligible_face_units"] == sum(faces), row
+
+        face = int(row["face_units"])
+        today_pool = int(row["pool_today_units"])
+        carry = int(row["carry_units"])
+        trial = faces + [face]
+        first = _apportion(today_pool + carry, trial)[-1]
+        steady = _apportion(today_pool, trial)[-1]
+
+        # 1. The projection IS the engine's number.
+        assert (
+            row["projected_7d_yield_units"]
+            == first + (int(row["horizon_days"]) - 1) * steady
+        ), (row, first, steady)
+        # 2. The disclosure is the engine's condition, not a re-derived one.
+        assert row["accrues"] == (first > 0), (row, first)
+        assert row["guarantee_on"] == ((today_pool + carry) >= len(trial)), row
+        # 3. The bug's own shape: a minimum face beside a large one is PAID,
+        #    and the preview says so. Both asserts are red before the repair.
+        assert first >= 1, (first, row)
+        assert row["accrues"] is True, row
+        assert row["projected_7d_yield_units"] >= 1, row
+        # 4. No face break-even is reported; under guarantee-then-Hamilton
+        #    there is no such quantity above the line to report.
+        assert "break_even_eligible_face_units" not in row, sorted(row)
     finally:
         _unarm_fee(saved)
 

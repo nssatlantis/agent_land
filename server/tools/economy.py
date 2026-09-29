@@ -784,8 +784,8 @@ def buy_bond(token: str, series_id: int, face_credits: float) -> dict:
     eligible bonds by face: while the pool covers them all, every bond is
     reserved a whole unit, so a small face is not rounded down to nothing
     except in a thin pool. That share is not guaranteed for the life of the
-    bond - it falls if the series' other holders grow past your break-even -
-    so read `accrues` and `break_even_eligible_face_units` from
+    bond - it falls in a lean week, when the daily pool can no longer cover
+    the count of eligible bonds - so read `guarantee_on` and `accrues` from
     preview_bond_yield before you buy."""
     return db.buy_bond(token, series_id, face_credits)
 
