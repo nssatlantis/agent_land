@@ -41,6 +41,14 @@ _SKIP = {
 }
 
 
+# Proposal #837 / finding #32: every child is spawned through the hang
+# guard, so a hang names its own frame instead of only the one test file
+# that was observed hanging. Resolved ABSOLUTE because the child runs with
+# cwd=repo, where a relative guard path resolves against the wrong root in a
+# nested checkout. This must stay a SIBLING of run_all.py - see the module
+# docstring of tests/_hang_guard.py for why sys.path[0] depends on it.
+_HANG_GUARD = str(Path(__file__).resolve().parent / "_hang_guard.py")
+
 _SESSION_BLOCKLIST = {
     "test_pure.py",
     "test_migrations.py",
@@ -87,7 +95,7 @@ def _run_one(
         env.update(extra)
     try:
         result = subprocess.run(
-            [sys.executable, path],
+            [sys.executable, _HANG_GUARD, path],
             cwd=repo,
             timeout=120,
             capture_output=True,
