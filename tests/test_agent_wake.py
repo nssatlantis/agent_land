@@ -2121,8 +2121,16 @@ def test_rereview_prompt_never_invites_the_refused_call():
     assert "finding_verify" not in prompt, prompt
     assert "re-cast" in prompt, prompt
     assert "6106" in prompt and "#7" in prompt and "#9" in prompt, prompt
-    assert "must never reach a prompt" not in prompt, prompt
     assert len(prompt) < 500, len(prompt)
+    # An earlier version of this block also asserted
+    # `"must never reach a prompt" not in prompt`.  That phrase is fixture
+    # text from a docstring in THIS file; it appears in no implementation
+    # of the prompt, so the assertion was satisfied by every string the
+    # function could ever return and could not fail.  A negative assertion
+    # is worth exactly the set of strings it rules out, and that set was
+    # empty.  The two negatives kept above are real: an implementation
+    # that told the finder to run finding_verify, or that named a
+    # verifier, would red them.
 
 
 def test_rereview_wakes_the_finder_through_the_sweep():
@@ -2191,6 +2199,118 @@ def test_rereview_burst_collapses_into_one_wake_naming_all():
     assert len(mine) == 1, f"a 3-finding resolve burst must be ONE wake, got {sent}"
     for f in fids:
         assert f"#{f}" in mine[0], f"finding {f} unnamed in the wake: {mine[0]}"
+
+
+def test_rereview_wakes_again_for_a_finding_resolved_after_the_first_wake():
+    """A delivered pair is closed over the findings it NAMED, not forever.
+
+    The state recorded only "this voter was told", never "told about
+    WHICH findings", so a finding resolved AFTER a wake was discarded at
+    the caller's `continue` with nothing anywhere recording the loss.  The
+    burst pin could not see this, because it resolves every finding
+    BEFORE the sweep and so only ever exercises the pre-wake burst.
+
+    The debounce is zeroed here deliberately, and for a reason worth
+    naming: with it live, the second wake is correctly DEFERRED for the
+    quiet window, which is the designed behaviour and would mask the
+    coverage defect behind a debounce arm.  Zeroing it isolates the
+    question being asked, which is "is this pair still a candidate at
+    all", and the deferral is pinned separately by the retry test.
+    """
+    agents = AGENTS
+    alpha = agents["alpha"]["agent_id"]
+    zeta = agents["zeta"]["agent_id"]
+    pid = _proposal(agents, "alpha", "rrafter")
+    with db._conn(immediate=True) as conn:
+        _link(conn, pid, 6301, alpha)
+        first = _finding(conn, pid, zeta, 6301)
+        db.finding_mark_resolved(conn, first, alpha, "shipped", ())
+    _only_endpoint(zeta)
+    restore = _wake_cfg(AGENT_WAKE_DEBOUNCE_SECONDS=0)
+    real, _ = _stub(_oc_routes())
+    real_send = wake.send_wake
+    sent = []
+
+    def _capture(endpoint, session_id, text):
+        sent.append(text)
+        return True
+
+    wake.send_wake = _capture
+    try:
+        wake.wake_sweep()
+        assert len([s for s in sent if "6301" in s]) == 1, sent
+        with db._conn(immediate=True) as conn:
+            second = _finding(conn, pid, zeta, 6301)
+            db.finding_mark_resolved(conn, second, alpha, "shipped", ())
+        wake.wake_sweep()
+    finally:
+        wake.send_wake = real_send
+        _restore(real)
+        restore()
+    later = [s for s in sent if "6301" in s]
+    assert len(later) == 2, (
+        "a finding resolved after the first wake earned no second wake, so"
+        f" the blocker it names would sit unnoticed: {sent}"
+    )
+    assert f"#{second}" in later[1], later[1]
+    assert f"#{first}" not in later[1], (
+        f"the second wake re-names an already-covered finding: {later[1]}"
+    )
+
+
+def test_rereview_one_finders_wake_does_not_silence_another_on_the_same_pr():
+    """The debounce watermark is per PAIR, so two finders on one PR are two
+    wakes - and a debounce is never stamped as a terminal rejection.
+
+    Both halves were wrong and together they were a silent loss.  The
+    watermark was `MAX(notified_at) ... WHERE pr_number = ?`, scoped
+    across every voter, so within a SINGLE sweep voter A's delivery set
+    voter B's debounce; and the caller treated the resulting "debounce"
+    like any other rejection and called _discard_rereview, whose own
+    docstring says it is only for rejections "that will never change".  A
+    debounce is the opposite.  So B was retired on a condition that
+    expires in 28 minutes, and never woken afterwards.
+    """
+    agents = AGENTS
+    alpha = agents["alpha"]["agent_id"]
+    eta = agents["eta"]["agent_id"]
+    theta = agents["theta"]["agent_id"]
+    pid = _proposal(agents, "alpha", "rrtwofinders")
+    with db._conn(immediate=True) as conn:
+        _link(conn, pid, 6302, alpha)
+        for _who in (eta, theta):
+            db.finding_mark_resolved(
+                conn, _finding(conn, pid, _who, 6302), alpha, "shipped", ()
+            )
+    _only_endpoint(eta, theta)
+    restore = _wake_cfg(AGENT_WAKE_DEBOUNCE_SECONDS=1800)
+    real, _ = _stub(_oc_routes())
+    real_send = wake.send_wake
+    sent = []
+
+    def _capture(endpoint, session_id, text):
+        sent.append(text)
+        return True
+
+    wake.send_wake = _capture
+    try:
+        out = wake.wake_sweep()
+    finally:
+        wake.send_wake = real_send
+        _restore(real)
+        restore()
+    mine = [s for s in sent if "6302" in s]
+    assert len(mine) == 2, (
+        "two finders with a resolved finding on one PR, one sweep, and only"
+        f" {len(mine)} wake(s) - one voter's delivery debounced the other"
+        f" out permanently: {sent}"
+    )
+    assert not any(
+        o.get("direction") == "rereview" and o.get("outcome") == "debounce" for o in out
+    ), (
+        "a candidate hit the debounce inside its own first sweep, which can"
+        f" only mean another voter's delivery set its watermark: {out}"
+    )
 
 
 def test_rereview_deferred_wake_stays_retryable():
@@ -2270,7 +2390,12 @@ def test_rereview_switch_off_silences_only_that_direction():
     assert any(o["outcome"] == "sent" for o in out), (
         f"the inbound direction was silenced too: {out}"
     )
-    assert sent and "6110" in [s for s in sent if "6110" in s][0], sent
+    # Names PR 6110 specifically, because the assertion above only proves
+    # that SOME inbound wake went out and a different PR would satisfy it.
+    # The earlier form filtered the list on "6110" and then asserted 6110
+    # was in the filtered list - a tautology that raised IndexError instead
+    # of failing with its own message when nothing named 6110.
+    assert any("6110" in s for s in sent), sent
 
 
 def test_old_schema_database_regains_the_rereview_table():
@@ -2378,6 +2503,8 @@ def main():
         test_rereview_prompt_never_invites_the_refused_call,
         test_rereview_wakes_the_finder_through_the_sweep,
         test_rereview_burst_collapses_into_one_wake_naming_all,
+        test_rereview_wakes_again_for_a_finding_resolved_after_the_first_wake,
+        test_rereview_one_finders_wake_does_not_silence_another_on_the_same_pr,
         test_rereview_deferred_wake_stays_retryable,
         test_rereview_switch_off_silences_only_that_direction,
         test_old_schema_database_regains_the_rereview_table,
