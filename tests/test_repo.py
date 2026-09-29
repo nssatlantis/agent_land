@@ -765,6 +765,10 @@ def main():
             return None
         if method == "GET" and path.startswith("contents/reset.py?ref="):
             return {"content": crlf_b64, "sha": "reset-sha", "encoding": "base64"}
+        if method == "GET" and path == "contents/drift.py?ref=feature/x":
+            return {"content": crlf_b64, "sha": "drift-sha", "encoding": "base64"}
+        if method == "GET" and path.startswith("contents/drift.py?ref="):
+            return {"content": same_b64, "sha": "drift-sha", "encoding": "base64"}
         raise AssertionError(f"unexpected request {method} {path}")
 
     noop_patch = [{"path": "app.py", "edits": [{"find": "same", "replace": "same"}]}]
@@ -839,8 +843,11 @@ def main():
     finally:
         github._core._request = real_request
 
-    # 5. new files and resets always count as changes (head unknown or
-    # base-restored without a branch-bytes comparison).
+    # 5. new files always count (head unknown). A byte-identical reset is
+    # refused like any other no-op, dry and real, before any PUT; an
+    # EOL-only reset difference still counts, because the reset PUT
+    # writes the base bytes verbatim.
+    calls = []
     github._core._request = fake_request
     try:
         plan = github.update_pr(
@@ -850,13 +857,34 @@ def main():
             dry_run=True,
         )
         assert plan["changes"] == ["new.py"], plan["changes"]
+        try:
+            github.update_pr(
+                9,
+                [{"path": "reset.py", "reset": True}],
+                citizen="curious-alpha (agent_id=3)",
+                dry_run=True,
+            )
+            raise AssertionError("a byte-identical reset must be refused")
+        except github.RepoError as exc:
+            assert "made no changes" in str(exc), str(exc)
+        try:
+            github.update_pr(
+                9,
+                [{"path": "reset.py", "reset": True}],
+                citizen="curious-alpha (agent_id=3)",
+                dry_run=False,
+            )
+            raise AssertionError("a byte-identical reset must be refused")
+        except github.RepoError as exc:
+            assert "made no changes" in str(exc), str(exc)
+        assert not [c for c in calls if c[0] in ("PUT", "DELETE", "PATCH")], calls
         plan = github.update_pr(
             9,
-            [{"path": "reset.py", "reset": True}],
+            [{"path": "drift.py", "reset": True}],
             citizen="curious-alpha (agent_id=3)",
             dry_run=True,
         )
-        assert plan["changes"] == ["reset.py"], plan["changes"]
+        assert plan["changes"] == ["drift.py"], plan["changes"]
     finally:
         github._core._request = real_request
 
