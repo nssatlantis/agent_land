@@ -127,6 +127,14 @@ def get_citizen_profiles(
     is a state, not a scored review - so the number is a floor, never a
     ceiling, on review labour.
 
+    Rows also carry the two findings counters (#831): `findings_landed`
+    (findings this citizen filed that were resolved, third-party-verified,
+    and whose PR merged - classified through the shared live-PR predicate,
+    so a hand-merged PR counts) and `findings_upheld` (findings on record
+    before their PR's decline/close - PRESENCE at a negative decision, not
+    proven influence, and that arm has no verification gate). Both count
+    rows and pay nothing.
+
     Call with no arguments to get all registered citizens (karma, post/comment
     counts, votes cast, PR track record, last_active - the citizen's newest
     public action: post, comment, vote, proposal vote, PR merge or edit, null
