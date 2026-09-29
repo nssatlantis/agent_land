@@ -848,21 +848,38 @@ def preview_bond_yield(token: str, series_id: int, face_credits: float) -> dict:
             carry = 0
         today = _today_key()
         now_iso = _iso(_now())
-        elig = conn.execute(
-            "SELECT COALESCE(SUM(face_units), 0) FROM treasury_bonds"
+        elig_rows = conn.execute(
+            "SELECT face_units FROM treasury_bonds"
             " WHERE series_id = ? AND status = 'active'"
             " AND substr(bought_at, 1, 10) < ?"
             " AND matures_at > ?",
             (int(series_id), today, now_iso),
-        ).fetchone()[0]
-        elig_face = int(elig or 0)
-        denom = elig_face + face
+        ).fetchall()
+        elig_faces = [int(r["face_units"]) for r in elig_rows]
+        elig_face = sum(elig_faces)
         term_days = max(1, int(s["term_days"]))
         horizon = min(7, term_days)
-        my_first = (base_pool + carry) * face // denom if denom > 0 and face > 0 else 0
-        my_day = base_pool * face // denom if denom > 0 and face > 0 else 0
+        # The SPLIT comes from `_apportion` - the same call the sweep makes on
+        # the same eligible rows - so the projection cannot drift from the
+        # engine by re-deriving the rule. `my_first` mirrors the sweep's pool
+        # (base pool plus carry, which the sweep folds in before splitting);
+        # `my_day` is the steady state once carry has drained, which is what a
+        # lean week looks like to a holder.
+        trial = elig_faces + [face]
+        my_first = _apportion(base_pool + carry, trial)[-1] if face > 0 else 0
+        my_day = _apportion(base_pool, trial)[-1] if face > 0 else 0
         projected = my_first + (horizon - 1) * my_day
         net = projected - fee
+        # `accrues` ASKS THE ENGINE what today's pool yields rather than
+        # re-deriving a threshold, so it cannot disagree with the sweep.
+        # `guarantee_on` is the condition a reader can act on: above it every
+        # eligible bond is reserved a unit, so a small face is never skipped
+        # for being small. There is no face break-even under
+        # guarantee-then-Hamilton - below the line the split falls back to
+        # largest remainder, and which bond is skipped is not predictable from
+        # face size.
+        guarantee_on = bool(face > 0 and (base_pool + carry) >= len(trial))
+        accrues = my_first > 0
         return {
             "estimate": True,
             "series_id": int(series_id),
@@ -881,6 +898,9 @@ def preview_bond_yield(token: str, series_id: int, face_credits: float) -> dict:
             "pool_today_units": base_pool,
             "carry_units": carry,
             "eligible_face_units": elig_face,
+            "eligible_bond_count": len(elig_faces),
+            "guarantee_on": guarantee_on,
+            "accrues": accrues,
             "by_family": by_family,
             "projected_7d_yield_units": projected,
             "projected_7d_yield_credits": format_credits(projected),
@@ -890,16 +910,83 @@ def preview_bond_yield(token: str, series_id: int, face_credits: float) -> dict:
             "disclaimer": (
                 "Projection from live trailing intake, not a promise:"
                 " lean weeks pay dust, carry shifts, and future intake"
-                " moves the number."
+                " moves the number. A bond stops accruing when the daily"
+                " pool can no longer cover the COUNT of eligible bonds"
+                " - `guarantee_on` false - and below that line the split"
+                " falls back to largest remainder, so which bond is"
+                " skipped is not predictable from face size."
             ),
         }
+
+
+def _apportion(pool: int, faces: list[int]) -> list[int]:
+    """Split `pool` units across `faces`, in order, so that no eligible bond
+    is floored to zero whenever the pool can cover them all.
+
+    Plain floor division (`pool * face // total_face`) gives a bond a whole
+    unit only when `face >= total_face / pool`. Below that its share is 0 and
+    the holder simply stops accruing (bug #157). The remainder used to idle in
+    the series carryover, but carry is folded back into the next day's pool and
+    re-floored by the same arithmetic, so the starvation repeats daily instead
+    of being repaired.
+
+    Two steps, and the order matters:
+
+    1. GUARANTEE - when `pool >= len(faces)`, reserve one unit for every bond.
+       This is the only step that makes a zero share structurally impossible.
+       Plain largest-remainder alone does NOT do this: it makes the total exact
+       but still awards the leftover to the largest fractional parts, so a bond
+       with a tiny fraction is skipped whenever the pool is thin.
+    2. LARGEST REMAINDER - distribute what remains by descending fractional
+       part, so the parts sum to exactly the amount being divided. That is what
+       drives the carryover to 0: nothing is stranded, so nothing has to be
+       recalled tomorrow.
+
+    Integer-only. The fractional part of `rest * face / total` is compared as
+    the remainder `rest * face % total`, so no float rounding can move a unit.
+    Ties break on index, so a given input always yields the same split.
+
+    Boundary, and it is a real one: the guarantee needs `pool >= len(faces)`.
+    Below that there are not enough units to give everyone one, and this does
+    NOT manufacture any - it falls back to pure largest-remainder, where a bond
+    with a small fractional part may still receive zero. Callers must not treat
+    a non-zero share as guaranteed below that threshold.
+
+    This is the single place the daily pool is split. The sweep and
+    `preview_bond_yield` both call it, so a projection cannot describe a rule
+    the engine has replaced.
+
+    Returns a list the same length as `faces`, summing to exactly `pool`
+    whenever `pool > 0` and the faces are positive.
+    """
+    if pool <= 0 or not faces:
+        return [0] * len(faces)
+    total = sum(faces)
+    if total <= 0:
+        return [0] * len(faces)
+    guarantee = 1 if pool >= len(faces) else 0
+    rest = pool - guarantee * len(faces)
+    numerators = [rest * f for f in faces]
+    parts = [n // total for n in numerators]
+    # Descending fractional part; index breaks ties so the split is stable.
+    order = sorted(range(len(faces)), key=lambda i: (-(numerators[i] % total), i))
+    # sum(parts) <= rest and sum(parts) > rest - len(faces), so this count is
+    # in [0, len(faces)) and the index into `order` is always in range.
+    for k in range(rest - sum(parts)):
+        parts[order[k]] += 1
+    return [p + guarantee for p in parts]
 
 
 def sweep_bond_day() -> dict:
     """Daily bond sweep (poller, degrade-silently outside): release
     matured bonds, then accrue one bond-day per eligible bond from each
-    series' pool (trailing-window share + carryover, floored, remainder
-    carried). Idempotent per UTC day; quiet when idle."""
+    series' pool (trailing-window share + carryover). The pool is split by
+    `_apportion` - guarantee, then largest remainder - so it is distributed
+    in full and no eligible bond is floored to zero while the pool can cover
+    them all. `last_accrual_day` is stamped on every swept row INCLUDING a
+    zero share, so a bond the pool cannot cover leaves a visible "swept, paid
+    0" record instead of a frozen watermark (bug #157's invisibility).
+    Idempotent per UTC day; quiet when idle."""
     from db._credits import format_credits, grant, release_escrow
 
     with _conn(immediate=True) as conn:
@@ -1027,16 +1114,26 @@ def sweep_bond_day() -> dict:
             total_face = sum(int(r["face_units"]) for r in eligible)
             given = 0
             if pool > 0 and total_face > 0:
-                for r in eligible:
-                    share = pool * int(r["face_units"]) // total_face
-                    if share:
-                        conn.execute(
-                            "UPDATE treasury_bonds SET accrued_units ="
-                            " accrued_units + ?, last_accrual_day = ?"
-                            " WHERE id = ?",
-                            (share, today, int(r["id"])),
-                        )
-                        given += share
+                shares = _apportion(pool, [int(r["face_units"]) for r in eligible])
+                for idx, r in enumerate(eligible):
+                    share = shares[idx]
+                    # Stamped on EVERY row, zero shares included. The old
+                    # `if share:` guard skipped the row whole, so a starved
+                    # bond's last_accrual_day froze and nothing anywhere
+                    # recorded that it had been skipped - which is how #B157
+                    # stayed invisible for days. A zero accrual that is
+                    # stamped is observable; one that leaves no trace is not.
+                    conn.execute(
+                        "UPDATE treasury_bonds SET accrued_units ="
+                        " accrued_units + ?, last_accrual_day = ?"
+                        " WHERE id = ?",
+                        (share, today, int(r["id"])),
+                    )
+                    given += share
+            # `_apportion` sums to exactly `pool`, so `given == pool` on this
+            # path and the carryover lands on 0. The write stays so a legacy
+            # carry, or an early-redemption forfeiture, is still consumed and
+            # cleared rather than accumulating.
             _meta_set(conn, carry_key, str(pool - given))
             accrued_total += given
         _meta_set(conn, "bond_last_sweep_day", today)
