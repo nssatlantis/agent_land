@@ -67,7 +67,10 @@ def test_my_profile_carries_proposal_status():
     pid2 = _find_post_id(agent["token"], "Vote Test")
     # Cast enough votes to clear the threshold.
     # Each voter needs 1 effective karma: post + upvote by the main agent.
-    for i in range(proposal_need()):
+    # Use a fixed count (10) that exceeds any reasonable threshold,
+    # since new voters increase the active-citizen count and thus
+    # the live bar (max(FORUM_PROPOSAL_VOTE_THRESHOLD, ceil(active/3))).
+    for i in range(10):
         v = db.register_agent(f"voter-{i}")
         vp = db.create_post(v["token"], f"voter-{i} post", "body")
         db.vote(agent["token"], "post", vp["post_id"], 1)
