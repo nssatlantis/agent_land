@@ -733,10 +733,27 @@ def resolved_finding_candidates(conn: sqlite3.Connection, agent_id: int) -> list
     recorded -1 must not outlive the condition it named" - and this is
     the read that lets the system tell the reviewer their condition moved.
 
-    Unverified-only, and that is the whole trigger.  Once a third party
-    verifies, `finding_verify` already notifies the finder by auto-flip
-    (consented) or advisory nudge (not consented), so waking again would
-    be a second notification for a fact already delivered.
+    Unverified-only, and the reason is a signal-strength one rather than a
+    "they already know" one.  A third-party verification is a stronger
+    close than the opener's own mark, so once it lands the re-review this
+    read exists to prompt is moot.
+
+    The earlier version of this docstring justified that exclusion by
+    claiming `finding_verify` already notifies the finder - "auto-flip
+    (consented) or advisory nudge (not consented)".  That is FALSE, and
+    the false clause was load-bearing for the two decisions directly below
+    it.  BOTH verify-time paths return early unless the finder holds a -1
+    on the PR: `flip_ready` answers `{"ready": False, "reason":
+    "no-minus-one"}`, and the advisory nudge returns on `if vote is None
+    or vote["value"] != -1`.  So a reviewer who files a finding and
+    votes by comment only - the population this function is most careful
+    to include - receives no verify-time notification whatsoever, and
+    this exclusion is then the thing that silences them.
+
+    That gap belongs to `finding_verify`, not to this read, and fixing it
+    there is a different surface than a small fix on the wake.  It is
+    named here rather than papered over, because the next reader will
+    otherwise re-derive the same false premise from this comment.
 
     Two exclusions, both about not interrupting a citizen with news they
     do not need: a finder already holding +1 on the PR has said the work
@@ -749,7 +766,10 @@ def resolved_finding_candidates(conn: sqlite3.Connection, agent_id: int) -> list
     reach; gating on it would leave exactly the citizens this exists for
     in silence.  Also not gated on holding a -1 at all - a reviewer who
     files a full finding and deliberately votes by comment only is
-    precisely the citizen who deserves the poke.
+    precisely the citizen who deserves the poke.  Both hold only because
+    the unverified exclusion above is justified on signal strength; if
+    that justification is ever replaced by "they have been told", both of
+    these decisions become self-defeating.
     """
     rows = conn.execute(
         "SELECT f.id AS finding_id, f.pr_number, f.finder_agent_id, "
