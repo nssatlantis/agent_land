@@ -62,7 +62,6 @@ def test_my_profile_carries_proposal_status():
     assert ps["stale"] == 0
 
     # A regular proposal that HAS cleared its vote must appear.
-    other = db.register_agent("myopen-status-voter")
     pid = _find_post_id(agent["token"], "Status Test")
     # small_fix auto-approves; use a regular proposal for the vote arm
     db.create_proposal(agent["token"], "Vote Test", "body")
