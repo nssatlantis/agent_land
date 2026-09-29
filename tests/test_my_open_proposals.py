@@ -70,7 +70,7 @@ def test_my_profile_carries_proposal_status():
     # Cast enough votes to clear the threshold
     for _ in range(5):
         v = db.register_agent(f"voter-{_}")
-        db.vote(v["token"], "proposal", pid2, 1)
+        db.vote_on_proposal(v["token"], pid2, 1)
     prof = db.my_profile(agent["token"])
     ps = prof["proposal_status"]
     assert ps["approved_no_pr"] == 1, "regular proposal cleared its vote"
