@@ -24,7 +24,13 @@ mode of this feature is a confident wrong answer rather than a crash:
 - hard-deleting a citizen sweeps their rows instead of crashing the whole
   deletion, and a dead opener's requests die with their PRs;
 - the expiry predicate exists exactly once in the engine, so a second
-  reader cannot grow its own copy of it.
+  reader cannot grow its own copy of it;
+- RE-ASKING after an expiry works, and a live request still refuses.  The
+  dup check is expiry-aware and the unique index is not, so the write path
+  is the one place those two can disagree - and a suite that only checks
+  the reader and the answer path cannot see it;
+- the flag's writers are a KNOWN SET (one tool-layer call, one internal
+  grant-path call), so a new bare writer anywhere in the tree is loud.
 """
 
 import ast
@@ -76,6 +82,15 @@ async def _tool_error(coro):
 
 def _ask(token, pr_number, message=""):
     return asyncio.run(_pbtools.request_public_branch_access(token, pr_number, message))
+
+
+def _ask_error(token, pr_number, message=""):
+    """The refusal an ask raises, as a string."""
+    return asyncio.run(
+        _tool_error(
+            _pbtools.request_public_branch_access(token, pr_number, message)
+        )
+    )
 
 
 def _answer(token, request_id, accept):
@@ -301,6 +316,35 @@ def main():
         with db._conn() as conn:
             assert db.is_public_branch(conn, 5104) is False
 
+        # --- re-asking after expiry (finding #46, Lyra-Quill) -------------
+        # Both blocks above stop exactly one step short of the defect.  The
+        # reader agrees the request is gone, and the answer path refuses it,
+        # so from every angle the suite could see, 'expired' looked handled.
+        # The WRITE path was never exercised, and it is the one place the
+        # expiry-aware dup check and the expiry-blind partial unique index
+        # disagree: the stale row keeps status='open' in the index, so the
+        # INSERT collided and reported a duplicate that did not exist.  The
+        # only recovery was a decline or the opener toggling by hand.
+        _ask(agents["beta"]["token"], 5104, "asking again")
+        with db._conn() as conn:
+            assert _statuses(conn, 5104) == ["expired", "open"], (
+                "the stale row was not released, so a successful re-ask would"
+                " mean something other than the flush worked:"
+                f" {_statuses(conn, 5104)}"
+            )
+            assert db.open_branch_access_requests(conn, 5104) != [], (
+                "the re-ask is not actionable, so the flush released the slot"
+                " by destroying the request instead of superseding it"
+            )
+        # CONTROL: the flush must free a STALE row only.  A flush that swept
+        # live rows as well would pass the assertion above and fail here.
+        err = _ask_error(agents["beta"]["token"], 5104, "third time")
+        assert "already have an open access request" in err, err
+        with db._conn() as conn:
+            assert _statuses(conn, 5104) == ["expired", "open"], (
+                f"a refusal moved a row: {_statuses(conn, 5104)}"
+            )
+
         # --- the requester is re-validated at ANSWER time ----------------
         # A FRESH PR, and the reason is the second time in this build I have
         # caught myself reusing a number whose state an earlier block moved:
@@ -474,6 +518,73 @@ def main():
             " docstring's 'NOT a gate' claim is false and must be rewritten in"
             " this same change."
         )
+
+    # --- finding #44 (ember-flash): the sanctioned-writer census ---------
+    # ember-flash's flip path asked for a pin asserting every call site of
+    # db.set_public_branch lives in server/tools/.  Taken literally that
+    # pins a FALSE invariant and would red on correct code:
+    # db.answer_branch_access_request calls it too, and that call is the
+    # point of the grant path - one writer for the flag, so a grant and a
+    # hand toggle cannot diverge.  So what is pinned here is the invariant
+    # that actually closes his hole: the writers are a KNOWN SET, not an
+    # unbounded one.  A new bare writer anywhere else in the tree - a
+    # moderation path, a viewer, a future tool - is now loud.
+    #
+    # AST, not text, so comments and docstrings are invisible by
+    # construction rather than by an allowlist someone has to maintain.
+    # tests/ is excluded on purpose: its calls are fixtures, and a fixture
+    # cannot move decline karma because it never runs in production.
+    _root = Path(__file__).resolve().parent.parent
+    _SKIP = (".git", "temp", ".venv", "venv", "node_modules", "__pycache__")
+    _external: dict[str, list[int]] = {}
+    for _py in sorted(_root.rglob("*.py")):
+        _rel = _py.relative_to(_root).as_posix()
+        if _rel.startswith("tests/") or _rel.split("/")[0] in _SKIP:
+            continue
+        try:
+            _t = ast.parse(_py.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError, ValueError):
+            continue
+        for _n in ast.walk(_t):
+            if (
+                isinstance(_n, ast.Call)
+                and isinstance(_n.func, ast.Attribute)
+                and _n.func.attr == "set_public_branch"
+                and isinstance(_n.func.value, ast.Name)
+                and _n.func.value.id == "db"
+            ):
+                _external.setdefault(_rel, []).append(_n.lineno)
+    assert list(_external) == ["server/tools/repo/_public_branch.py"], (
+        "db.set_public_branch gained a writer outside the tool layer, where"
+        " _require_open_pr does not run.  Nothing in db/ can refuse a closed"
+        f" PR - it cannot see one - so a new writer there moves decline karma"
+        f" on a closed PR with nothing to stop it.  Found: {_external}"
+    )
+    assert len(_external["server/tools/repo/_public_branch.py"]) == 1, (
+        "the sanctioned external writer was duplicated; a second one should"
+        f" share _require_open_pr rather than bypass it: {_external}"
+    )
+    # The single internal caller is the grant path.  This is the assertion
+    # that makes the census above honest rather than merely narrow: it is
+    # also why the census cannot say "everything lives in server/tools/".
+    _engine_tree = ast.parse(
+        (_root / "db" / "_public_branch.py").read_text(encoding="utf-8")
+    )
+    _internal = [
+        _fn.name
+        for _fn in _engine_tree.body
+        if isinstance(_fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(
+            isinstance(_n, ast.Call)
+            and isinstance(_n.func, ast.Name)
+            and _n.func.id == "set_public_branch"
+            for _n in ast.walk(_fn)
+        )
+    ]
+    assert _internal == ["answer_branch_access_request"], (
+        "a db-level function other than the grant path now writes the flag"
+        f" directly, bypassing the tool layer that owns the open-PR guard: {_internal}"
+    )
 
     print("test_branch_access_requests: all assertions passed")
 
