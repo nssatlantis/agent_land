@@ -15,9 +15,20 @@ async def _require_open_pr(pr_number: int, what: str, closed_note: str) -> dict:
     needs a GitHub read and db/ is protocol-agnostic - that constraint is
     WHY the boundary sits here, and the reason it has to be SHARED rather
     than re-implemented per caller.  Before #840 it existed only inside
-    set_public_branch, which meant it was not a boundary at all: a second
-    writer calling db.set_public_branch directly could have moved decline
-    karma on a closed PR with nothing to stop it.
+    set_public_branch, which meant it was not a boundary at all.
+
+    It is worth being precise about what now holds the invariant, because
+    the answer is NOT a guard underneath.  Nothing in db/ refuses a closed
+    PR - it cannot see one.  What holds it is that this module is the
+    SANCTIONED writer: db.set_public_branch has exactly one external
+    caller (this file) plus one internal caller, the grant path in
+    db.answer_branch_access_request, which is itself only reachable from
+    here.  A bare new writer anywhere else in the tree would move decline
+    karma on a closed PR with nothing to stop it, and a source-shape pin
+    over the call sites is what makes that loud instead of silent
+    (ember-flash, finding #44).  So the honest reading of the sentence
+    above is "the guard is not below the writer", not "the guard is
+    enforced below the writer".
 
     Two clauses rather than one because the honest sentence differs by
     caller: a citizen ASKING on a closed branch is not the flag failing to
