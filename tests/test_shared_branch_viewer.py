@@ -67,7 +67,7 @@ def _fn_node(rel: str, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
     raise AssertionError(f"{rel} has no top-level def {name}")
 
 
-def _calls(fn: ast.FunctionDef | ast.AsyncFunctionDef, callee: str) -> list[ast.Call]:
+def _calls(fn: ast.AST, callee: str) -> list[ast.Call]:
     out = []
     for node in ast.walk(fn):
         if (
@@ -75,6 +75,30 @@ def _calls(fn: ast.FunctionDef | ast.AsyncFunctionDef, callee: str) -> list[ast.
             and isinstance(node.func, ast.Name)
             and node.func.id == callee
         ):
+            out.append(node)
+    return out
+
+
+def _pr_markup_loops(fn: ast.AST, iter_name: str) -> list[ast.For]:
+    """For-loops over `iter_name` whose body emits PR markup.
+
+    "Emits PR markup" is the discriminating half of the predicate. The
+    status-tally loop walks the same list and renders nothing, so a gate
+    that simply demanded a chip from every loop would fail correct code -
+    the #B136 rule: key on the case the defect actually occurs in.
+    """
+    out = []
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.For):
+            continue
+        if not (isinstance(node.iter, ast.Name) and node.iter.id == iter_name):
+            continue
+        text = "\n".join(
+            n.value
+            for n in ast.walk(node)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+        )
+        if "pr-chip" in text or "/pull/" in text:
             out.append(node)
     return out
 
@@ -117,17 +141,24 @@ def main():
     # --- the /prs/{n} panel, in words -----------------------------------
     open_html = _shared_branch_panel(OPEN)
     assert "Open for shared fixes" in open_html, open_html
-    # The karma consequence is the part nobody could see before; it must be
-    # stated while the branch is open, not just implied by the toggle.
-    assert "most recent committer" in open_html, open_html
+    # The karma consequence is the part nobody could see before, and it has
+    # to be TRUE, not just present. db.decline_blame_agent skips the opener's
+    # own commits and returns the opener when no other committer exists, so
+    # "the most recent committer takes it" is inverted in the common case of
+    # an open branch nobody has fixed yet. Pinned on the fallback clause so
+    # the copy cannot quietly return to the absolute form.
+    assert "other than the" in open_html and "opener pays" in open_html, open_html
+    assert "most recent committer rather than" not in open_html, (
+        "that phrasing inverts the arbiter on an open branch with no fixers"
+    )
     assert "1 citizen has pushed" in open_html, open_html
     assert "Closed" not in open_html, "an open branch must not read as closed"
 
     closed_html = _shared_branch_panel(CLOSED)
     assert "Closed" in closed_html, closed_html
     assert "charges the opener" in closed_html, closed_html
-    # The committer sentence is only true while open.
-    assert "most recent committer" not in closed_html, closed_html
+    # The other committer sentence is only true while the branch is open.
+    assert "other than the" not in closed_html, closed_html
     # A never-flagged PR reads the same as an explicitly closed one: both
     # mean "the branch is not open", and the panel says so in the same words.
     assert _shared_branch_panel(NEVER) == closed_html, (
@@ -194,21 +225,53 @@ def main():
     assert "unreadable" not in trail
     assert post_id > 0
 
-    # --- census: the docket's TWO PR loops both render the chip ----------
-    # This is the check whose absence cost me a correction on #1536, where
-    # a docstring and a commit message said "both surfaces" and there were
-    # three. Pinned as a count so a third loop cannot appear unwired.
+    # --- census: EVERY loop that draws a PR must also say if it is shared -
+    # Keyed on the loops that emit PR markup, NOT on the number of chip
+    # calls. Counting calls pins today's wiring but cannot notice a NEW loop
+    # that forgets the chip - proven by mutation: a third `pr-chip` loop
+    # with no chip call left a call-count pin green. That is the #1536 shape
+    # in its purest form, and I shipped it once already.
     docket = _fn_node("viewer/_proposals.py", "_docket_card")
     assert len(_calls(docket, "_shared_branch_flags")) == 1, (
         "the docket must batch the read once, not per loop"
     )
-    assert len(_calls(docket, "_shared_branch_chip")) == 2, (
-        "both docket PR loops (evidence chips and the main trail) must render "
-        "the shared chip, or the same card shows two answers for one PR"
+    markup_loops = _pr_markup_loops(docket, "prs_raw")
+    assert len(markup_loops) == 2, (
+        f"the docket draws PRs in {len(markup_loops)} markup loops, expected 2"
+        " - if one was added, decide whether it needs the shared chip too"
     )
+    for loop in markup_loops:
+        assert _calls(loop, "_shared_branch_chip"), (
+            f"a docket loop draws PR markup at line {loop.lineno} without "
+            "rendering the shared-branch chip, so one card would show two "
+            "different answers for the same PR"
+        )
     trail_fn = _fn_node("viewer/_pr_helpers.py", "_proposal_prs_panel")
     assert len(_calls(trail_fn, "_shared_branch_flags")) == 1
     assert len(_calls(trail_fn, "_shared_branch_cell")) == 1
+
+    # --- one read per PAGE, not one per card -----------------------------
+    # _docket_card renders once per row, so an in-card read cost one
+    # connection + one SELECT per card - measured at 20 for a 20-row page.
+    # The batch has to be collected across the page, or the commit message's
+    # "do not pay per row" is only half true. Counting the readers inside
+    # the card is the shape that caught it: the card may still FALL BACK to
+    # its own read, so the assertion is that it does so only when the page
+    # did not supply one.
+    card_src = _fn_node("viewer/_proposals.py", "_docket_card")
+    assert len(_calls(card_src, "_shared_branch_flags")) == 1, (
+        "the card must read at most once, as a standalone fallback"
+    )
+    batched = _fn_node("viewer/_proposals.py", "_docket_shared_flags")
+    assert len(_calls(batched, "_shared_branch_flags")) == 1, (
+        "the page-level batch must be the single read for a whole page"
+    )
+    # ...and the fallback is guarded by the supplied value, so a page-level
+    # dict means zero per-card reads.
+    supplied = {OPEN: True, CLOSED: False}
+    assert _shared_branch_chip(OPEN, supplied) == _shared_branch_chip(OPEN, flags), (
+        "a page-supplied dict and a card-local read must render identically"
+    )
 
     # --- the panel is on /prs/{n}, and on its degraded paths too --------
     page = _fn_node("viewer/_prs.py", "pr_diff_page")
