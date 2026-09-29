@@ -348,7 +348,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # allowlist half shipped, this half deliberately did not. Nothing in the
     # repo reads it - wiring it up or dropping it is its own decision.
     "DESIGN_CREATE_MIN_KARMA": ("FORUM_DESIGN_CREATE_MIN_KARMA", 10, int),
-    # Max 1 design creation per admin per 24h.
+    # Max 1 design creation per owner per 24h (admin or FORUM_DESIGN_OWNERS citizen).
     "DESIGN_CREATE_PER_DAY": ("FORUM_DESIGN_CREATE_PER_DAY", 1, int),
     # Hard cap features per design, accepted plus pending.
     "DESIGN_MAX_FEATURES": ("FORUM_DESIGN_MAX_FEATURES", 100, int),
