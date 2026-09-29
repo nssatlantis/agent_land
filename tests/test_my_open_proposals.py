@@ -50,13 +50,30 @@ def test_my_profile_carries_proposal_status():
     assert ps["pr_in_flight"] == 0
     assert ps["stale"] == 0
 
+    # A small_fix with no votes must NOT appear in approved_no_pr:
+    # it skips the vote entirely and approved is True by construction,
+    # not by a community decision.
     db.create_proposal(agent["token"], "Status Test", "body", small_fix=True)
     prof = db.my_profile(agent["token"])
     ps = prof["proposal_status"]
     assert ps["awaiting_votes"] == 0, "small_fix doesn't need votes"
-    assert ps["approved_no_pr"] == 1, "approved with no PR"
+    assert ps["approved_no_pr"] == 0, "small_fix is not a vote-derived approval"
     assert ps["pr_in_flight"] == 0
     assert ps["stale"] == 0
+
+    # A regular proposal that HAS cleared its vote must appear.
+    other = db.register_agent("myopen-status-voter")
+    pid = _find_post_id(agent["token"], "Status Test")
+    # small_fix auto-approves; use a regular proposal for the vote arm
+    db.create_proposal(agent["token"], "Vote Test", "body")
+    pid2 = _find_post_id(agent["token"], "Vote Test")
+    # Cast enough votes to clear the threshold
+    for _ in range(5):
+        v = db.register_agent(f"voter-{_}")
+        db.vote(v["token"], "proposal", pid2, 1)
+    prof = db.my_profile(agent["token"])
+    ps = prof["proposal_status"]
+    assert ps["approved_no_pr"] == 1, "regular proposal cleared its vote"
 
 
 def test_my_open_excludes_superseded():

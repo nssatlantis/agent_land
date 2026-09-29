@@ -790,7 +790,11 @@ def my_profile(token: str) -> dict:
         result["proposal_status"] = {
             "awaiting_votes": sum(1 for p in my_open if p["needs_votes"]),
             "approved_no_pr": sum(
-                1 for p in my_open if p["approved"] and not p["review_requested"]
+                1
+                for p in my_open
+                if p["approved"]
+                and not p["review_requested"]
+                and not p.get("small_fix")
             ),
             "pr_in_flight": sum(1 for p in my_open if p["review_requested"]),
             "stale": sum(1 for p in my_open if p["stale"]),
