@@ -416,17 +416,104 @@ def main():
         quiet = _shared_branch_panel(5105)
         assert "asked" not in quiet, quiet
 
-        # --- the expiry predicate exists exactly once --------------------
-        _src = (
+        # --- expiry predicates: AST, not a text count --------------------
+        # The first version of this pin counted a literal substring over the
+        # file's TEXT.  Two ways that is wrong, and the second is the one
+        # that would have mattered: prose cannot be excluded (this module's
+        # own comments and docstring quote `expires_at IS NULL means "no
+        # clock"`, and a comment that quotes the pattern it forbids is one
+        # line away from a false alarm), while a re-shaped hand-written
+        # copy is INVISIBLE to a count as long as the original spelling
+        # survives once.  Keying on ast.Constant means a comment can never
+        # satisfy this - comments do not enter the tree - so the only way to
+        # pass is to actually assign the constant.
+        #
+        # The class being caught: a reader deciding expiry its OWN way
+        # instead of interpolating the shared clause, which is how the two
+        # halves of 'actionable' drift into disagreeing.
+        _engine_path = (
             Path(__file__).resolve().parent.parent / "db" / "_public_branch.py"
-        ).read_text(encoding="utf-8")
-        assert _src.count(_PREDICATE) == 1, (
-            "the expiry predicate is duplicated - a second reader would be"
-            f" answering 'actionable' its own way. Found {_src.count(_PREDICATE)}."
         )
-        assert "_ACTIONABLE = \"status = 'open' AND (expires_at IS NULL OR " in _src, (
-            "the shared predicate constant was renamed or reshaped; the three"
-            " readers interpolate it by name"
+        _engine_ast = ast.parse(_engine_path.read_text(encoding="utf-8"))
+        _EXPECTED_CLAUSES = {
+            "_ACTIONABLE": "status = 'open' AND (expires_at IS NULL OR expires_at > ?)",
+            "_STALE": "status = 'open' AND expires_at IS NOT NULL AND expires_at <= ?",
+        }
+        _clause_nodes: dict[str, ast.Constant] = {}
+        for _stmt in _engine_ast.body:
+            if not isinstance(_stmt, ast.Assign) or len(_stmt.targets) != 1:
+                continue
+            _tgt = _stmt.targets[0]
+            if not (isinstance(_tgt, ast.Name) and _tgt.id in _EXPECTED_CLAUSES):
+                continue
+            assert isinstance(_stmt.value, ast.Constant), (
+                f"{_tgt.id} is no longer a plain literal, so nothing can read"
+                f" it by value: {ast.dump(_stmt.value)[:120]}"
+            )
+            _clause_nodes[_tgt.id] = _stmt.value
+        assert set(_clause_nodes) == set(_EXPECTED_CLAUSES), (
+            "a shared expiry clause was renamed or dropped; the readers"
+            f" interpolate it by name. Present: {sorted(_clause_nodes)}"
+        )
+        for _name, _want in _EXPECTED_CLAUSES.items():
+            assert _clause_nodes[_name].value == _want, (
+                f"{_name} was reshaped. It must stay the literal the readers"
+                " and the partial index agree on:\n"
+                f"  want {_want!r}\n"
+                f"  got  {_clause_nodes[_name].value!r}"
+            )
+        # And the two halves must remain a partition: both key on the same
+        # status vocabulary, and one takes the IS NULL / future branch while
+        # the other takes the non-null / lapsed one.  Asserting the exact
+        # literals above already pins this, and it is stated here so the next
+        # reader knows WHY the literals are spelled out rather than composed.
+        for _name, _node in _clause_nodes.items():
+            assert _node.value.startswith("status = 'open' AND "), (
+                f"{_name} no longer leads with the shared status predicate:"
+                f" {_node.value!r}"
+            )
+
+        # NARRATIVE CHECK, because the first version of this rule was wrong
+        # and the way it was wrong is the interesting part.  It read "any
+        # string naming expires_at AND containing a comparison operator" -
+        # which matched the sanitised reader's OWN query, because CPython
+        # folds adjacent interpolation-free f-strings into ONE Constant:
+        # `SELECT ... r.expires_at,` + ` a.name AS requester_name` + ` FROM
+        # ...` + ` LEFT JOIN agents a ON a.id = r.agent_id` is a single
+        # literal, and it carries a `=` from the JOIN condition.  The 70-char
+        # truncation in the failure message is what hid the cause, so the
+        # pin and the diagnostic disagreed and the pin was the liar.
+        #
+        # The rule therefore asks the question it means: is `expires_at`
+        # ITSELF the thing being compared?  Scanned forward from each
+        # occurrence for the next non-space character, so a column list
+        # (`r.expires_at,`) and a join condition (`a.id = r.agent_id`) both
+        # pass, while `expires_at IS NULL` / `expires_at > ?` do not.
+        def _compares_expiry(text: str) -> bool:
+            at = 0
+            while True:
+                found = text.find("expires_at", at)
+                if found < 0:
+                    return False
+                after = text[found + len("expires_at") :][:12].lstrip()
+                if after[:1] in ("I", ">", "<", "="):
+                    return True
+                at = found + 1
+
+        _allowed_clause_ids = {id(_n) for _n in _clause_nodes.values()}
+        _stray = [
+            (_n.lineno, _n.value[:70])
+            for _n in ast.walk(_engine_ast)
+            if isinstance(_n, ast.Constant)
+            and isinstance(_n.value, str)
+            and _compares_expiry(_n.value)
+            and id(_n) not in _allowed_clause_ids
+        ]
+        assert not _stray, (
+            "a string outside the two shared clause constants COMPARES"
+            " expires_at, so something is deciding expiry its own way"
+            " instead of interpolating _ACTIONABLE/_STALE. Offenders:"
+            f" {_stray}"
         )
     finally:
         github.aget_pr = real_aget
@@ -473,6 +560,55 @@ def main():
             "a request on a PR whose opener was deleted is unanswerable and"
             " must not sit there as though it were actionable"
         )
+
+    # --- a NULL opener refuses with a SENTENCE, on every write path ------
+    # #B79, reintroduced by this PR.  The block above had just produced the
+    # exact state: delete_agent NULLs proposal_links.opened_by_agent_id
+    # rather than cascading, so PR 5109's link SURVIVES with a NULL opener.
+    # The file created that state and never used it, which is precisely why
+    # `int(None)` could raise a bare TypeError through pr_opener_id and
+    # still ship 5/5 green.
+    #
+    # The pre-#840 code COMPARED (`link[...] != opener_id`), so a NULL gave
+    # True and a clean ForumError.  Replacing a comparison with a coercion is
+    # what turned it into a crash, and TypeError is the worse answer twice
+    # over: no sentence for the citizen, and server/_mcp.py's own comment
+    # notes the text of a generic exception is hidden from MCP clients.
+    with db._conn() as conn:
+        _row = conn.execute(
+            "SELECT opened_by_agent_id FROM proposal_links WHERE pr_number = ?",
+            (5109,),
+        ).fetchone()
+    assert _row is not None and _row["opened_by_agent_id"] is None, (
+        "the fixture did not produce a NULL opener, so this block would"
+        f" prove nothing: {dict(_row) if _row is not None else None}"
+    )
+    for _label, _call in (
+        (
+            "set_public_branch",
+            lambda c: db.set_public_branch(c, 5109, agents["beta"]["agent_id"], True),
+        ),
+        (
+            "create_branch_access_request",
+            lambda c: db.create_branch_access_request(
+                c, 5109, agents["beta"]["agent_id"], "hi", 7.0
+            ),
+        ),
+    ):
+        try:
+            with db._conn() as c2:
+                _call(c2)
+        except db.ForumError as exc:
+            assert "no opener on record" in str(exc), (_label, str(exc))
+        except Exception as exc:
+            raise AssertionError(
+                f"{_label} raised {type(exc).__name__} on a NULL opener rather"
+                f" than refusing with a sentence: {exc}"
+            ) from None
+        else:
+            raise AssertionError(
+                f"{_label} performed a write against a PR with no opener"
+            )
 
     # --- migration: a pre-#840 database gains the table and the path -----
     with db._conn() as conn:
@@ -572,13 +708,34 @@ def main():
         except (SyntaxError, UnicodeDecodeError, ValueError):
             continue
         for _n in ast.walk(_t):
-            if (
-                isinstance(_n, ast.Call)
-                and isinstance(_n.func, ast.Attribute)
+            # TWO shapes, because one is not enough.  The attribute form
+            # (`db.set_public_branch(...)`) is the house idiom at every
+            # existing call site, but `from db._public_branch import
+            # set_public_branch` followed by a bare call is an equally valid
+            # way to write the same thing, and its AST is an `ast.Name` -
+            # so a census collecting only the attribute form reports "no
+            # writer outside the tool layer" while one is sitting there.
+            # The first version of this pin had exactly that hole, and the
+            # comment below promised a future writer would be loud.
+            if not isinstance(_n, ast.Call):
+                continue
+            _is_external = (
+                isinstance(_n.func, ast.Attribute)
                 and _n.func.attr == "set_public_branch"
                 and isinstance(_n.func.value, ast.Name)
                 and _n.func.value.id == "db"
-            ):
+            )
+            # An import-style call, but only where the name is actually the
+            # public-branch writer and not a local of the same name.
+            _is_imported = (
+                isinstance(_n.func, ast.Name) and _n.func.id == "set_public_branch"
+            ) and any(
+                isinstance(_a, ast.ImportFrom)
+                and _a.module == "db._public_branch"
+                and any(al.name == "set_public_branch" for al in _a.names)
+                for _a in ast.walk(_t)
+            )
+            if _is_external or _is_imported:
                 _external.setdefault(_rel, []).append(_n.lineno)
     assert list(_external) == ["server/tools/repo/_public_branch.py"], (
         "db.set_public_branch gained a writer outside the tool layer, where"

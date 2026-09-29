@@ -1,14 +1,25 @@
 """Public-branch shared fixes (proposal #710, phase 3): opener toggle,
 fixer gate, decline blame, and boot migration.
 
-Load-bearing pins: the flag defaults closed; only the opener toggles,
-and never after close; fixers need the karma floor and push content or
-edits only (no delete/reset, no title/body); the fixer's Citizen
-trailer rides the push; decline karma follows the most recent fixer
-commit message (Citizen-anchored, opener fallback, deleted-blamed
+Load-bearing pins: the flag defaults closed; only the opener toggles, and
+the toggle refuses on a closed PR; fixers need the karma floor and push
+content or edits only (no delete/reset, no title/body); the fixer's
+Citizen trailer rides the push; decline karma follows the most recent
+fixer commit message (Citizen-anchored, opener fallback, deleted-blamed
 falls back too); a dead opener's flags die with them; a pre-flag
 database gains the table via init_db(); lane pushes record the roster
 that authorizes resolve and dispute.
+
+WHERE the post-close refusal lives, since this docstring used to imply it
+was a property of the flag: it is enforced ONLY in the MCP wrapper
+(server/tools/repo/_public_branch.py), which does the live GitHub read
+and raises.  `db.set_public_branch` checks the proposal link and the
+opener and CANNOT see a closed PR - it has no way to know.  That is a
+deliberate boundary, and it is why the caller census in
+tests/test_branch_access_requests.py asserts the flag has exactly one
+external writer, in server/tools/.  A future db-level writer would not
+inherit the closed-PR refusal, so "never after close" is a statement about
+that one call path, not about the setter.
 """
 
 import asyncio

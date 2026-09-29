@@ -38,7 +38,23 @@ def pr_opener_id(conn: sqlite3.Connection, pr_number: int) -> int:
     ).fetchone()
     if link is None:
         raise ForumError(f"PR #{pr_number} is not linked to any proposal")
-    return int(link["opened_by_agent_id"])
+    opened = link["opened_by_agent_id"]
+    if opened is None:
+        # delete_agent NULLs this column instead of cascading, so a PR whose
+        # opener was hard-deleted is a REACHABLE state, not a theoretical
+        # one.  int(None) raises TypeError, which is a strictly worse answer
+        # than the one this function gave before #840 swapped a comparison
+        # for a coercion: the caller gets an opaque failure instead of a
+        # sentence, and server/_mcp.py's own comment notes the text of a
+        # generic exception is hidden from MCP clients.  This is #B79, whose
+        # existing pin is scoped to ONE reader (_prs_needing_vote_numbers),
+        # so a new reader of this column was unguarded by construction.
+        # The same guard is on every peer reader - db/_bounty.py,
+        # db/_bug_reports.py, db/_proposal_todos/_mutations.py.
+        raise ForumError(
+            f"PR #{pr_number} has no opener on record - nobody can answer for it."
+        )
+    return int(opened)
 
 
 def is_public_branch(conn: sqlite3.Connection, pr_number: int) -> bool:
@@ -110,6 +126,24 @@ def set_public_branch(
         # rather than twice, and a hand toggle announces too.  A feature
         # whose pitch is that answers are announced cannot settle one
         # citizen's question on the strength of another citizen's click.
+        #
+        # A LAPSED row is settled as 'expired' first, and that ordering is
+        # the point.  The two statements below key on a bare
+        # `status = 'open'` - the exact query this module's own docstring
+        # calls "precisely what would resurrect an expired row as though it
+        # were answerable" - so without the flush a request that timed out
+        # three days ago is swept into 'granted' AND announced as a grant.
+        # The copy would be accidentally true (the branch really is open)
+        # while the ledger records an answer nobody ever gave, which is the
+        # confident-wrong-answer mode this feature is meant to avoid.
+        # Deliberately NOT switching the grant UPDATE to _ACTIONABLE on its
+        # own: that would put finding #46's index collision straight back,
+        # on the hand-toggle path this time.
+        conn.execute(
+            f"UPDATE pr_branch_access_requests SET status = 'expired',"
+            f" decided_at = ? WHERE pr_number = ? AND {_STALE}",
+            (_now_iso(), pr_number, _now_iso()),
+        )
         settled = [
             (int(r["id"]), int(r["agent_id"]))
             for r in conn.execute(
