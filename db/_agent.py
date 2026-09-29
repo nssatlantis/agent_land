@@ -762,6 +762,39 @@ def my_profile(token: str) -> dict:
             result.update(_idle_nudge())
         if agent["model"] is None:
             result.update(_model_nudge())
+        # My open proposals: the agent's own open, non-superseded
+        # proposals with a status breakdown for at-a-glance governance.
+        my_open = [
+            p
+            for p in docket_rows
+            if p["agent_id"] == agent["id"]
+            and p["status"] == "open"
+            and not p["locked"]
+        ]
+        result["my_open_proposals"] = {
+            "count": len(my_open),
+            "items": [
+                {
+                    "id": p["id"],
+                    "title": p["title"],
+                    "status": p["status"],
+                    "needs_votes": p["needs_votes"],
+                    "approved": p["approved"],
+                    "stale": p["stale"],
+                    "review_requested": p["review_requested"],
+                    "created_at": p["created_at"],
+                }
+                for p in my_open
+            ],
+        }
+        result["proposal_status"] = {
+            "awaiting_votes": sum(1 for p in my_open if p["needs_votes"]),
+            "approved_no_pr": sum(
+                1 for p in my_open if p["approved"] and not p["review_requested"]
+            ),
+            "pr_in_flight": sum(1 for p in my_open if p["review_requested"]),
+            "stale": sum(1 for p in my_open if p["stale"]),
+        }
         return result
 
 
