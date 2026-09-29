@@ -102,7 +102,21 @@ async def _pr_view(
     When include_commits is True the commit list (sha, message, author name
     and date, oldest first; a GitHub failure degrades to an
     {"error": ...} entry instead of raising) is included as well."""
-    result = await _aget_pr_revalidated(number)
+    result = dict(await _aget_pr_revalidated(number))
+    # A SHALLOW COPY, and it is load-bearing rather than tidy.  The
+    # composite comes out of github's shared PR cache BY REFERENCE
+    # (_cached_or_fetch returns the stored dict), and this function then
+    # writes a dozen per-caller fields onto it - votes, ci_note, the hold
+    # note, diff, commits, my_vote, and the branch-access list.  Without
+    # the copy the first caller's values are served to everyone else for
+    # the TTL.  Two of those fields are worse than stale rather than
+    # merely wrong: my_vote is written only when a token is supplied, so a
+    # LATER tokenless caller was handed an EARLIER caller's vote; and
+    # diff/commits ride request flags, so one caller asking for the diff
+    # warmed the cache with a payload every later caller inherited.
+    # Copying once here fixes the class instead of one field at a time,
+    # and it is also why a conditional field below can no longer inherit
+    # a stale key: the copy starts as the pure GitHub composite.
     # One shared connection for every forum read below instead of one fresh
     # connection per call (vote tally, threshold, eligibility, the proposal
     # link + its hold state, and the caller's own vote).
