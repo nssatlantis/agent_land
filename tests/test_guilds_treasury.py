@@ -930,9 +930,14 @@ def test_legacy_stake_links_upgrade_drops_bonus_column():
     # a row this test deletes three lines later. The founder is funded 30u
     # because `found_guild` charges its 1cr founding fee to the Treasury.
     founder = _new_agent("gt-legacyp")
+    # Fund BEFORE founding: `found_guild` charges its 1cr founding fee to
+    # the founder's wallet, so a 0-balance agent raises "insufficient
+    # credits: this costs 1 but you have 0" (CI, head 16ddaeb1). Order is
+    # load-bearing here, which is the same trap as arming a knob after the
+    # read it gates - the assertion passes only if the setup came first.
+    _fund(founder["agent_id"], 50)
     guild = db.found_guild(founder["token"], f"Legacy-{_SEQ[0]}")
     gid = int(guild["id"])
-    _fund(founder["agent_id"], 30)
     with db._conn() as conn:
         cur = conn.execute(
             "INSERT INTO proposal_stakes (proposal_id, staker_agent_id, per_pr,"
