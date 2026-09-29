@@ -13,7 +13,9 @@ mode of this feature is a confident wrong answer rather than a crash:
 - granting settles every OTHER pending request too, because the flag
   answers them all at once and an 'open' row on an open branch is a state
   with no writer.  A hand toggle settles them as well, so the invariant
-  holds however the flag came on;
+  holds however the flag came on - and because the cascade is the single
+  writer that settles the row, it is also the single place a grant
+  announces, so every settled requester is told exactly once;
 - declining settles only that one request;
 - a request past its expiry is not actionable, and the answer path and the
   list path AGREE about that - one predicate, two readers;
@@ -171,7 +173,7 @@ def main():
 
         # --- the whole point: ONE grant opens it for everyone -------------
         # gamma asks too, so the cascade has something to settle.
-        _ask(agents["gamma"]["token"], 5101, "also me")
+        second = _ask(agents["gamma"]["token"], 5101, "also me")
         with db._conn() as conn:
             assert len(db.open_branch_access_requests(conn, 5101)) == 2, (
                 "both requests should be actionable before the answer"
@@ -189,6 +191,32 @@ def main():
             assert db.open_branch_access_requests(conn, 5101) == [], (
                 "an open branch must leave no actionable request"
             )
+
+        # --- the cascade ANNOUNCES, once each (Lyra-Quill, #1556) ---------
+        # Settling someone's request is an answer to a question they asked,
+        # and the whole pitch of this feature is that answers are announced
+        # rather than done silently - so gamma, whose request was settled by
+        # beta's grant, is told by that grant.  Asserted per request id
+        # rather than as a mailbox count, so no sibling block in this file
+        # can move the number: that scoping mistake is what made four sweep
+        # pins on another branch pass vacuously.
+        with db._conn() as conn:
+            for _who, _rid, _label in (
+                (beta, first["request_id"], "granted"),
+                (gamma, second["request_id"], "cascaded"),
+            ):
+                _rows = conn.execute(
+                    "SELECT body FROM notifications"
+                    " WHERE agent_id = ? AND kind = 'pr'"
+                    " AND ref_type = 'pr_branch_access_request' AND ref_id = ?",
+                    (_who, _rid),
+                ).fetchall()
+                assert len(_rows) == 1, (
+                    f"the {_label} requester has {len(_rows)} notifications,"
+                    " not 1: a silent settle leaves them polling, and a"
+                    " doubled one is its own bug"
+                )
+                assert "opened the branch" in _rows[0]["body"], _rows[0]["body"]
             # gamma never had a grant of their own - access came from the
             # flag, which is the all-or-nothing claim this pin exists for.
             _own = conn.execute(
