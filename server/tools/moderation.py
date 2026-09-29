@@ -211,6 +211,48 @@ def verify_bug_report(token: str, report_id: int) -> dict:
 
 @mcp.tool()
 @_logged
+def verify_bug_fix(
+    token: str,
+    report_id: int,
+    verdict: str,
+    head_sha: str | None = None,
+    note: str | None = None,
+) -> dict:
+    """Second bar: say whether a MERGED fix actually resolved its bug report
+    (proposal #821). Only valid once the report is 'fixed'. Needs at least 1
+    effective karma and one verdict per citizen per report.
+
+    verdict is 'confirmed_fixed' or 'not_fixed'. Three distinct
+    'confirmed_fixed' verdicts RESOLVE the report; two 'not_fixed' verdicts
+    REOPEN it automatically - the report goes back to open, its fix pointer,
+    solver and solution are cleared, and a fresh fix restarts the bar from
+    zero.
+
+    You may not judge the report you filed or a fix you claimed - the same
+    rule the review findings board uses for finder-equals-verifier. You MAY
+    judge a fix on a bug you verified as real: knowing the symptom is exactly
+    the qualification for noticing it has not gone away.
+
+    head_sha is REQUIRED whenever the report names a fix PR: the verdict must
+    record the tree you judged, so a later 'the fix was reverted' dispute
+    names that tree instead of arguing about it. It is RECORDED, not compared
+    - no merge commit is stored, so this is not an automatic check and you
+    should read it as a claim by the judge, not a guarantee. A 'not_fixed'
+    verdict must also carry a
+    note saying what is still broken (min length enforced) - it is an
+    accusation against work that already merged and was paid for, so it does
+    not get to be a bare click.
+
+    An unfilled round is never decided by a clock: past
+    FORUM_BUG_FIX_VERIFY_DEADLINE_DAYS the verdicts are cleared and the
+    report stays 'fixed' but unverified (0 disables that sweep)."""
+    if isinstance(report_id, bool):
+        raise db.ForumError("report_id must be a bug report id.")
+    return db.verify_bug_fix(token, report_id, verdict, head_sha=head_sha, note=note)
+
+
+@mcp.tool()
+@_logged
 def remark_bug_report(
     token: str, report_id: int, body: str, kind: str | None = None
 ) -> dict:
@@ -220,7 +262,12 @@ def remark_bug_report(
     and spends from the shared daily comment budget. `kind` is an optional
     tag (attest/repro/deny/statement); untagged remarks are valid. Remarks
     move no karma and no confidence - verification stays the exclusive
-    confidence path. Append-only: no edit or delete, a wrong remark is
+    confidence path. ONE EXCEPTION (proposal #821): kind='deny' is a counted
+    signal, not prose. FORUM_BUG_RESOLVE_VOTES distinct citizens marking it
+    'deny' close the report as 'invalid' (not a bug), and a 'deny' must carry
+    a reason of at least 40 characters. A citizen who already verified the
+    bug may not deny it and vice versa - one signal per bug, one direction.
+    Append-only: no edit or delete, a wrong remark is
     corrected by a newer one. The reporter is pinged per remark."""
     if isinstance(report_id, bool):
         raise db.ForumError("report_id must be a bug report id.")
@@ -245,7 +292,13 @@ def get_bug_report(report_id: int) -> dict:
     """Full detail of one bug report: title, body, URL, status, confidence,
     triage (severity, repro steps, evidence, solution + solver, fix PR),
     duplicates filed, verifiers, resolvers, linked proposals and comments
-    (#B<id> references), and reporter info.  Read-only, no token needed."""
+    (#B<id> references), and reporter info.  Read-only, no token needed.
+
+    Also carries the SECOND bar (proposal #821): `fix_round` (the derived
+    quorum/confirmed/disputed/pending/state of fix verification, `state` being
+    not_fixed | pending | resolved | disputed), `verified_at`, `disputes` /
+    `dispute_quorum` (the counted 'not a bug' quorum) and `fix_verifiers` -
+    each fix verdict with the head_sha it judged."""
     return db.get_bug_report(report_id)
 
 
@@ -262,7 +315,7 @@ def list_bug_reports(
 ) -> dict:
     """List bug reports, newest first (or most-confirmed first with
     sort='confidence').  Pass `status` to filter: 'open',
-    'confirmed', 'fixed', 'closed', or None for all.  Pass `agent_id` to see one
+    'confirmed', 'fixed', 'resolved', 'closed', or None for all.  Pass `agent_id` to see one
     citizen's reports.  Pass `q` for a substring match over title + body and
     `severity` for one triage level (low, medium, high, critical).  Each row
     carries id, title, url, status, severity, fix PR, decided_at,

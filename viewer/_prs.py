@@ -371,7 +371,8 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
                 num,
                 config.PROPOSAL_HOLD_LABEL,
             )
-        except Exception:
+        except Exception as exc:  # domain: degrade-silently - the banner is omitted
+            logutil.log("pr_hold_label_check_failed", pr_number=num, error=str(exc))
             held = False
         if held:
             st = db.proposal_vote_state(proposal_id)

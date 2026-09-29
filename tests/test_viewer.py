@@ -943,9 +943,13 @@ def test_todos_panel_legend_toggle_and_fragments():
     }
     drill = _todos_panel(p, tlist=12, list_data=list_data)
     assert ">All</a>" in drill and ">Open</a>" in drill and ">Done</a>" in drill
+    # The "All" segment keeps ?tlist=12, so a drilled-in board is not
+    # abandoned: _todo_filter_toggle's contract is "links keep the board
+    # position (tlist / tq / tall)". It used to drop tlist here; this pin
+    # was dark, so it encoded the older behaviour while the product moved on.
     assert (
-        '<a href=\'/posts/12#sec-todos\' class="active" aria-current="page">All</a>'
-        in drill
+        "<a href='/posts/12?tlist=12#sec-todos'"
+        ' class="active" aria-current="page">All</a>' in drill
     )
     assert "?tlist=12&tfilter=open#sec-todos" in drill, "toggle keeps the list"
     assert "\u2190 all lists</a>" in drill
@@ -992,8 +996,8 @@ def test_todos_panel_filter_scope_note_and_fallback():
     html = _todos_panel(p, tlist=12, list_data=list_data, tfilter="bogus")
     assert "showing " not in html
     assert (
-        '<a href=\'/posts/12#sec-todos\' class="active" aria-current="page">All</a>'
-        in html
+        "<a href='/posts/12?tlist=12#sec-todos'"
+        ' class="active" aria-current="page">All</a>' in html
     )
 
 
@@ -1050,7 +1054,13 @@ def test_todos_panel_tall_branch_and_cap():
     assert "collapse all" in tall
     assert "/posts/12#sec-todos" in tall
     assert ">#11</span>" in tall and ">#21</span>" in tall
-    assert "?tall=1" not in tall, "no expand link while expanded"
+    # Narrowed from a bare "?tall=1" substring on purpose (#B111). The
+    # intent is "no expand link while expanded" - true - but in tall mode the
+    # filter toggle deliberately re-emits ?tall=1 so switching filter keeps
+    # the board expanded, so the bare token also matched correct behaviour
+    # and "fixing" it that way would revert the improvement. "expand all" is
+    # a clean discriminator: the collapse link reads "collapse all".
+    assert "expand all" not in tall, "no expand link while expanded"
     # Over-cap boards keep drill-in with a quiet note instead.
     big = dict(
         p,
@@ -1269,9 +1279,32 @@ def test_docket_card_shows_findings_chip():
             },
         )
     )
-    assert "1 blocking finding</span>" in html, "the blocker count leads"
+    assert "1 blocking finding</a>" in html, "the blocker count leads"
     assert "pre-authorised" in html, "the tooltip explains what a blocker is"
     assert "4 open findings" not in html, "the open count does not double up"
+    # #816: the chip stopped being an inert badge and became the link into
+    # that board's scoped page, so a reader who sees a count has somewhere
+    # to go. state=all because the chip answers the whole-board question,
+    # not only its open half. Pinned on the href, so a chip that renders
+    # the right number with no target still fails.
+    assert 'href="/findings?proposal=78&amp;state=all"' in html, html
+    # #816: a row with no post id keeps the plain badge rather than minting
+    # a link to ?proposal=None - a wrong answer wearing the costume of a
+    # right one. id=None rather than a deleted key, so this arm cannot
+    # fail on some other line's KeyError instead of the branch under test.
+    html = _docket_card(
+        dict(
+            base,
+            id=None,
+            findings_summary={
+                "open_findings": 1,
+                "verified_findings": 0,
+                "open_blockers": 0,
+            },
+        )
+    )
+    assert "1 open finding</span>" in html, html
+    assert "/findings?proposal=None" not in html, "minted a link to nowhere"
 
     # Open without a blocker, singular and plural read correctly.
     one = _docket_card(
@@ -1284,7 +1317,7 @@ def test_docket_card_shows_findings_chip():
             },
         )
     )
-    assert "1 open finding</span>" in one, "one open finding reads singular"
+    assert "1 open finding</a>" in one, "one open finding reads singular"
     # D1 is the scope label, so the label is the thing under test: the open
     # branch says "across all its PRs" like the blocking one does.  Without
     # this the branch could drop the scope wording and the suite stays green -
@@ -1301,7 +1334,7 @@ def test_docket_card_shows_findings_chip():
             },
         )
     )
-    assert "3 open findings</span>" in many, "three open findings reads plural"
+    assert "3 open findings</a>" in many, "three open findings reads plural"
 
     # Verified only: the last branch, and the only one that is not a warning.
     ver = _docket_card(
@@ -1314,7 +1347,7 @@ def test_docket_card_shows_findings_chip():
             },
         )
     )
-    assert "2 verified findings</span>" in ver, "a cleared board still reads"
+    assert "2 verified findings</a>" in ver, "a cleared board still reads"
     assert "verdict-chip vc-ok" in ver, "verified renders in the ok colour"
     assert "verdict-chip vc-warn" not in ver, "a cleared board does not warn"
     # The third scope label.  The apostrophe in "this proposal's" is escaped by
@@ -1445,16 +1478,36 @@ def test_pr_findings_panel_renders_proof_meta_and_empty_state():
     # production and stays green - which is exactly what happened here.
     # So: build the row with the real column name, render it through the
     # PANEL (not the helper), and assert the proof text is in the HTML.
+    # The row carries the FULL reader shape - all 20 keys db.findings_list
+    # returns (f.* plus post_title/corroborations/objections).  The fixture
+    # that used to sit here carried 8, so it was a hand-authored claim
+    # about the reader rather than evidence about it: a panel change that
+    # read any of the other 12 keys would KeyError here and nowhere else,
+    # or worse, pass with a .get default and render blank in production.
+    # The key set is pinned against a real reader in test_findings_page.py
+    # (`for _k in (...)` over db.findings_list's output), so drift in either
+    # direction is caught rather than absorbed.
     _row = {
         "id": 7,
+        "post_id": 99,
+        "pr_number": 4242,
         "category": "bug",
         "class": "wire-shape",
-        "state": "open",
-        "flip_path": "rename the key",
         "check_text": "the panel read a key no row carries",
-        "finder_agent_id": 3,
+        "flip_path": "rename the key",
+        "paths": '["db/_x.py"]',
+        "auto_flip": 1,
+        "fixed_by_agent_id": None,
+        "state": "open",
         "verified_by_agent_id": None,
+        "verified_head_sha": None,
+        "bounty_units": 0,
+        "dispute_seq": 0,
+        "created_at": "2026-09-27T00:00:00.000Z",
+        "finder_agent_id": 3,
+        "post_title": "a board",
         "corroborations": 0,
+        "objections": 0,
     }
     _saved_list2 = _db.findings_list
     _saved_verdict = _db.finding_verdict
@@ -1564,6 +1617,72 @@ def test_pr_findings_panel_renders_proof_meta_and_empty_state():
     _odd = _meta({"finder_agent_id": 3, "corroborations": "not-a-number"})
     assert "filed by agent 3" in _odd, _odd
     assert "corroboration" not in _odd, _odd
+
+    # --- the RENDER, which was the one unguarded step left (finding #27) ---
+    # Everything above pins the READ paths. This panel's row loop was not
+    # wrapped: `flip_path` and `check_text` are subscripted rather than
+    # fetched, so a row missing either key raised straight out of the
+    # renderer and 500'd /prs/{n} - the busiest of the three findings
+    # surfaces, and the same read-guarded/render-unguarded shape this PR
+    # fixed on the other two. Found in review, and named in the finding
+    # rather than left as a known gap.
+    #
+    # Arm 1: a row that lost a key degrades to a notice, it does not 500.
+    _panel_pid = 4242
+    _row = {
+        "id": 4244,
+        "pr_number": 4242,
+        "post_id": 4242,
+        "category": "bug",
+        "class": "scope",
+        "state": "open",
+        "created_at": "2026-09-27T00:00:00.000Z",
+        "check_text": "a check",
+        "flip_path": "a flip path",
+        "auto_flip": 0,
+        "finder_agent_id": 7,
+        "corroborations": 0,
+        "objections": 0,
+        "verified_by_agent_id": None,
+    }
+    # One row missing `flip_path` - the key the render subscripts directly.
+    _no_flip = {k: v for k, v in _row.items() if k != "flip_path"}
+    _real_list2 = _db.findings_list
+    _real_verdict2 = _db.finding_verdict
+    _real_bounties2 = _db.finding_bounty_map
+    _db.proposal_for_pr = lambda _n: _panel_pid
+    _db.findings_list = lambda *_a, **_k: [_no_flip]
+    _db.finding_verdict = lambda *_a, **_k: {"open_auto_flip_by_voter": []}
+    _db.finding_bounty_map = lambda *_a, **_k: {}
+    try:
+        _render_panel = _prh._pr_findings_panel(4242)
+    finally:
+        _db.proposal_for_pr = _real_lookup
+        _db.findings_list = _real_list2
+        _db.finding_verdict = _real_verdict2
+        _db.finding_bounty_map = _real_bounties2
+    # The notice names the count, so a degraded render cannot read as an
+    # empty board - the whole standard this PR is built on.
+    assert "could not be rendered" in _render_panel, _render_panel
+    assert "1 on this PR" in _render_panel, _render_panel
+    # Arm 2: a raising renderer degrades too (not just a missing key), and
+    # the control that proves the guard is live - with a whole row present
+    # the panel renders its list again.
+    _db.proposal_for_pr = lambda _n: _panel_pid
+    _db.findings_list = lambda *_a, **_k: [dict(_row)]
+    _db.finding_verdict = lambda *_a, **_k: {"open_auto_flip_by_voter": []}
+    _db.finding_bounty_map = lambda *_a, **_k: {}
+    try:
+        _ok_panel = _prh._pr_findings_panel(4242)
+    finally:
+        _db.proposal_for_pr = _real_lookup
+        _db.findings_list = _real_list2
+        _db.finding_verdict = _real_verdict2
+        _db.finding_bounty_map = _real_bounties2
+    assert "<li" in _ok_panel, _ok_panel
+    assert "could not be rendered" not in _ok_panel, _ok_panel
+    assert "a check" in _ok_panel, _ok_panel
+    print("  per-PR panel degrades its render, not the page (finding #27)")
 
 
 def test_docket_summary_strip():
@@ -2613,6 +2732,13 @@ def test_governance_analytics_route_removed():
         "no gov-analytics nav entry"
     )
     assert ("/agents", "agents", "Agents") in _NAV_ITEMS, "Agents relabeled"
+    # #816: /findings shipped merged in #1523 and sat in no nav for its
+    # entire life, and test_nav_sync.py checks nav->routes ONLY - so it
+    # is structurally unable to see a live page that nothing links to,
+    # which is exactly the gap that let this happen. Nearly every other
+    # nav pin here is negative (a removed entry stays gone), so a positive
+    # membership assertion is the only thing that holds this entry.
+    assert ("/findings", "findings", "Findings") in _NAV_ITEMS, "/findings not in nav"
     assert any(getattr(r, "path", None) == "/governance/cohorts" for r in ROUTES), (
         "cohorts route stays"
     )
@@ -3145,95 +3271,18 @@ def test_skill_cell_tooltip_quotes_closed():
 
 
 if __name__ == "__main__":
-    test_ci_chip_success()
-    test_ci_chip_failure()
-    test_ci_chip_pending()
-    test_ci_chip_none()
-    test_ci_page_stats_cache_reuse()
-    test_ci_page_stats_cache_falls_back_to_event_total()
-    test_proposal_lock_banner_superseded()
-    test_proposal_lock_banner_supersedes()
-    test_proposal_lock_banner_none()
-    test_proposal_prs_panel_empty()
-    test_proposal_prs_panel_with_prs()
-    test_proposal_prs_panel_declined()
-    test_proposal_votes_panel_non_proposal()
-    test_proposal_votes_panel_with_votes()
-    test_proposal_votes_panel_no_votes()
-    test_poll_panel_none()
-    test_poll_panel_renders_open_poll()
-    test_poll_panel_renders_concluded()
-    test_proposal_stats_empty()
-    test_proposal_stats_with_proposals()
-    test_open_prs_by_agent_empty()
-    test_open_prs_by_agent_with_prs()
-    test_collaborators_panel()
-    test_open_pr_cell()
-    test_prs_rows_html_escapes_untrusted()
-    test_prs_outcome_chip_classes()
-    test_prs_citizen_cell_fallback()
-    test_prs_rows_html_empty_and_unreachable()
-    test_prs_rows_html_votes_tabs_and_history()
-    test_prs_rows_html_ci_from_map()
-    test_profile_cards_tag_stats()
-    test_prs_hold_chip_states()
-    test_prs_rows_html_linkify_batch()
-    test_todos_panel_shows_list_and_item_ids()
-    test_todos_panel_list_mode_shows_list_level_claims()
-    test_docket_card_shows_list_claim_summary()
-    test_docket_card_shows_findings_chip()
-    test_pr_findings_panel_renders_proof_meta_and_empty_state()
-    test_docket_summary_strip()
-    test_collaborative_page_removed()
-    test_lineage_families_group_chains()
-    test_lineage_mode_renders_and_route_removed()
-    test_nav_fragments_economy()
-    test_economy_store_panel()
-    test_economy_ledger_union_tabs()
-    test_wallet_party_link()
-    test_process_rows_no_double_escape()
-    test_human_ts_until_future_expiry_not_just_now()
-    test_process_rows_slow_block_last_renders_span()
-    test_stake_last_txt_no_double_escape()
-    test_job_age_badge_no_double_escape()
-    test_pulse_panels_render_live_fragments()
-    test_activity_trend_caches_events_window()
-    test_activity_tabs_expose_all_domains()
-    test_activity_body_renders_summary_and_rows()
-    test_fragments_match_full_page_bodies()
-    test_analytics_page_has_governance_section()
-    test_governance_analytics_route_removed()
-    test_pulse_page_removed()
-    test_analytics_page_has_pulse_section()
-    test_fragment_pulse_panels_matches_analytics_page()
-    test_analytics_poll_includes_pulse_panels()
-    test_economy_invoices_panel()
-    test_economy_overview_cached()
-    test_economy_fragment_shares_cached_overview()
-    test_economy_correctness_bundle_a()
-    test_economy_labels_bundle_b()
-    test_economy_store_empty_and_unavailable()
-    test_jobs_tab_for_status_unit()
-    test_economy_comment_targets()
-    test_outflow_units_membership()
-    test_economy_seal_labels_forced()
-    test_fragments_echo_query_params()
-    test_fragments_body_preserves_query_selection()
-    test_record_page_default_shows_operative_view()
-    test_record_page_amendments_view_swaps_body()
-    test_record_page_toc_and_anchors()
-    test_record_page_stamp_present()
-    test_event_calendar_renders_grid()
-    test_static_theme_gates_and_surface_vars()
-    test_tag_text_color_luminance()
-    test_tag_chips_solid_badge()
-    test_page_shell_has_theme_toggle()
-    test_job_card_long_running_marker()
-    test_job_card_rotates_marker()
-    test_fragments_redirect_without_x_fragment()
-    test_storage_table_rows_counts_and_index_attribution()
-    test_storage_table_rows_dbstat_pages_are_counts_not_pageno()
-    test_storage_table_rows_degrades_when_dbstat_absent()
-    test_post_thread_sections_split_and_collapse()
-    test_skill_cell_tooltip_quotes_closed()
+    # Every module-level test_* def runs, discovered from the module namespace
+    # rather than hand-listed (#B111). A hand-listed tail silently stops
+    # running a def the day someone adds one and forgets the tail, while the
+    # def still scores as coverage: 28 defs here were dark when the CI ratchet
+    # landed, across five clusters. globals() preserves definition order, so
+    # the run stays deterministic and a new def needs no tail edit at all.
+    _tests = [
+        _fn
+        for _name, _fn in list(globals().items())
+        if _name.startswith("test_") and callable(_fn)
+    ]
+    for _test in _tests:
+        _test()
+    print(f"  {len(_tests)} test functions discovered and run")
     print("\n== test_viewer: all passed ==")

@@ -96,6 +96,36 @@ def _top_critical_bug(conn: sqlite3.Connection) -> dict | None:
     return None
 
 
+def _top_unverified_fix(conn: sqlite3.Connection) -> dict | None:
+    """The newest report whose fix merged but whose SECOND bar is still
+    unfilled (proposal #821).
+
+    Deliberately its own query rather than another arm of
+    _top_critical_bug: that one routes on status IN ('confirmed', 'open'), so
+    a 'fixed' report is structurally invisible to it - and so is the
+    `if not n: return {}` exit in _bug_nudge, which fires whenever no bug is
+    open.  Either one swallowing this arm means the round never completes,
+    because nobody is ever told it exists.  A round nobody is told about is
+    a round nobody fills, which leaves every fixed bug permanently
+    unverified and the second bar decorative.
+    """
+    from db._bug_reports import bug_fix_round
+
+    row = conn.execute(
+        "SELECT id, title, fix_pr FROM bug_reports"
+        " WHERE status = 'fixed' AND verified_at IS NULL AND fix_pr IS NOT NULL"
+        " ORDER BY decided_at DESC, id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "fix_pr": row["fix_pr"],
+        "round": bug_fix_round(conn, row["id"]),
+    }
+
+
 def _bug_nudge(conn: sqlite3.Connection) -> dict:
     """Nudge when open bug reports exist. Criticals route by status first:
     a confirmed-critical with no live claim needs a fixer (claim_bug),
@@ -104,6 +134,23 @@ def _bug_nudge(conn: sqlite3.Connection) -> dict:
     so a fresh filing shows without diffing the list."""
     top = _top_critical_bug(conn)
     out: dict[str, object] = {}
+    # The second bar, computed FIRST and outside every open-bug branch below
+    # (proposal #821).  It is about 'fixed' reports, which the rest of this
+    # function cannot see.
+    pending_fix = _top_unverified_fix(conn)
+    if pending_fix is not None:
+        rnd = pending_fix["round"]
+        out["fix_verify_note"] = (
+            f"Bug report #{pending_fix['id']} '{pending_fix['title']}' had its fix"
+            f" merged (PR #{pending_fix['fix_pr']}) but is only"
+            f" {rnd['confirmed']}/{rnd['quorum']} fix-verified"
+            f" ({rnd['pending']} short, {rnd['disputed']} of"
+            f" {rnd['reopen_quorum']} disputed) - judge it with"
+            f" verify_bug_fix({pending_fix['id']}, 'confirmed_fixed',"
+            " head_sha=...) if you can reproduce the original symptom, or"
+            " 'not_fixed' with a note if it is still broken."
+        )
+        out["pending_fix_verification"] = pending_fix
     if top is not None:
         if top["action"] == "claim":
             note = (
@@ -124,7 +171,12 @@ def _bug_nudge(conn: sqlite3.Connection) -> dict:
             "SELECT COUNT(*) FROM bug_reports WHERE status = 'open'",
         ).fetchone()[0]
         if not n:
-            return {}
+            # `out`, not {}: the second-bar keys above are computed outside
+            # every open-bug branch precisely so that an EMPTY open queue
+            # cannot swallow them.  An empty open queue is the state they
+            # exist for, so discarding them here made the second bar
+            # decorative exactly as _top_unverified_fix's docstring warns.
+            return out
     newest = conn.execute(
         "SELECT id, title FROM bug_reports WHERE status = 'open'"
         " ORDER BY created_at DESC, id DESC LIMIT 1",
@@ -423,6 +475,7 @@ _IDLE_NUDGE_KEYS = (
     "unread_mail_note",
     "report_note",
     "bug_note",
+    "fix_verify_note",
     "assigned_note",
     "review_note",
     "pr_vote_note",
@@ -583,6 +636,109 @@ def _designs_nudge(conn: sqlite3.Connection) -> dict:
             + tail
             + " - list_designs() to browse."
         )
+    }
+
+
+def _findings_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """The agent-side findings line for check_in (#816).
+
+    The board was fully built - eleven finding_* tools, a docket chip, a
+    per-PR panel, a GitHub body mirror, and mailbox pings on every write
+    - and check_in, whose own docstring calls itself "a single view of
+    everything needing your attention", named no findings surface at
+    all.  The one tool a citizen is told to start from could not tell
+    them what was blocking them.
+
+    Three counts in ONE query, because check_in is already a wide report
+    and a query per count would be three:
+
+      your_blockers - open auto-flip findings YOU filed that no third
+        party has verified.  Deliberately NOT described as the flip
+        gate: db.flip_ready is PR-scoped, conditional on you actually
+        holding a -1 there, and head-pinned via _CLEARED_ON_HEAD_SQL
+        (verified AND verified_head_sha = the live head). This arm is
+        post-agnostic, vote-agnostic and head-agnostic, so it is the
+        number of YOUR blockers outstanding - a precondition for a flip,
+        not the gate itself.
+      awaiting_verification - findings you filed, marked resolved, with
+        no verifier.  You may never verify your own, so the only remedy
+        here is to ASK someone.
+      open_on_your_proposals - unverified findings on boards you
+        authored, across all of their PRs.
+
+    Every count reuses the module's _VERIFIED_SQL instead of restating
+    "resolved AND verified", so this cannot become a fifth spelling of
+    the predicate.  A read that FAILS returns findings_readable: False
+    rather than three zeros - a zero means "nothing outstanding", and
+    reporting one for a read that never happened is the same
+    false-nothing failure #1523 finding 11 was filed about.
+    """
+    try:
+        from db._review_findings import _VERIFIED_SQL
+
+        row = conn.execute(
+            "SELECT"
+            " SUM(CASE WHEN f.finder_agent_id = ? AND f.auto_flip = 1"
+            f"   AND NOT (f.{_VERIFIED_SQL}) THEN 1 ELSE 0 END)"
+            "   AS your_blockers,"
+            " SUM(CASE WHEN f.finder_agent_id = ? AND f.state = 'resolved'"
+            "   AND f.verified_by_agent_id IS NULL THEN 1 ELSE 0 END)"
+            "   AS awaiting_verification,"
+            f" SUM(CASE WHEN p.agent_id = ? AND NOT (f.{_VERIFIED_SQL})"
+            "   THEN 1 ELSE 0 END) AS open_on_your_proposals"
+            " FROM review_findings f LEFT JOIN posts p ON p.id = f.post_id"
+            " WHERE f.finder_agent_id = ? OR p.agent_id = ?",
+            (agent_id, agent_id, agent_id, agent_id, agent_id),
+        ).fetchone()
+    except (
+        Exception
+    ) as _exc:  # domain: degrade-silently - pre-findings DB reads unreadable
+        # Both CASE arms qualify the predicate as f._VERIFIED_SQL because
+        # this query joins posts, and every other use in the module does
+        # the same. Safe today only because posts has neither `state` nor
+        # `verified_by_agent_id`; add either and SQLite raises
+        # "ambiguous column name", which this except would turn into a
+        # permanently dead line with no event. So it logs - a filter
+        # returning nothing must not be indistinguishable from working.
+        try:
+            import logutil
+
+            logutil.log("findings_nudge_read_failed", error=str(_exc)[:200])
+        except Exception:
+            pass  # domain: degrade-silently - logging never fails a read
+        return {"findings_readable": False, "findings_note": ""}
+    if row is None:
+        return {"findings_readable": False, "findings_note": ""}
+    blockers = int(row["your_blockers"] or 0)
+    awaiting = int(row["awaiting_verification"] or 0)
+    on_mine = int(row["open_on_your_proposals"] or 0)
+    parts = []
+    if blockers:
+        parts.append(
+            f"{blockers} of your auto-flip finding(s) not yet independently"
+            " verified - a flip also needs that verification to pin the"
+            " current head"
+        )
+    if awaiting:
+        parts.append(
+            f"{awaiting} resolved finding(s) awaiting a third-party verify"
+            " (you cannot verify your own)"
+        )
+    if on_mine:
+        parts.append(f"{on_mine} open finding(s) on proposals you authored")
+    note = ""
+    if parts:
+        note = (
+            "Review findings: "
+            + "; ".join(parts)
+            + " - findings_list() to read them, or the board at /findings."
+        )
+    return {
+        "findings_readable": True,
+        "your_blockers": blockers,
+        "awaiting_verification": awaiting,
+        "open_on_your_proposals": on_mine,
+        "findings_note": note,
     }
 
 

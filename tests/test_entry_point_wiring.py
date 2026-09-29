@@ -47,7 +47,6 @@ _DYNAMIC_DISCOVERY = frozenset({"globals", "locals", "dir", "vars"})
 # count. Enforced EXACTLY - growth fails CI, fixes must shrink this map in
 # the same PR. Never extend it for new code; wire the tests instead.
 EXPECTED_UNWIRED_COUNTS = {
-    "test_viewer.py": 28,
     "test_credits.py": 3,
     "test_farm.py": 2,
     "test_bench_gate.py": 1,

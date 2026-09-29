@@ -28,7 +28,13 @@ from viewer._utils import _human_ts, _markdown, esc
 
 def _bug_status_badge(status: str) -> str:
 
-    colors = {"open": "#dc2626", "confirmed": "#d97706", "fixed": "#16a34a"}
+    colors = {
+        "open": "#dc2626",
+        "confirmed": "#d97706",
+        "fixed": "#16a34a",
+        "resolved": "#059669",
+        "closed": "#64748b",
+    }
 
     return (
         f'<span class="kind-badge" style="background:{colors.get(status, "#64748b")}">'
@@ -36,22 +42,44 @@ def _bug_status_badge(status: str) -> str:
     )
 
 
-def _bug_confidence_bar(confidence: int, threshold: int) -> str:
-    if threshold <= 0:
+def _bug_quorum_bar(value: int, quorum: int, label: str) -> str:
+    if quorum <= 0:
         return ""
-
-    pct = min(100, int(confidence / threshold * 100))
-
-    color = "#16a34a" if confidence >= threshold else "#d97706"
-
+    pct = min(100, int(value / quorum * 100))
+    color = "#16a34a" if value >= quorum else "#d97706"
     return (
         f'<div style="margin:8px 0">'
         f'<div class="bug-conf-track">'
         f'<div style="background:{color};height:8px;border-radius:4px;width:{pct}%"></div>'
         f"</div> "
-        f'<span style="font-size:13px;color:var(--muted)">{confidence}/{threshold}</span>'
+        f'<span style="font-size:13px;color:var(--muted)">{label}: {value}/{quorum}</span>'
         f"</div>"
     )
+
+
+def _bug_confidence_bar(
+    confidence: int, threshold: int, fix_round: dict | None = None
+) -> str:
+    """Both quorum bars (proposal #821): "is it real" and, once a fix has
+    merged, "did the fix work".
+
+    This mirrors viewer._bugs._two_bars.  The two renderers are separate
+    modules on purpose, so the parity is pinned by
+    tests/test_bug_fix_verification.py rather than held by a shared import -
+    an import across the viewer/admin boundary would pull the whole viewer
+    package into the admin process, and a parity test states the invariant
+    just as well while keeping the failure local and named.
+    """
+    out = _bug_quorum_bar(confidence or 0, threshold, "confirmed real")
+    rnd = fix_round or {}
+    if rnd.get("quorum") and (rnd.get("confirmed") or rnd.get("disputed")):
+        out += _bug_quorum_bar(rnd.get("confirmed", 0), rnd["quorum"], "fix verified")
+        if rnd.get("disputed"):
+            out += (
+                '<div style="font-size:13px;color:#dc2626;margin:2px 0">'
+                f"{rnd['disputed']} of {rnd.get('reopen_quorum', 0)} said not fixed</div>"
+            )
+    return out
 
 
 _SAFE_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
@@ -87,7 +115,7 @@ async def bugs_index(request):
 
     kwargs: dict = {"limit": per_page, "offset": offset}
 
-    if status_filter in ("open", "confirmed", "fixed", "closed"):
+    if status_filter in ("open", "confirmed", "fixed", "resolved", "closed"):
         kwargs["status"] = status_filter
 
     result = db.list_bug_reports(**kwargs)
@@ -102,6 +130,7 @@ async def bugs_index(request):
         ("open", "Open"),
         ("confirmed", "Confirmed"),
         ("fixed", "Fixed"),
+        ("resolved", "Resolved"),
         ("closed", "Closed"),
         ("all", "All"),
     ]:
@@ -122,7 +151,7 @@ async def bugs_index(request):
             else ""
         )
 
-        conf = _bug_confidence_bar(r["confidence"], threshold)
+        conf = _bug_confidence_bar(r["confidence"], threshold, r.get("fix_round"))
 
         url_part = f" | {_bug_url_anchor(r['url'], 'link')}" if r["url"] else ""
 
@@ -198,7 +227,7 @@ async def bug_detail(request):
 
     badge = _bug_status_badge(report["status"])
 
-    conf = _bug_confidence_bar(report["confidence"], threshold)
+    conf = _bug_confidence_bar(report["confidence"], threshold, report.get("fix_round"))
 
     url_row = ""
 

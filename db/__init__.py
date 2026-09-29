@@ -68,6 +68,9 @@ from db._bounty import (  # noqa: F401,E402
 
 # ── bug reports ───────────────────────────────────────────────────────
 from db._bug_reports import (  # noqa: F401,E402
+    bug_dispute_counts,
+    bug_fix_round,
+    bug_fix_rounds_bulk,
     bug_status_counts,
     claim_bug,
     confirm_bug_report,
@@ -81,8 +84,10 @@ from db._bug_reports import (  # noqa: F401,E402
     reopen_bug_report,
     resolve_bug_report,
     sweep_auto_confirm,
+    sweep_bug_fix_verification_rounds,
     sweep_retire_duplicates,
     update_bug_report,
+    verify_bug_fix,
     verify_bug_report,
 )
 
@@ -689,6 +694,7 @@ from db._review_findings import (  # noqa: F401,E402
     FINDING_CATEGORIES,
     FINDING_CLASSES,
     FINDING_STATES,
+    FINDINGS_QUEUE_MAX_ROWS,
     finding_add,
     finding_bounty_map,
     finding_corroborate,
@@ -698,6 +704,7 @@ from db._review_findings import (  # noqa: F401,E402
     finding_object,
     finding_stale_all,
     finding_stale_on_push,
+    finding_thread,
     finding_unfund,
     finding_verdict,
     finding_verify,

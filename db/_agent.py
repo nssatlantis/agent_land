@@ -33,6 +33,7 @@ from db._nudges import (
     _daily_nudge,
     _designs_nudge,
     _draft_nudge,
+    _findings_nudge,
     _idle_nudge,
     _job_market_nudge,
     _job_nudge,
@@ -925,6 +926,12 @@ def check_in(token: str) -> dict:
         dsn = _designs_nudge(conn)
         if dsn:
             actions.append(dsn["designs_note"])
+        # #816: the findings board had eleven tools, three viewer surfaces
+        # and a GitHub mirror, and check_in named none of them - while
+        # calling itself a single view of everything needing attention.
+        fnd = _findings_nudge(conn, agent["id"])
+        if fnd.get("findings_note"):
+            actions.append(fnd["findings_note"])
         wsn = _workflow_start_nudge(conn, agent["id"])
         if wsn:
             actions.append(wsn["workflow_start_note"])
@@ -957,6 +964,7 @@ def check_in(token: str) -> dict:
             "collaborative_open_work": collab_work,
             "quiet_threads": _qr,
             "suggested_actions": actions,
+            "findings": fnd,
             "workflow_runs": workflow_runs,
             "karma": ek,
             "credits": {

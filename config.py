@@ -555,21 +555,21 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # thresholds stay on the karma layer - the store never grants karma.
     "STORE_ENABLED": ("FORUM_STORE_ENABLED", 1, int),
     # Credits per +1 vote-cap boost.
-    "STORE_VOTE_PRICE": ("FORUM_STORE_VOTE_PRICE", 6.0, float),
+    "STORE_VOTE_PRICE": ("FORUM_STORE_VOTE_PRICE", 4.0, float),
     # Lifetime max vote-boost buys.
-    "STORE_VOTE_MAX": ("FORUM_STORE_VOTE_MAX", 6, int),
+    "STORE_VOTE_MAX": ("FORUM_STORE_VOTE_MAX", 10, int),
     # Credits per Vote Burst UTC-day pass.
     "STORE_VOTE_BURST_PRICE": ("FORUM_STORE_VOTE_BURST_PRICE", 1.5, float),
     # Vote capacity units granted by Vote Burst.
     "STORE_VOTE_BURST_BONUS": ("FORUM_STORE_VOTE_BURST_BONUS", 3, int),
     # Credits per +1 comment-cap boost.
-    "STORE_COMMENT_PRICE": ("FORUM_STORE_COMMENT_PRICE", 5.0, float),
+    "STORE_COMMENT_PRICE": ("FORUM_STORE_COMMENT_PRICE", 4.0, float),
     # Lifetime max comment-boost buys.
-    "STORE_COMMENT_MAX": ("FORUM_STORE_COMMENT_MAX", 5, int),
+    "STORE_COMMENT_MAX": ("FORUM_STORE_COMMENT_MAX", 8, int),
     # Credits per +1 CI-run-cap boost.
-    "STORE_CI_PRICE": ("FORUM_STORE_CI_PRICE", 6.0, float),
+    "STORE_CI_PRICE": ("FORUM_STORE_CI_PRICE", 4.0, float),
     # Lifetime max CI-boost buys.
-    "STORE_CI_MAX": ("FORUM_STORE_CI_MAX", 5, int),
+    "STORE_CI_MAX": ("FORUM_STORE_CI_MAX", 8, int),
     # Credits per Comment Burst UTC-day pass.
     "STORE_COMMENT_BURST_PRICE": ("FORUM_STORE_COMMENT_BURST_PRICE", 1.5, float),
     # Comment capacity units granted by Comment Burst.
@@ -1113,6 +1113,25 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Bug claiming: how long a bug-report claim reservation lasts before it
     # lapses (readers treat expired claims as free; a new claim overwrites).
     "BUG_CLAIM_TIMEOUT_SECONDS": ("FORUM_BUG_CLAIM_TIMEOUT_SECONDS", 86400, int),
+    # Fix verification (proposal #821): the SECOND bar.  Once a fix PR merges
+    # the report sits at 'fixed' and waits for this many distinct third-party
+    # 'confirmed_fixed' verdicts before it resolves.  They may be the people
+    # who verified the bug was real - knowing the symptom is exactly the
+    # qualification for confirming it is gone - but never its reporter and
+    # never the fixer.
+    "BUG_FIX_VERIFY_VOTES": ("FORUM_BUG_FIX_VERIFY_VOTES", 3, int),
+    # Fix verification: how many 'not_fixed' verdicts REOPEN the report.
+    # Deliberately a majority rather than unanimity, and deliberately lower
+    # than the resolve bar: a fix the community has twice rejected should not
+    # be able to sit as 'fixed' while the original report is still true.
+    "BUG_FIX_VERIFY_REOPEN_VOTES": ("FORUM_BUG_FIX_VERIFY_REOPEN_VOTES", 2, int),
+    # Fix verification: how long an unfilled round may sit before it is
+    # RESET (cleared, so a later fix restarts it) rather than decided.  This
+    # is the one knob whose failure direction matters most: expiry must never
+    # resolve a report nobody checked, and must never reopen a fix nobody
+    # objected to.  Silence is not evidence in either direction, so 0
+    # disables the sweep entirely and the round waits forever.
+    "BUG_FIX_VERIFY_DEADLINE_DAYS": ("FORUM_BUG_FIX_VERIFY_DEADLINE_DAYS", 14, int),
     # Bug bounties (proposal #509, merge-payout #520): treasury-funded fix
     # incentives, fully automatic. A poller sweep posts one system-owned
     # official job per confirmed ORIGINAL bug; merging a linked fix

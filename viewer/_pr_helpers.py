@@ -18,6 +18,7 @@ import config
 import db
 import github
 import logutil
+from viewer._findings import _guarded_findings_render
 from viewer._utils import (
     _human_ts,
     esc,
@@ -332,9 +333,11 @@ def _pr_findings_panel(pr_number: int) -> str:
     once, so there are two real levels: the rows filed against THIS PR
     (here) and the proposal-wide total (the docket chip in
     viewer/_proposals.py).  They are meant to disagree - each answers a
-    different question - so do not "fix" one to match the other.  What
-    blocks a merge is per PR as well (db.reviewer_blockers filters on
-    pr_number), so a sibling PR's rows neither block nor show up here.
+    different question - so do not "fix" one to match the other.  Findings
+    never block a merge: README, "Nothing blocks a merge on findings" - a
+    finding moves a vote only through its filer's own pre-authorised
+    auto_flip.  This panel is per-PR because the row filter is pr_number = ?,
+    so a sibling PR's rows do not show up here.
     """
     try:
         pid = db.proposal_for_pr(pr_number)
@@ -354,11 +357,13 @@ def _pr_findings_panel(pr_number: int) -> str:
             # Per-PR report.  Two questions, two scopes, on purpose: WHAT
             # WAS REPORTED against this PR (here), and what is outstanding
             # across the whole proposal (the docket chip, which is
-            # post-wide).  The query that actually gates a flip is itself
-            # PR-scoped (db.reviewer_blockers), so per-PR is also the safe
+            # post-wide).  The predicate that actually gates a flip is
+            # db.flip_ready, and it is PR-scoped, so per-PR is also the safe
             # direction for a display: it can under-report, never
-            # over-report.  Only resolved-plus-verified counts as done, so a
-            # stale row never paints green.
+            # over-report.  (db.reviewer_blockers is NOT that gate: it is the
+            # advisory nudge predicate, and its own docstring says an
+            # advisory finding never blocks.)  Only resolved-plus-verified
+            # counts as done, so a stale row never paints green.
             rows = db.findings_list(conn, pid, pr_number, "all")
             verdict = db.finding_verdict(conn, pid, pr_number)
             bounties = db.finding_bounty_map(conn, pr_number)
@@ -396,46 +401,63 @@ def _pr_findings_panel(pr_number: int) -> str:
         for r in rows
         if r["state"] == "resolved" and r["verified_by_agent_id"] is not None
     ]
-    lines = ""
-    for r in open_rows:
-        state_color = (
-            "var(--fail)"
-            if r["state"] in ("open", "disputed", "stale")
-            else "var(--warn)"
-        )
-        bounty_badge = _bounty_badge(bounties, r["id"])
-        lines += (
-            f'<li title="{esc(r["flip_path"][:200])}">'
-            f"#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
-            f"<span style='color:{state_color};font-weight:600'>"
-            f"{esc(r['state'])}</span>"
-            f"<div style='margin:2px 0'>{_check_proof(r)}</div>"
-            f"<div style='color:var(--muted);font-size:12px'>"
-            f"{esc(_finding_meta(r))}</div>"
-            f"{bounty_badge}{_objection_badge(r)}</li>"
-        )
-    for r in done_rows:
-        bounty_badge = _bounty_badge(bounties, r["id"])
-        lines += (
-            f'<li title="{esc(r["flip_path"][:200])}">'
-            f"#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
-            f"<span style='color:var(--ok);font-weight:600'>verified</span>"
-            f"<div style='margin:2px 0'>{_check_proof(r)}</div>"
-            f"<div style='color:var(--muted);font-size:12px'>"
-            f"{esc(_finding_meta(r))}</div>"
-            f"{bounty_badge}{_objection_badge(r)}</li>"
-        )
     blockers = verdict.get("open_auto_flip_by_voter") or []
     verdict_line = f"{len(open_rows)} open / {len(done_rows)} verified on this PR" + (
         f" - {sum(b['n'] for b in blockers)} open auto-flip findings"
         if blockers
         else ""
     )
-    return (
-        f'<div class="panel"><h2>Review findings on this PR</h2>'
-        f'<p style="color:var(--muted);font-size:13px;margin:4px 0">'
-        f"{esc(verdict_line)}</p>"
-        f"<ul>{lines}</ul></div>"
+
+    # The RENDER gets its own guard, on the same helper the other two
+    # row-drawing surfaces use. The read above is wrapped, and this loop was
+    # the one unguarded step between it and the page - so a row missing a key
+    # (`flip_path` / `check_text` are subscripted, not fetched) 500'd
+    # /prs/{n}, the busiest of the three surfaces, and this is the same
+    # read-guarded/render-unguarded shape this PR fixed on the other two.
+    # The columns stay as they are: this panel answers a different question
+    # from /findings?pr={n} and is meant to differ.
+    def _render_panel() -> str:
+        rendered = ""
+        for r in open_rows:
+            state_color = (
+                "var(--fail)"
+                if r["state"] in ("open", "disputed", "stale")
+                else "var(--warn)"
+            )
+            bounty_badge = _bounty_badge(bounties, r["id"])
+            rendered += (
+                f'<li title="{esc(r["flip_path"][:200])}">'
+                f"#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
+                f"<span style='color:{state_color};font-weight:600'>"
+                f"{esc(r['state'])}</span>"
+                f"<div style='margin:2px 0'>{_check_proof(r)}</div>"
+                f"<div style='color:var(--muted);font-size:12px'>"
+                f"{esc(_finding_meta(r))}</div>"
+                f"{bounty_badge}{_objection_badge(r)}</li>"
+            )
+        for r in done_rows:
+            bounty_badge = _bounty_badge(bounties, r["id"])
+            rendered += (
+                f'<li title="{esc(r["flip_path"][:200])}">'
+                f"#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
+                f"<span style='color:var(--ok);font-weight:600'>verified</span>"
+                f"<div style='margin:2px 0'>{_check_proof(r)}</div>"
+                f"<div style='color:var(--muted);font-size:12px'>"
+                f"{esc(_finding_meta(r))}</div>"
+                f"{bounty_badge}{_objection_badge(r)}</li>"
+            )
+        return (
+            f'<div class="panel"><h2>Review findings on this PR</h2>'
+            f'<p style="color:var(--muted);font-size:13px;margin:4px 0">'
+            f"{esc(verdict_line)}</p>"
+            f"<ul>{rendered}</ul></div>"
+        )
+
+    return _guarded_findings_render(
+        _render_panel,
+        row_count=len(rows),
+        subject="on this PR",
+        tag="pr_findings_panel_render_failed",
     )
 
 
