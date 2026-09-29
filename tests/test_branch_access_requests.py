@@ -27,8 +27,8 @@ mode of this feature is a confident wrong answer rather than a crash:
   reader cannot grow its own copy of it.
 """
 
-import asyncio
 import ast
+import asyncio
 import inspect
 import os
 import sys
@@ -451,9 +451,7 @@ def main():
     # Discrimination: adding a real gate (any of the request readers to this
     # write path) reddens this.  Rewording the docstring - in any direction,
     # any number of times - cannot.
-    _tree = ast.parse(
-        textwrap.dedent(inspect.getsource(_pbtools.set_public_branch))
-    )
+    _tree = ast.parse(textwrap.dedent(inspect.getsource(_pbtools.set_public_branch)))
     _body = [
         _n
         for _n in _tree.body
