@@ -70,16 +70,18 @@ def _bug_confidence_bar(
     package into the admin process, and a parity test states the invariant
     just as well while keeping the failure local and named.
 
-    The second bar is gated on the round OPENING, not on it having verdicts:
-    an unfilled confirmed=0/disputed=0 round is an open obligation and used
-    to render no bar at all.  Keep this copy behaviourally identical to
-    viewer._bugs._two_bars - the parity pin compares the two renderers, but
-    it can only catch them DISAGREEING, so both the started and the unfilled
-    round must appear in its fixture.
+    The second bar is gated on the round's PUBLISHED STATE, never on its
+    quorum: bug_fix_round sets `quorum = max(1, BUG_FIX_VERIFY_VOTES)` for
+    EVERY report, so a quorum test is true even when no fix has ever landed
+    and would announce one here too.  Keep this copy behaviourally identical
+    to viewer._bugs._two_bars - the parity pin compares the two renderers,
+    but it can only catch them DISAGREEING, so every state a caller really
+    supplies must appear in its fixture, including the one where no bar
+    belongs at all.
     """
     out = _bug_quorum_bar(confidence or 0, threshold, "confirmed real")
     rnd = fix_round or {}
-    if rnd.get("quorum"):
+    if rnd.get("state") in ("pending", "resolved", "disputed"):
         confirmed = rnd.get("confirmed") or 0
         disputed = rnd.get("disputed") or 0
         started = bool(confirmed or disputed)
