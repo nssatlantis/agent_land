@@ -871,6 +871,8 @@ def test_branch_refs_reads_nested_and_flat_payloads():
     for bad, label in (
         ({"state": "open", "head": None, "base": "main"}, "head=None"),
         ({"state": "open", "head": {"ref": None}, "base": "main"}, "ref=None"),
+        ({"state": "open", "head": "", "base": "main"}, "empty head"),
+        ({"state": "open", "head": "feature", "base": ""}, "empty base"),
         ({"state": "open", "base": "main"}, "no head key"),
         ({"state": "open", "head": "feature"}, "no base key"),
     ):
@@ -900,8 +902,8 @@ def test_repo_merge_base_accepts_the_get_pr_shape():
         "base": "main",
         "author": "alice",
         "state": "open",
-        "outcome": None,
-        "mergeable": "mergeable",
+        "outcome": "open",
+        "mergeable": None,
         "mergeable_state": "behind",
         "commits": 1,
         "created_at": "2026-01-01T00:00:00Z",
@@ -940,14 +942,51 @@ def test_repo_merge_base_accepts_the_get_pr_shape():
     print("  repo_merge_base survives get_pr's flattened payload: ok")
 
 
-def test_get_pr_still_emits_flattened_head_and_base():
-    """Ties the flat fixture above to the reader that produces it: if get_pr
-    goes back to nested head/base that fixture becomes fiction, and the seam
-    pin would stop meaning anything."""
-    src = (_REPO / "github" / "_reads.py").read_text(encoding="utf-8")
-    assert '"head": pr["head"]["ref"],' in src
-    assert '"base": pr["base"]["ref"],' in src
-    print("  get_pr still emits flattened head/base: ok")
+def test_get_pr_flattens_head_and_base():
+    """Ties the flat fixture above to the reader that produces it, by DRIVING
+    that reader. A text-over-file pin cannot do this job: ``_reads.py``
+    carries the same ``"head": pr["head"]["ref"],`` line in ``pr_diff`` and
+    ``pr_commits`` too, so a substring check stays green even when ``get_pr``
+    alone reverts to nested - which is precisely when the fixture the seam pin
+    feeds in becomes fiction."""
+    import github._checks as checks
+    import github._reads as reads
+
+    raw = {
+        "number": 42,
+        "title": "a pr",
+        "body": "",
+        "head": {"ref": "feature", "sha": "a" * 40},
+        "base": {"ref": "main", "sha": "b" * 40},
+        "user": {"login": "alice"},
+        "state": "open",
+        "mergeable": None,
+        "mergeable_state": "behind",
+        "commits": 1,
+        "created_at": "2026-01-01T00:00:00Z",
+        "html_url": "https://example.invalid/pr/42",
+    }
+
+    class _NoCache:
+        """get_pr caches on a TTLCache whose methods are read-only
+        attributes, so the cache object itself is replaced, not its .get."""
+
+        def get(self, key, default=None):
+            return None
+
+        def set(self, key, value):
+            pass
+
+    with (
+        patch.object(reads._core, "_pr_cache", _NoCache()),
+        patch.object(checks, "_checks_for_head", return_value={}),
+        patch.object(reads, "pr_comments", return_value=[]),
+        patch.object(reads, "pr_files", return_value=[]),
+    ):
+        res = reads.get_pr(42, _pr=raw)
+    assert res["head"] == "feature" and isinstance(res["head"], str), res
+    assert res["base"] == "main" and isinstance(res["base"], str), res
+    print("  get_pr returns flattened head/base strings: ok")
 
 
 # ---- runner ---------------------------------------------------------------
@@ -995,7 +1034,7 @@ def main():
     test_merge_base_requires_owner()
     test_branch_refs_reads_nested_and_flat_payloads()
     test_repo_merge_base_accepts_the_get_pr_shape()
-    test_get_pr_still_emits_flattened_head_and_base()
+    test_get_pr_flattens_head_and_base()
     print("test_merge_conflict: all assertions passed")
 
 

@@ -683,6 +683,9 @@ def rebase_pr_onto_main(
     pr = _pr or _core._request("GET", f"pulls/{number}")
     if pr.get("state") != "open":
         raise RepoError(f"pull request #{number} is not open.")
+    # The base ref is read and discarded on purpose: this function's contract
+    # is "onto main", and GITHUB_BASE_BRANCH below is that target. A PR whose
+    # base is not the repo default belongs to repo_merge_base, not here.
     head, _base = _branch_refs(pr)
     with _workspace() as repo_dir:
         # Unshallow to get the full commit graph needed for rebase.
@@ -743,6 +746,9 @@ def detect_merge_conflicts(number: int) -> dict:
     but triggers a full clone+fetch.  Abuse mitigation is left to the
     existing rate-limit infrastructure.
     """
+    # No _pr parameter here, so this always reads the raw payload and the
+    # nested form is the only correct one. If a _pr fast-path is ever added,
+    # route the two reads below through _branch_refs - it handles both.
     pr = _core._request("GET", f"pulls/{number}")
     if pr.get("state") != "open":
         raise RepoError(f"pull request #{number} is not open.")
@@ -947,6 +953,10 @@ def _branch_refs(pr: dict) -> tuple[str, str]:
     if not isinstance(head, str) or not isinstance(base, str):
         raise RepoError(
             f"PR payload carries no head/base ref: head={head!r}, base={base!r}"
+        )
+    if not head.strip() or not base.strip():
+        raise RepoError(
+            f"PR payload carries an empty ref: head={head!r}, base={base!r}"
         )
     return head, base
 
