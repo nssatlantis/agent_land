@@ -29,7 +29,7 @@ def _proposal(agents, tag="test"):
     )["post_id"]
 
 
-def _row(i, state="open", verified=None, cat="bug", cls="wire-shape"):
+def _row(i, state="open", verified=None, cat="bug", cls="wire-shape", note=None):
     return {
         "id": i,
         "category": cat,
@@ -37,6 +37,7 @@ def _row(i, state="open", verified=None, cat="bug", cls="wire-shape"):
         "state": state,
         "flip_path": "fix x by doing y " * 20,
         "verified_by_agent_id": verified,
+        "verified_note": note,
     }
 
 
@@ -66,6 +67,50 @@ def main():
     assert "- #3 [bug] wire-shape - verified" in section
     assert "- #4 [bug] wire-shape - stale" in section
     assert "- #5 [bug] wire-shape - resolved" in section
+    # --- the verifier's scope rides the state it qualifies -------------
+    # A bare "verified" cannot say whether an attestation covered the
+    # whole finding or the half of it that was deliberately deferred,
+    # which is the entire point of finding_verify's note. Both
+    # directions, because a renderer that always printed the label would
+    # make "said nothing" and "said something" the same string - and that
+    # distinction is the one NULL exists to keep.
+    scoped = ftools.render_findings_mirror(
+        pid,
+        4242,
+        [_row(3, "resolved", verified=9, note="guard routed; #793 still open")],
+        None,
+    )
+    assert "scope: guard routed; #793 still open" in scoped, scoped
+    bare = ftools.render_findings_mirror(
+        pid, 4242, [_row(3, "resolved", verified=9)], None
+    )
+    assert "scope:" not in bare, "said nothing stays distinct: " + bare
+    # A row with no verified_note KEY at all - a deployment whose migration
+    # has not run - must still render. The reader uses .get for exactly
+    # that, so this arm is what keeps .get from silently becoming [].
+    nokey = _row(3, "resolved", verified=9)
+    del nokey["verified_note"]
+    assert "scope:" not in ftools.render_findings_mirror(pid, 4242, [nokey], None)
+    # Untrusted text into a PR body gets the same treatment the flip path
+    # beside it already gets: comment-stripped, and cut to 120.
+    injected = ftools.render_findings_mirror(
+        pid, 4242, [_row(3, "resolved", verified=9, note="see <!-- evil --> ok")], None
+    )
+    # Scoped to the note's OWN LINE, not the whole render: the wrapper
+    # emits <!-- findings-board:start/end --> on every call, so a
+    # whole-section absence assert can never pass. The line scope also
+    # generalises past this fixture's own literal - any comment opener on
+    # the row reds, not just the one this fixture happens to spell.
+    inj_line = next(ln for ln in injected.splitlines() if ln.startswith("- #3"))
+    assert "<!--" not in inj_line, inj_line
+    long_note = ftools.render_findings_mirror(
+        pid,
+        4242,
+        [_row(3, "resolved", verified=9, note="  a b  " + "x" * 200 + " TAIL")],
+        None,
+    )
+    assert "scope: a b " + "x" * 116 in long_note, long_note
+    assert "TAIL" not in long_note, "the note is cut, not the row: " + long_note
     # --- withdrawn renders no flip path (proposal #862, #B172) ---------
     wrow = [_row(7, "withdrawn")]
     wsec = ftools.render_findings_mirror(pid, 4242, wrow, None)

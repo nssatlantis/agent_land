@@ -2774,6 +2774,7 @@ CREATE TABLE IF NOT EXISTS review_findings (
                        CHECK (state IN ('open', 'resolved', 'disputed', 'stale', 'withdrawn')),
     verified_by_agent_id INTEGER REFERENCES agents(id),
     verified_head_sha  TEXT,
+    verified_note      TEXT,
     bounty_units       INTEGER NOT NULL DEFAULT 0,
     dispute_seq        INTEGER NOT NULL DEFAULT 0,
     created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -2826,6 +2827,7 @@ CREATE TABLE IF NOT EXISTS finding_verifications (
     verifier_agent_id INTEGER NOT NULL REFERENCES agents(id)
         ON DELETE CASCADE,
     verified_head_sha TEXT NOT NULL,
+    verified_note     TEXT,
     dispute_seq       INTEGER NOT NULL DEFAULT 0,
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE (finding_id, verifier_agent_id, verified_head_sha, dispute_seq)

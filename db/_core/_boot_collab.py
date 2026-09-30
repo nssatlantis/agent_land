@@ -499,10 +499,8 @@ def run(conn) -> set:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS finding_notes (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                finding_id INTEGER NOT NULL REFERENCES review_findings(id)
-                    ON DELETE CASCADE,
-                agent_id   INTEGER NOT NULL REFERENCES agents(id)
-                    ON DELETE CASCADE,
+                finding_id INTEGER NOT NULL REFERENCES review_findings(id),
+                agent_id   INTEGER NOT NULL REFERENCES agents(id),
                 body       TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT
                     (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))

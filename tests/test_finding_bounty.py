@@ -516,6 +516,23 @@ def main():
                 for r in conn.execute("PRAGMA table_info(review_findings)").fetchall()
             ]
             assert "dispute_seq" in cols, cols
+        # The witness log's own migration. The scenario above DROPS the
+        # table, so its CREATE path cannot reach this column - which
+        # means the arm that matters is a deployment that already HAS
+        # the table. Without _ensure_column the column is unproven
+        # there, and that is the argument it ships on, so it gets the
+        # arm rather than the assertion.
+        with db._conn() as conn:
+            conn.execute("ALTER TABLE finding_verifications DROP COLUMN verified_note")
+        db.init_db()
+        with db._conn() as conn:
+            vcols = [
+                r[1]
+                for r in conn.execute(
+                    "PRAGMA table_info(finding_verifications)"
+                ).fetchall()
+            ]
+            assert "verified_note" in vcols, vcols
         db.init_db()  # second boot is a clean no-op
     finally:
         db.DB_PATH = saved

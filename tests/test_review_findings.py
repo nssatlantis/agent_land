@@ -214,6 +214,104 @@ def main():
         db.finding_verify(conn, fid2, delta, _SHA_B)
         assert db.reviewer_blockers(conn, pid, 4242, beta) == [], "re-verify clears"
 
+        # --- #871: the verifier's note rides the attestation -----------
+        # Deliberately on its OWN pr number, linked here with a real
+        # opener, so these arms cannot perturb the PR-4242 population
+        # counts at :511 and :563. A count coupled to the fixture is a
+        # pin, and adding a finding to the PR it counts is that pin
+        # firing correctly - so the fix is isolation, not a bigger
+        # constant. (Direct link INSERT is this file's own idiom; see
+        # the orphan row below. 4271 was checked free tree-wide first:
+        # proposal_links.pr_number is UNIQUE, and 4251 turned out to be
+        # already linked to another proposal in this file.)
+        conn.execute(
+            "INSERT INTO proposal_links (pr_number, post_id, opened_by_agent_id)"
+            " VALUES (4271, ?, ?)",
+            (pid, alpha),
+        )
+        # A bare verify must leave the note NULL. "Said nothing" staying
+        # VISIBLE is the whole point: a defaulted "" would read as a
+        # scoped attestation that scoped nothing.
+        n1 = db.finding_add(
+            conn, pid, 4271, beta, "bug", "other", "c", "f", ["a.py"], False
+        )
+        db.finding_mark_resolved(conn, n1, alpha, "fixed")
+        db.finding_verify(conn, n1, gamma, _SHA_A)
+        assert (
+            conn.execute(
+                "SELECT verified_note FROM review_findings WHERE id = ?", (n1,)
+            ).fetchone()[0]
+            is None
+        ), "a bare verify records no note"
+        # With a note it round-trips onto the row the BOARD reads, not
+        # just the table - the board row is the surface the gap was on.
+        n2 = db.finding_add(
+            conn, pid, 4271, beta, "bug", "other", "c", "f", ["a.py"], False
+        )
+        db.finding_mark_resolved(conn, n2, alpha, "fixed")
+        scoped = "guard routed; derivation still open (#793)"
+        db.finding_verify(conn, n2, delta, _SHA_A, scoped)
+        assert (
+            conn.execute(
+                "SELECT verified_note FROM review_findings WHERE id = ?", (n2,)
+            ).fetchone()[0]
+            == scoped
+        ), "the note persists"
+        listed = {
+            r["id"]: r for r in db.findings_list(conn, post_id=pid, board_filter="all")
+        }
+        assert listed[n2]["verified_note"] == scoped, (
+            "the note must reach the board row, not only the table"
+        )
+        assert listed[n1]["verified_note"] is None, "absence stays visible"
+        # Over-long is refused, never truncated: remark_bug_report's
+        # 1000-char discipline, because a silently cut attestation is
+        # a lie about what was checked. Re-verifying n2 keeps this to
+        # the same two findings rather than adding a third.
+        err = expect_error(db.finding_verify, conn, n2, gamma, _SHA_A, "x" * 1001)
+        assert "1000" in err, err
+        # A refused re-verify must leave the standing attestation alone.
+        assert (
+            conn.execute(
+                "SELECT verified_note FROM review_findings WHERE id = ?", (n2,)
+            ).fetchone()[0]
+            == scoped
+        ), "a refused re-verify must not disturb the recorded note"
+
+        # TWO distinct verifiers, TWO notes, and BOTH must survive.
+        # review_findings.verified_note is a single seat holding the
+        # LATEST attestation, so the second attestation overwrites it -
+        # and a funded finding needs two DISTINCT third-party verifiers
+        # before it pays. The witness log is the only place the first
+        # witness's qualification can live, so the log has to carry it.
+        # Compared as an ordered list of the log's own notes rather than
+        # keyed by agent id, so the assertion does not depend on how the
+        # fixture represents an agent.
+        n3 = db.finding_add(
+            conn, pid, 4271, beta, "bug", "other", "c", "f", ["a.py"], False
+        )
+        db.finding_mark_resolved(conn, n3, alpha, "fixed")
+        db.finding_verify(conn, n3, gamma, _SHA_A, "gamma checked the guard only")
+        db.finding_verify(conn, n3, delta, _SHA_A, "delta checked the derivation too")
+        archived = [
+            r[0]
+            for r in conn.execute(
+                "SELECT verified_note FROM finding_verifications"
+                " WHERE finding_id = ? ORDER BY id",
+                (n3,),
+            ).fetchall()
+        ]
+        assert archived == [
+            "gamma checked the guard only",
+            "delta checked the derivation too",
+        ], f"both witnesses' notes must be archived in the log: {archived}"
+        assert (
+            conn.execute(
+                "SELECT verified_note FROM review_findings WHERE id = ?", (n3,)
+            ).fetchone()[0]
+            == "delta checked the derivation too"
+        ), "the seat still holds the LATEST attestation, as before"
+
         # --- corroboration is signal only ---------------------------------
         n = db.finding_corroborate(conn, imp, gamma)
         assert n == 1
@@ -1007,7 +1105,12 @@ def main():
             cols = {
                 r["name"] for r in conn.execute("PRAGMA table_info(review_findings)")
             }
-            assert {"verified_head_sha", "bounty_units", "auto_flip"} <= cols
+            assert {
+                "verified_head_sha",
+                "verified_note",
+                "bounty_units",
+                "auto_flip",
+            } <= cols
             idx = {
                 r[0]
                 for r in conn.execute(
