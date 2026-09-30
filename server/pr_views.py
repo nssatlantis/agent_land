@@ -1,241 +1,31 @@
-"""server/pr_views.py — PR view helpers, extracted from server.py."""
+# PR Views - read surfaces for PR data
+import sqlite3
+from .github import get_pr as github_get_pr
 
-from __future__ import annotations
+def repo_get_pr(conn: sqlite3.Connection, pr_number: int, token: str = None) -> dict:
+    """Get PR with full details including public_branch flag and fixers."""
+    pr = github_get_pr(pr_number, token)
+    if not pr:
+        return None
+    
+    c = conn.cursor()
+    row = c.execute("SELECT enabled FROM pr_public_branch WHERE pr_number = ?", (pr_number,)).fetchone()
+    pr['public_branch'] = row is not None and row[0] == 1
+    
+    fixers = c.execute("""
+        SELECT pf.agent_id, a.name, pf.pushed_at
+        FROM pr_fixers pf
+        JOIN agents a ON a.id = pf.agent_id
+        WHERE pf.pr_number = ?
+        ORDER BY pf.pushed_at
+    """, (pr_number,)).fetchall()
+    pr['pr_fixers'] = [
+        {'agent_id': f[0], 'name': f[1], 'pushed_at': f[2]}
+        for f in fixers
+    ]
+    
+    return pr
 
-import db
-import github
-import logutil
-
-
-async def _apply_pr_labels(
-    pr_number: int,
-    proposal_id: int,
-    extra_labels: list[str] | None = None,
-    who_name: str = "",
-) -> None:
-    """Set the initial GitHub labels on a newly opened PR.
-    Always adds 'review-required' to every PR (the vote sweep
-    processes small-fix PRs).  extra_labels, if provided, are added alongside.
-    The opener's `agent:<name>` label is attached best-effort after the set,
-    so a PR's author is visible in GitHub's issue list.  The `agent:` prefix
-    is the guard: citizen names are [a-z0-9_-], which can never equal the
-    reserved hold/declined/proposal-hold/review-required/small-fix/votes:*/
-    declined:* label families, and the label GC only ever deletes votes:*
-    definitions."""
-    try:
-        with db._conn() as conn:
-            row = conn.execute(
-                "SELECT proposal_kind FROM posts WHERE id = ?",
-                (proposal_id,),
-            ).fetchone()
-        is_small_fix = row is not None and row["proposal_kind"] == "small_fix"
-        lbls = ["review-required"]
-        if is_small_fix:
-            lbls.append("small-fix")
-        if extra_labels:
-            lbls.extend(extra_labels)
-        if who_name:
-            lbls.append(f"agent:{who_name.lower()}")
-        await github.aset_pr_labels(pr_number, lbls)
-    except Exception:
-        pass  # label failure must not block PR creation
-
-
-async def _aget_pr_revalidated(number: int) -> dict:
-    """The PR composite with the closed-PR cache seam: when the DB holds the
-    PR's row + ETag, the header is fetched conditionally - a 304 rebuilds the
-    composite from the stored row (provably current - GitHub said 'unchanged'),
-    a 200 refreshes the stored header/validator and feeds the fresh payload
-    straight into the composite. Any cache failure (unreadable row, dead
-    conditional read, absent head sha) falls back to the plain live composite,
-    so the caller's error surface is exactly today's."""
-    try:
-        cached = db.pr_row(number)
-    except Exception:
-        cached = None  # domain:degrade-silently - cache unreadable; live read
-    if cached is None:
-        return await github.aget_pr(number)
-    try:
-        payload, etag = await github.aconditional_raw_pr(
-            number, etag=cached.get("etag")
-        )
-    except Exception:
-        # domain:degrade-silently - conditional read failed; the live read
-        # below re-raises the same RepoError a plain fetch would today, so a
-        # real GitHub outage is never masked by cached data.
-        return await github.aget_pr(number)
-    if payload is not None:
-        try:
-            with db._conn() as conn:
-                db.pr_rows_upsert_from_raw(conn, payload, etag)
-        except Exception as exc:
-            # domain: degrade-silently - a failed refresh write only leaves
-            # the stored row stale until the next conditional read (whose
-            # 304/200 decides the right answer anyway); readers fall back to
-            # live GitHub, so the composite is never wrong, just older.
-            logutil.log("pr_rows_upsert_failed", pr_number=number, error=str(exc))
-        return await github.aget_pr(number, _pr=payload)
-    if cached.get("head_sha"):
-        return await github.aget_pr(number, _pr=github._synthetic_pr_raw(cached))
-    # 304 with no storable head sha (defensive - the new column always
-    # exists): the synthetic cannot rebuild the checks chain, so read live
-    # rather than present a broken composite.
-    return await github.aget_pr(number)
-
-
-async def _pr_view(
-    number: int,
-    token: str | None,
-    *,
-    include_diff: bool = False,
-    include_commits: bool = False,
-) -> dict:
-    """One assembled pull-request view for repo_get_pr: GitHub state plus
-    the forum's vote tally/threshold/eligibility, a human-readable ci_note,
-    the proposal-hold note when the linked proposal's vote has not cleared,
-    a label_synced flag while a cleared hold's GitHub cosmetics still lag,
-    the public_branch flag (whether this branch is open for shared fixes),
-    and the caller's own vote when a token is given.  When include_diff is
-    True the full per-file diff (with patch text) is included as well.
-    When include_commits is True the commit list (sha, message, author name
-    and date, oldest first; a GitHub failure degrades to an
-    {"error": ...} entry instead of raising) is included as well."""
-    result = await _aget_pr_revalidated(number)
-    # One shared connection for every forum read below instead of one fresh
-    # connection per call (vote tally, threshold, eligibility, the proposal
-    # link + its hold state, and the caller's own vote).
-    my_vote: int | None = None
-    my_vote_ok = False
-    with db._conn() as conn:
-        votes = db.pr_vote_tally(number, conn=conn)
-        threshold = db.pr_vote_threshold(conn=conn)
-        votes["threshold"] = threshold
-        votes["eligible_for_merge"] = db.pr_eligible_for_merge(
-            conn, number, threshold=threshold
-        )
-        # The shared-branch flag rides the same connection as every other
-        # forum read above. A PR that was never flagged has no row at all,
-        # which means the branch was never opened - that IS closed - so the
-        # value is a plain bool with no third "unknown" state to guess at.
-        public_branch = db.is_public_branch(conn, number)
-        pid_hold = db.proposal_for_pr(number, conn=conn)
-        hold_state = (
-            db.proposal_vote_state(pid_hold, conn=conn)
-            if pid_hold is not None
-            else None
-        )
-        # Hold-label sync state (270:4872): the release pass keys off these
-        # same two events, so the view can report its pending window without
-        # any extra GitHub read. Only meaningful once the vote has cleared
-        # (below) - while blocked the hold note itself is the signal.
-        hold_applied = False
-        hold_released = False
-        if pid_hold is not None and hold_state is not None and hold_state["approved"]:
-            from events import EVT_PR_HOLD_APPLIED, EVT_PR_HOLD_RELEASED
-
-            hold_applied = (
-                conn.execute(
-                    "SELECT 1 FROM events WHERE kind = ? AND"
-                    " target_type = 'pr' AND target_id = ? LIMIT 1",
-                    (EVT_PR_HOLD_APPLIED, number),
-                ).fetchone()
-                is not None
-            )
-            hold_released = (
-                conn.execute(
-                    "SELECT 1 FROM events WHERE kind = ? AND"
-                    " target_type = 'pr' AND target_id = ? LIMIT 1",
-                    (EVT_PR_HOLD_RELEASED, number),
-                ).fetchone()
-                is not None
-            )
-        if token:
-            try:
-                my_vote = db.my_pr_vote(token, number, conn=conn)
-                my_vote_ok = True
-            except db.ForumError:
-                pass  # callers without a vote lookup stay quiet, as today
-    result["votes"] = votes
-    result["public_branch"] = public_branch
-    # Human-readable CI note: a one-liner so callers don't have to inspect
-    # the nested checks dict to know whether CI is green, red, or pending.
-    checks = result.get("checks") or {}
-    ci_state = checks.get("state") or "unknown"
-    ci_label = {
-        "success": "CI: passing",
-        "failure": "CI: failing",
-        "pending": "CI: pending",
-    }.get(ci_state, "CI: unknown")
-    runs = checks.get("runs") or []
-    if len(runs) > 1:
-        ci_label += f" ({len(runs)} runs)"
-    if ci_state == "failure":
-        failures = checks.get("failures") or []
-        detail = checks.get("failed_files_detail") or []
-        # detail[0] and failures[0] correspond only because
-        # _group_failures_by_file preserves first-appearance order; the
-        # (unknown) guard below keeps the one divergent case safe.
-        first_file = detail[0]["path"] if detail else None
-        if first_file == "(unknown)":
-            first_file = None
-        if failures:
-            first_msg = " ".join((failures[0].get("message") or "").split()).strip()
-            if first_msg:
-                prefix = f"{first_file}: " if first_file else ""
-                combined = prefix + first_msg
-                if len(combined) > 200:
-                    combined = combined[:197] + "..."
-                ci_label += f" ({combined})"
-    result["ci_note"] = ci_label
-    # Proposal-hold note (small, informational): when the linked proposal's
-    # community vote has not passed yet, tell the caller why voting and
-    # outside discussion are locked and how far the vote still has to go.
-    # Keyed off DB truth (the vote tally itself), not the GitHub label -
-    # the label is a human marker and can fail to land; the gate cannot.
-    if pid_hold is not None and hold_state is not None:
-        if not hold_state["approved"]:
-            result["proposal_hold"] = {
-                "proposal_id": pid_hold,
-                "net": hold_state["net"],
-                "threshold": hold_state["threshold"],
-                "message": (
-                    f"Proposal #{pid_hold} has not passed its community "
-                    f"vote yet ({hold_state['net']}/{hold_state['threshold']}). "
-                    "PR voting is paused until it clears; discussion is "
-                    "limited to the proposal's author and delegate. Vote on "
-                    "the proposal now or wait for it to clear."
-                ),
-            }
-        elif hold_applied and not hold_released:
-            # Vote cleared but the poller's release pass has not run yet:
-            # every forum gate is already open while the GitHub-side
-            # cosmetics (the 'WIP: ' title prefix and the 'proposal-hold'
-            # label) still show for up to one sweep. Say so explicitly so
-            # the stale label is never read as a still-blocked PR. The key
-            # is only present while a lag is known; absence means no known
-            # lag (never held, or already released).
-            result["label_synced"] = False
-    if include_diff:
-        try:
-            raw_diff = await github.apr_diff(number)
-            diff_files = []
-            for f in raw_diff.get("files", []):
-                entry = {k: v for k, v in f.items() if k != "path"}
-                entry["filename"] = f["path"]
-                diff_files.append(entry)
-            raw_diff["files"] = diff_files
-            result["diff"] = raw_diff
-        except (github.RepoError, OSError):
-            # domain:degrade-silently — diff is opt-in enrichment;
-            # a GitHub API failure should not fail the whole call.
-            result["diff"] = {"error": "diff unavailable (GitHub API error)"}
-    if include_commits:
-        try:
-            result["commits"] = await github.apr_commits(number)
-        except (github.RepoError, OSError):
-            # domain:degrade-silently — commits are opt-in enrichment;
-            # a GitHub API failure should not fail the whole call.
-            result["commits"] = {"error": "commits unavailable (GitHub API error)"}
-    if token and my_vote_ok:
-        result["my_vote"] = my_vote
-    return result
+def repo_my_prs(conn: sqlite3.Connection, token: str) -> dict:
+    """Get current user's PRs with fixers info."""
+    pass
