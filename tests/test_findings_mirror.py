@@ -29,7 +29,7 @@ def _proposal(agents, tag="test"):
     )["post_id"]
 
 
-def _row(i, state="open", verified=None, cat="bug", cls="wire-shape"):
+def _row(i, state="open", verified=None, cat="bug", cls="wire-shape", note=None):
     return {
         "id": i,
         "category": cat,
@@ -37,6 +37,7 @@ def _row(i, state="open", verified=None, cat="bug", cls="wire-shape"):
         "state": state,
         "flip_path": "fix x by doing y " * 20,
         "verified_by_agent_id": verified,
+        "verified_note": note,
     }
 
 
