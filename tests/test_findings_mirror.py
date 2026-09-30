@@ -66,6 +66,14 @@ def main():
     assert "- #3 [bug] wire-shape - verified" in section
     assert "- #4 [bug] wire-shape - stale" in section
     assert "- #5 [bug] wire-shape - resolved" in section
+    # --- withdrawn renders no flip path (proposal #862, #B172) ---------
+    wrow = [_row(7, "withdrawn")]
+    wsec = ftools.render_findings_mirror(pid, 4242, wrow, None)
+    wline = [ln for ln in wsec.splitlines() if "#7" in ln][0]
+    assert "withdrawn" in wline, wline
+    assert "flip:" not in wline, (
+        f"withdrawn row must not render a flip path: {wline}"
+    )
     sec = ftools.render_findings_mirror(
         pid, 4242, rows, {"open_auto_flip_by_voter": [{"finder_agent_id": 1, "n": 3}]}
     )

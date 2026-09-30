@@ -1015,7 +1015,14 @@ def main():
                     " AND name LIKE 'idx_review_findings%'"
                 ).fetchall()
             }
-            assert "idx_review_findings_post" in idx, "board indexes heal on boot"
+            expected_idx = {
+                "idx_review_findings_post",
+                "idx_review_findings_pr",
+                "idx_review_findings_finder",
+            }
+            assert idx == expected_idx, (
+                f"migration and schema disagree: {expected_idx ^ idx}"
+            )
         db.init_db()  # second boot is a clean no-op
     finally:
         db.DB_PATH = saved

@@ -349,6 +349,9 @@ def finding_dispute(
     return {"finding_id": finding_id, "state": "disputed"}
 
 
+_VERIFY_NOTE_MAX = 1000
+
+
 def finding_withdraw(
     conn: sqlite3.Connection,
     finding_id: int,

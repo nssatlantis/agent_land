@@ -531,6 +531,7 @@ def run(conn) -> set:
     # rows start at seq 0, and no verifications predate the column, so
     # the quorum reads stay exact).
     _ensure_column(conn, "review_findings", "dispute_seq", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "review_findings", "verified_note", "TEXT")
     # Widen the state CHECK to admit 'withdrawn' (proposal #862, bug #B172).
     # Idempotent: once the stored DDL contains 'withdrawn' this no-ops.
     _widen_finding_state_check(conn)

@@ -407,6 +407,8 @@ def render_findings_mirror(
             suffix = ""
         if state == "verified":
             lines.append(f"- #{rid} [{cat}] {cls} - verified{suffix}")
+        elif state == "withdrawn":
+            lines.append(f"- #{rid} [{cat}] {cls} - withdrawn{suffix}")
         else:
             lines.append(f"- #{rid} [{cat}] {cls} - {state} - flip: {flip}{suffix}")
     if extra > 0:
