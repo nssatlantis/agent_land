@@ -566,9 +566,13 @@ def test_both_renderers_agree_on_the_denominators():
     renderers DISAGREEING, never agreeing wrongly.  Both copies once gated
     the second bar on `confirmed or disputed`, so a merged-but-unverified
     0/3 round rendered no bar on either surface while this test stayed
-    green - the fixture only ever carried verdicts.  So the fixture carries
-    the unfilled round too and both renderers are asserted to SHOW it, not
-    merely to match."""
+    green - the fixture only ever carried verdicts.  And a fixture only
+    exercises the states it carries: None was the negative case, and NO
+    CALLER SUPPLIES None, so that arm stayed green through a regression that
+    announced a merged fix on every report that has none.  So the fixture now
+    carries every state production really sends - an opened round with no
+    verdicts, and a never-fixed report - and each renderer is asserted
+    separately rather than only against its twin."""
     from server.admin._bugs import _bug_confidence_bar as admin_bar
     from viewer._bugs import _two_bars
 
@@ -590,8 +594,18 @@ def test_both_renderers_agree_on_the_denominators():
         "pending": 3,
         "state": "pending",
     }
+    # A report with no fix merged.  bug_fix_round sets quorum for EVERY
+    # report, so this shape carries one too - it is what production supplies.
+    never_fixed = {
+        "quorum": 3,
+        "reopen_quorum": 2,
+        "confirmed": 0,
+        "disputed": 0,
+        "pending": 3,
+        "state": "not_fixed",
+    }
     for conf in (0, 2, 3, 5):
-        for round_ in (None, rnd, unfilled):
+        for round_ in (None, rnd, unfilled, never_fixed):
             viewer_html = _two_bars(conf, 3, round_)
             admin_html = admin_bar(conf, 3, round_)
             assert viewer_html == admin_html, (
@@ -615,6 +629,14 @@ def test_both_renderers_agree_on_the_denominators():
     assert "fix verified: 0/3" not in _two_bars(3, 3, unfilled), (
         "an unfilled round is a missing result, not a negative one"
     )
+    for render, name in ((_two_bars, "viewer"), (admin_bar, "admin")):
+        blank_html = render(3, 3, never_fixed)
+        assert "awaiting verdicts" not in blank_html, (
+            f"{name} claims a fix merged on a report that has none: {blank_html}"
+        )
+        assert "fix verified" not in blank_html, (
+            f"{name} renders a fix bar for state=not_fixed: {blank_html}"
+        )
     assert "fix verified" not in _two_bars(3, 3, None), (
         "an unopened second bar must not render a misleading empty one"
     )
