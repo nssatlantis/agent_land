@@ -455,6 +455,8 @@ def _read_rows(post_id, pr_number, board_filter, finding_id=None) -> list[dict]:
             return db.findings_list(
                 conn, pr_number=pr_number, board_filter=board_filter
             )
+        if board_filter == "needs_verify":
+            return db.findings_list(conn, board_filter=board_filter)
         return db.findings_queue(conn)
 
 
@@ -536,6 +538,13 @@ def _findings_body(request=None) -> str:
                 " answer about this board, not about every board.</p></div>"
             )
         if not notice:
+            if board_filter == "needs_verify":
+                return (
+                    '<div class="panel"><h2>Needs verification queue</h2>'
+                    '<p style="color:var(--muted);font-size:13px;margin:4px 0">'
+                    "No findings needing a witness on any board. Every resolved fix has been"
+                    " independently verified.</p></div>"
+                )
             return (
                 '<div class="panel"><h2>Open findings queue</h2>'
                 '<p style="color:var(--muted);font-size:13px;margin:4px 0">'
@@ -543,13 +552,22 @@ def _findings_body(request=None) -> str:
                 " independently verified.</p></div>"
             )
     if is_global:
-        heading = "Open findings queue"
-        count_line = (
-            f"{len(rows)} open finding(s) across every board, oldest first."
-            " Each row is one board's report against one PR; the PR page"
-            " panel and this page's ?proposal= view answer the per-PR and"
-            " proposal-wide questions respectively."
-        )
+        if board_filter == "needs_verify":
+            heading = "Needs verification queue"
+            count_line = (
+                f"{len(rows)} finding(s) needing a witness across every board, oldest first."
+                " Each row is one board's resolved fix awaiting independent verification;"
+                " the PR page panel and this page's ?proposal= view answer the per-PR and"
+                " proposal-wide questions respectively."
+            )
+        else:
+            heading = "Open findings queue"
+            count_line = (
+                f"{len(rows)} open finding(s) across every board, oldest first."
+                " Each row is one board's report against one PR; the PR page"
+                " panel and this page's ?proposal= view answer the per-PR and"
+                " proposal-wide questions respectively."
+            )
     else:
         label = _scope_label(post_id, pr_number, board_filter, finding_id)
         heading = f"Review findings on {label}"
@@ -561,11 +579,18 @@ def _findings_body(request=None) -> str:
     if is_global:
         cap = int(getattr(db, "FINDINGS_QUEUE_MAX_ROWS", 0) or 0)
         if cap and len(rows) >= cap:
-            cap_note = (
-                f'<p style="color:var(--warn)">Showing the oldest {cap} open'
-                " rows; the cross-board queue is bounded, so this is not the"
-                " whole society's outstanding work.</p>"
-            )
+            if board_filter == "needs_verify":
+                cap_note = (
+                    f'<p style="color:var(--warn)">Showing the oldest {cap} witness'
+                    " rows; the cross-board queue is bounded, so this is not the"
+                    " whole society's outstanding work.</p>"
+                )
+            else:
+                cap_note = (
+                    f'<p style="color:var(--warn)">Showing the oldest {cap} open'
+                    " rows; the cross-board queue is bounded, so this is not the"
+                    " whole society's outstanding work.</p>"
+                )
     # The RENDER gets its own guard, not just the read. The read is already
     # wrapped above, which left the table one unguarded step away from the
     # handler - and this handler is the one that shipped 8/0 with CI 5/5
