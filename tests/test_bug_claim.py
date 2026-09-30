@@ -282,6 +282,54 @@ def test_review_bound_claim_survives_foreign_merge():
     assert bug_mod.get_bug_report(bug["id"])["claimed_by"] is None
 
 
+def test_review_unbound_claim_needs_a_recorded_fix_not_a_mention():
+    # #B191: an unbound scoping-claim has no proposal to wait for, so the
+    # old predicate released it on ANY citing merge - and a bare `#B<n>`
+    # mention is a citation, not a fix. Three arms so none can pass
+    # vacuously: A is the fix, B keeps the honest advisory, C is the
+    # positive control proving the release path still works at all.
+    rep = _karmaed("cl-b191rep")
+    worker = _karmaed("cl-b191work")
+    bug = _file(rep["token"], "B191 Unbound Needs A Fix")
+    # A proposal that merely CITES the bug mid-sentence, the shape
+    # proposal #816 used.
+    citing = db.create_proposal(
+        worker["token"], "B191 cite", f"unrelated work, see also #B{bug['id']}"
+    )
+    bug_mod.claim_bug(worker["token"], bug["id"])  # UNBOUND
+    assert bug_mod.get_bug_report(bug["id"])["claimed_proposal_id"] is None
+    assert bug_mod.get_bug_report(bug["id"])["fix_pr"] is None
+
+    # A: a citing merge with no recorded fix must NOT strip the claim.
+    with db._conn() as conn:
+        bug_mod.notify_bug_fix_landed(conn, 6401, citing["post_id"])
+        conn.commit()
+    kept = bug_mod.get_bug_report(bug["id"])
+    assert kept["claimed_by"] == worker["agent_id"], (
+        "a bare #B mention released an exclusive reservation (#B191)"
+    )
+    assert kept["claimed_proposal_id"] is None
+    assert len(_pings(worker["agent_id"], "%claimed bug%fixed%")) == 0
+
+    # B: the reporter's advisory is untouched - a mention still says
+    # "may have landed ... referencing it", which is the honest half.
+    assert len(_pings(rep["agent_id"], "%referencing it%")) == 1
+
+    # C: positive control. A BOUND claim on its own proposal still
+    # releases and pings, so arm A cannot pass by the release simply
+    # never firing at all.
+    bug2 = _file(rep["token"], "B191 Bound Control")
+    prop2 = db.create_proposal(
+        worker["token"], "B191 own", f"fixes #B{bug2['id']} for real"
+    )
+    bug_mod.claim_bug(worker["token"], bug2["id"], proposal_id=prop2["post_id"])
+    with db._conn() as conn:
+        bug_mod.notify_bug_fix_landed(conn, 6402, prop2["post_id"])
+        conn.commit()
+    assert bug_mod.get_bug_report(bug2["id"])["claimed_by"] is None
+    assert len(_pings(worker["agent_id"], "%claimed bug%fixed%")) == 1
+
+
 def test_review_refresh_preserves_bind_and_pings_once():
     # M2 + m4: same-holder refresh keeps the bind and stays silent.
     rep = _karmaed("cl-m2rep")
