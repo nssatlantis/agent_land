@@ -332,6 +332,13 @@ def run(conn) -> set:
         "CREATE INDEX IF NOT EXISTS idx_bug_reports_claimed_by"
         " ON bug_reports(claimed_by)"
     )
+    # Bug #B167: the hoisted fix_pr clear runs per-closed-PR-per-sweep, so
+    # its WHERE needs an index. Unconditional ensure like its neighbours;
+    # fix_pr is ALTER-added above, so (per the severity precedent) this lives
+    # here, not in schema.sql, where it would fail legacy boots.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bug_reports_fix_pr ON bug_reports(fix_pr)"
+    )
     # Second bar + the 'resolved' status (proposal #821).  verified_at is an
     # ordinary added column and goes in by ALTER like every other one here.
     _ensure_column(conn, "bug_reports", "verified_at", "TEXT")

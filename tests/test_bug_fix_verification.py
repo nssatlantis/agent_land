@@ -63,8 +63,8 @@ LEGACY_DDL = """
         VALUES (1, 'legacy fixed bug', 'b', 'fixed', 3, '2026-01-01T00:00:00.000Z');
 """
 
-# Every index the rebuild's extra_after_rename must re-create.  Three of
-# them (severity, bounty_job_id, claimed_by) live on ALTER-added columns,
+# Every index the rebuild's extra_after_rename must re-create.  Four of
+# them (severity, bounty_job_id, claimed_by, fix_pr) live on ALTER-added columns,
 # so they exist only because boot_collab creates them - a rebuild that
 # dropped them would be SILENT, which is exactly why they are enumerated
 # here rather than left to whoever reads the migration next.
@@ -76,6 +76,7 @@ BUG_REPORT_INDEXES = (
     "idx_bug_reports_severity",
     "idx_bug_reports_bounty_job",
     "idx_bug_reports_claimed_by",
+    "idx_bug_reports_fix_pr",
 )
 
 

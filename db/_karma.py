@@ -923,7 +923,33 @@ def record_proposal_outcome(
             # A merged PR cannot be unmerged: never demote a terminal
             # 'merged' classification, so a transient GitHub re-classification
             # can't silently revert a shipped change.
-            if prev == "merged" or prev == status:
+            if prev == "merged":
+                return False
+        # Bug #B167: the fix_pr clear must also run on RE-DETECTION, not
+        # only on first write. It sits below the merged-guard (a transient
+        # re-classification of a merged PR must not null a merged fix) but
+        # above the prev==status return and the dangling-post guard: it keys
+        # only on the incoming status and WHERE fix_pr = ?, neither of which
+        # depends on the outcome row or the post. The poller re-detects
+        # closed PRs every sweep, so stranded historical pointers heal within
+        # one sweep with no backfill pass. Self-limiting: the audit log fires
+        # only when rows actually clear.
+        if status in ("declined", "closed"):
+            cleared = c.execute(
+                "UPDATE bug_reports SET fix_pr = NULL WHERE fix_pr = ?",
+                (pr_number,),
+            ).rowcount
+            if cleared:
+                logutil.log(
+                    "bug_fix_pr_cleared",
+                    pr_number=pr_number,
+                    post_id=post_id,
+                    status=status,
+                    cleared=cleared,
+                )
+        if existing is not None:
+            prev = existing["status"]
+            if prev == status:
                 return False
         # Bug #B78: the outcome poller passes a body-stamped post id -
         # unverified text that can name a post that never existed (or was
@@ -952,24 +978,6 @@ def record_proposal_outcome(
             "created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
             (pr_number, post_id, status, happened_at),
         )
-        # Bug #B122: a bug's fix_pr pointer is written once at PR open and
-        # never revisited, so a withdrawn or declined PR keeps naming a fix
-        # that will never merge. Clear it here, inside the same outcome txn,
-        # on a terminal non-merged outcome. The merged arm leaves it: the
-        # merge path closes the bug off this pointer.
-        if status in ("declined", "closed"):
-            cleared = c.execute(
-                "UPDATE bug_reports SET fix_pr = NULL WHERE fix_pr = ?",
-                (pr_number,),
-            ).rowcount
-            if cleared:
-                logutil.log(
-                    "bug_fix_pr_cleared",
-                    pr_number=pr_number,
-                    post_id=post_id,
-                    status=status,
-                    cleared=cleared,
-                )
         # Tell the proposal's author their idea reached a verdict. The PR's
         # own pr_* notification already told them the outcome; this frames it
         # as the proposal's lifecycle ending (Article VI.5). Reaching this
