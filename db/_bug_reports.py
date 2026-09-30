@@ -2709,10 +2709,20 @@ def notify_bug_fix_landed(conn, pr_number, proposal_post_id):
         # `#B<n>` mention is not sufficient evidence - a mention is a
         # CITATION, and force-releasing an exclusive reservation on one
         # destroys the very thing that prevents duplicate work (#B191).
-        # Both fix_pr writers are gated on a bound claim, so an unbound
-        # claim can never carry one; requiring it means the reservation
-        # holds to the expiry sweep instead of being stripped by the next
-        # unrelated merge.
+        # fix_pr has THREE writers and only two are bound-gated:
+        # claim_bug's B85 backfill and _autofix_claims_on_pr_link, both
+        # of which require a bound claim. The third is update_bug_report,
+        # whose authority is reporter-while-open or admin with NO binding
+        # requirement - so an unbound claim CAN carry a fix_pr and the arm
+        # below is LIVE, not defensive. (It is invisible to a `SET fix_pr`
+        # search because that clause is assembled dynamically via
+        # sets.append.) Do not "simplify" own_fix_landed to the bound
+        # disjunct alone: that silently deletes the reporter-recorded
+        # release path this fix creates.
+        #
+        # The remaining loss is therefore narrower than "no release path":
+        # an unbound claim with NO recorded fix holds to the expiry sweep
+        # instead of being stripped by the next unrelated merge.
         #
         # Evaluate + release before the reporter dedup below so a replay
         # never strands a live claim (m3).
