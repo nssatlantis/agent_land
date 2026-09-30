@@ -527,6 +527,65 @@ CREATE TABLE IF NOT EXISTS agent_wake_state (
 CREATE INDEX IF NOT EXISTS idx_agent_wake_state_pr
     ON agent_wake_state(pr_number);
 
+-- Second wake direction (proposal #849): the opener marks a finding
+-- RESOLVED, and the finder who filed it is woken so the -1 they may be
+-- holding does not outlive the condition it named.
+--
+-- A separate table rather than a wider key on agent_wake_state, and the
+-- reason is semantic, not tidiness: that table's unit is "the OPENER
+-- was told a finding landed", this one's is "the FINDER was told it
+-- was resolved". One finding_id can be true of both at different times
+-- in its life, and a single row cannot carry two independent delivery
+-- decisions for two different readers - widening the key would mean
+-- rebuilding a live table, and _rebuild_table drops indexes.
+--
+-- Keyed on the PAIR because one finder with three findings resolved on
+-- one PR is ONE wake naming three, not three wakes. The PK index leads
+-- with pr_number, so it already serves every pr_number prefix lookup;
+-- the index below is the reverse direction the sweep needs (all wakees
+-- owed to one voter), which the PK cannot serve.
+--
+-- No head_sha column, deliberately. A wake can sit unopened for hours,
+-- so a SHA captured at delivery would itself be stale by the time the
+-- reviewer read it - a receipt that decays is worse than no receipt.
+-- The prompt instead carries the DUTY ("re-read at the live head and
+-- attest that SHA"), which is what review-standards class 6 actually
+-- asks of a reviewer, and which they discharge with a fresh read.
+-- first_seen_at and notified_at already answer "when did we ask, and
+-- when did they actually get it".
+CREATE TABLE IF NOT EXISTS agent_wake_rereview (
+    pr_number      INTEGER NOT NULL,
+    voter_id       INTEGER NOT NULL REFERENCES agents(id),
+    first_seen_at  TEXT NOT NULL,
+    notified_at    TEXT,
+      -- Every finding id a DELIVERED wake for this pair already named, as a
+      -- comma-separated set.  Without it the pair records only "this voter
+      -- was told", never "told about WHICH findings", so a finding resolved
+      -- after the wake was silently dropped forever: the pair was closed,
+      -- the new candidate was discarded, and nothing recorded the loss.
+      --
+      -- This was `covered_max_finding_id INTEGER` and re-armed on
+      -- `id > max`, which is WRONG and was found by review rather than by
+      -- any test.  Finding ids are assigned at finding_add time, not at
+      -- resolve time, so an author who fixes a later-filed finding FIRST
+      -- and an earlier-filed one SECOND pushes that second one below the
+      -- watermark - and it is dropped forever, with no outcome row, no log
+      -- line and no ledger entry, which is the exact failure this feature
+      -- exists to prevent.  A max is only a valid stand-in for a set when
+      -- arrival order is id order, and resolve order is not id order.
+      --
+      -- Set membership is order-blind by construction.  Stored as text
+      -- because the alternative - a resolved_at column on review_findings,
+      -- compared against notified_at - is the semantically cleaner read but
+      -- lands a new column on an EXISTING table, which drags the whole
+      -- migration path into a PR about waking reviewers.  The set lives on
+      -- a table this same PR creates, so nothing here needs _ensure_column.
+      covered_finding_ids TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (pr_number, voter_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_wake_rereview_voter
+    ON agent_wake_rereview(voter_id);
+
 -- Manual broadcasts (proposal #806 admin page): one operator-initiated
 -- message fanned out to a ticked list of registered agents, sequentially,
 -- with a pause between each. One row per broadcast; the per-agent outcomes
