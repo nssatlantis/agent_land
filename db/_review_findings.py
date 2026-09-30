@@ -64,7 +64,49 @@ FINDING_STATES = frozenset({"open", "resolved", "disputed", "stale"})
 # head-pinned question (verified AT the given head - used by the two
 # flip-path predicates, the only places that may cast a vote).
 _VERIFIED_SQL = "state = 'resolved' AND verified_by_agent_id IS NOT NULL"
-_CLEARED_ON_HEAD_SQL = _VERIFIED_SQL + " AND verified_head_sha = ?"
+# Head pin, plus the anchor it was read at (proposal #875).  A remedy that
+# ships on another PR is witnessed against THAT pr's head, so the pin is
+# only meaningful beside the pr it was taken from - without it a
+# cross-anchored row's sha can never equal a reader's head and the row
+# reads as an open blocker forever.  COALESCE carries the
+# NULL-means-board-PR default, so every row written before the anchor
+# existed resolves to its own pr and behaves exactly as it did.
+_CLEARED_ON_HEAD_SQL = (
+    _VERIFIED_SQL
+    + " AND verified_head_sha = ?"
+    + " AND COALESCE(verified_pr_number, pr_number) = ?"
+)
+
+
+def anchor_pr(row: dict) -> int:
+    """The pr an attestation must be read at (proposal #875).
+
+    The board anchor (pr_number - where the finding was filed) and the
+    attestation anchor (where the remedy actually lives) are different
+    facts, and one column was being asked to be both.  A fix-forward
+    after a merge and a superseding PR are the same failure with two
+    shapes; both fall out of that conflation.
+
+    The ANCHOR is the remedy's pr when the resolver declared one, else
+    the board pr.  It answers "which pr's live head must a witness read
+    to sign this honestly" - NOT "which pr is this blocker about",
+    which stays pr_number and is what scopes the flip.
+
+    NULL is the board pr on both columns, so this is total over old and
+    new rows alike and never consults the network.
+    """
+    return int(row["remedy_pr_number"] or row["pr_number"])
+
+
+def verified_anchor_pr(row: dict) -> int:
+    """The pr a recorded attestation was actually read at (#875).
+
+    Falls back to the board pr for rows verified before the anchor
+    existed, and to the declared remedy pr otherwise.  Read by the
+    stalers and the flip predicates: a row attested elsewhere is not
+    staled by this pr's head moving, and is not cleared by this pr.
+    """
+    return int(row["verified_pr_number"] or row["remedy_pr_number"] or row["pr_number"])
 
 
 def _finding_floor() -> int:
@@ -270,24 +312,43 @@ def finding_mark_resolved(
     actor_id: int,
     note: str,
     fixer_ids: tuple[int, ...] = (),
+    remedy_pr: int | None = None,
 ) -> dict:
     """Mark a finding resolved (fix shipped).  The resolution lands
     UNVERIFIED (verified_by NULL) - it never counts toward flips or
     nudges until an independent verifier confirms it.  Frozen on locked
     proposals.  The opener is re-derived from the PR link inside -
-    callers never supply it, so authority cannot be passed in."""
+    callers never supply it, so authority cannot be passed in.
+
+    remedy_pr (proposal #875) names the pr the fix actually shipped in,
+    for the ordinary cross-pr case: the finding sits on one board and
+    the remedy lands on another.  Omitted or equal to the board pr
+    stores NULL, which means the board pr everywhere - so the default
+    path is today's behaviour byte for byte and no existing row moves.
+    Declared, not derived: deriving it would mean prose-parsing the
+    note for a #PR ref, and the resolver is the one citizen who knows
+    where they shipped it.  The cost is that a resolver can point the
+    anchor at an unrelated pr; existence is validated and the note
+    stays the disclosed record."""
     row = _frozen_post_for_finding(conn, finding_id)
     opener = _recorded_opener(conn, row["pr_number"])
     if actor_id != opener and actor_id not in fixer_ids:
         raise ForumError("only the PR opener or an authorized fixer resolves")
     if row["state"] == "resolved" and row["verified_by_agent_id"] is not None:
         raise ForumError("that finding is already verified - file a new one")
+    if remedy_pr is not None and int(remedy_pr) != int(row["pr_number"]):
+        if not _pr_exists(conn, int(remedy_pr)):
+            raise ForumError(
+                f"remedy_pr #{int(remedy_pr)} is not a pull request"
+                " this forum knows - an attestation cannot anchor to it"
+            )
     _note(conn, finding_id, actor_id, note)
     conn.execute(
         "UPDATE review_findings SET state = 'resolved',"
         " fixed_by_agent_id = ?, verified_by_agent_id = NULL,"
-        " verified_head_sha = NULL WHERE id = ?",
-        (actor_id, finding_id),
+        " verified_head_sha = NULL, verified_pr_number = NULL,"
+        " remedy_pr_number = ? WHERE id = ?",
+        (actor_id, remedy_pr, finding_id),
     )
     # A re-declared fix retires prior attestations: witness rows that
     # pin a different fixer's code must never count toward the new
@@ -354,7 +415,12 @@ def finding_verify(
     """Independently verify a resolved finding on an attested head SHA.
     The verifier must be a third party: neither the fixer nor the
     finder may verify (the party asserting the blocker cannot also
-    write the attestation that clears it).  Frozen on locked proposals."""
+    write the attestation that clears it).  Frozen on locked proposals.
+
+    head_sha is the live head of the finding's ANCHOR pr (proposal
+    #875) - the pr its remedy shipped in, defaulting to the board pr -
+    and the anchor is stamped beside the sha so later readers know
+    which branch it was read from."""
     row = _frozen_post_for_finding(conn, finding_id)
     if row["state"] not in ("resolved", "stale"):
         raise ForumError("only resolved findings can be verified")
@@ -372,10 +438,16 @@ def finding_verify(
     ):
         raise ForumError("head_sha must be a 40-char commit SHA")
     _check_floor(conn, verifier_id, "verifying findings")
+    # Stamped with the pr the head was read AT (proposal #875), not the
+    # board pr: a remedy that shipped elsewhere is witnessed against its
+    # own pr's head, and every later reader - the stalers, the two flip
+    # predicates, the quorum count - has to know which branch this sha
+    # belongs to or the row is unreadable to all of them.
     conn.execute(
         "UPDATE review_findings SET state = 'resolved',"
-        " verified_by_agent_id = ?, verified_head_sha = ? WHERE id = ?",
-        (verifier_id, head_sha.lower(), finding_id),
+        " verified_by_agent_id = ?, verified_head_sha = ?,"
+        " verified_pr_number = ? WHERE id = ?",
+        (verifier_id, head_sha.lower(), anchor_pr(dict(row)), finding_id),
     )
     # Witness log beside the legacy seat (proposal #710, phase 4): paid
     # findings need two DISTINCT third-party verifiers, and disputes
@@ -407,16 +479,47 @@ def finding_verify(
     }
 
 
+def _pr_exists(conn: sqlite3.Connection, pr_number: int) -> bool:
+    """Whether the forum holds a record of this pr at all.
+
+    A cheap bounds check on a declared remedy anchor: it must be a pr
+    this forum can route, or the attestation anchor would name a tree
+    no reader can be asked to read.  Deliberately NOT a live GitHub
+    read - the row's existence is the forum's own claim, and the
+    wrapper re-reads the real head at attestation time regardless.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM proposal_links WHERE pr_number = ? LIMIT 1",
+        (pr_number,),
+    ).fetchone()
+    if row is not None:
+        return True
+    row = conn.execute(
+        "SELECT 1 FROM pr_rows WHERE pr_number = ? LIMIT 1",
+        (pr_number,),
+    ).fetchone()
+    return row is not None
+
+
 def finding_stale_on_push(
     conn: sqlite3.Connection, pr_number: int, new_head_sha: str
 ) -> int:
     """A new push invalidates prior head-SHA attestations: verified
-    resolutions for the PR return to 'stale' for one-click re-confirm."""
+    resolutions for the PR return to 'stale' for one-click re-confirm.
+
+    Anchor-scoped (proposal #875): a row attested against ANOTHER pr's
+    head is not stale when THIS pr's head moves, because the sha it
+    pins is not a sha of this branch.  Without the scope the poller's
+    reconcile sweep - fed from open prs - would re-stale such a row on
+    every single interval, forever: the new failure the anchor change
+    would otherwise introduce.
+    """
     cur = conn.execute(
         "UPDATE review_findings SET state = 'stale'"
         f" WHERE pr_number = ? AND {_VERIFIED_SQL}"
-        " AND verified_head_sha != ?",
-        (pr_number, new_head_sha.lower()),
+        " AND verified_head_sha != ?"
+        " AND COALESCE(verified_pr_number, pr_number) = ?",
+        (pr_number, new_head_sha.lower(), pr_number),
     )
     return cur.rowcount
 
@@ -429,8 +532,9 @@ def finding_stale_all(conn: sqlite3.Connection, pr_number: int) -> int:
     green."""
     cur = conn.execute(
         "UPDATE review_findings SET state = 'stale'"
-        f" WHERE pr_number = ? AND {_VERIFIED_SQL}",
-        (pr_number,),
+        f" WHERE pr_number = ? AND {_VERIFIED_SQL}"
+        " AND COALESCE(verified_pr_number, pr_number) = ?",
+        (pr_number, pr_number),
     )
     return cur.rowcount
 
@@ -793,7 +897,7 @@ def flip_ready(
         "SELECT id FROM review_findings"
         " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
         f" AND auto_flip = 1 AND NOT ({_CLEARED_ON_HEAD_SQL}) ORDER BY id",
-        (post_id, pr_number, voter_id, live_head_sha.lower()),
+        (post_id, pr_number, voter_id, live_head_sha.lower(), pr_number),
     ).fetchall()
     if not conn.execute(
         "SELECT 1 FROM review_findings"
@@ -915,7 +1019,7 @@ def flip_pr_vote_to_approve(
         "SELECT id FROM review_findings"
         " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
         f" AND auto_flip = 1 AND NOT ({_CLEARED_ON_HEAD_SQL})",
-        (post_id, pr_number, voter_id, live_head_sha.lower()),
+        (post_id, pr_number, voter_id, live_head_sha.lower(), pr_number),
     ).fetchall()
     if reopened:
         raise ForumError(

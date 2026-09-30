@@ -702,6 +702,7 @@ from db._review_findings import (  # noqa: F401,E402
     FINDING_CLASSES,
     FINDING_STATES,
     FINDINGS_QUEUE_MAX_ROWS,
+    anchor_pr,
     finding_add,
     finding_bounty_map,
     finding_corroborate,
@@ -726,6 +727,7 @@ from db._review_findings import (  # noqa: F401,E402
     resolved_finding_candidates,
     reviewer_blockers,
     verifiable_by_me,
+    verified_anchor_pr,
     verifier_floor_met,
 )
 
