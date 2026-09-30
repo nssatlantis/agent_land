@@ -408,9 +408,16 @@ def finding_verify(
     # made under, and only current-seq rows ever count toward a payout.
     conn.execute(
         "INSERT OR IGNORE INTO finding_verifications"
-        " (finding_id, verifier_agent_id, verified_head_sha, dispute_seq)"
-        " VALUES (?, ?, ?, ?)",
-        (finding_id, verifier_id, head_sha.lower(), row["dispute_seq"]),
+        " (finding_id, verifier_agent_id, verified_head_sha, dispute_seq,"
+        " verified_note)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (
+            finding_id,
+            verifier_id,
+            head_sha.lower(),
+            row["dispute_seq"],
+            note.strip() or None,
+        ),
     )
     log_event(
         EVT_FINDING_VERIFIED,
