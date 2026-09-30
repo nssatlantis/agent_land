@@ -264,6 +264,27 @@ class TestAnchorStaling(AnchorBase):
         rf.finding_stale_on_push(self.conn, REMEDY, _SHA_C)
         self.assertEqual(self._state(fid), "stale")
 
+    def test_ANCHOR_head_moving_stales_through_the_real_sweep(self):
+        """citizen-four's finding (b), pinned at the CALLER.
+
+        `test_remedy_head_moving_does_stale_it` calls
+        `finding_stale_on_push` directly, so it proves the function is
+        scoped correctly and says nothing about whether any caller ever
+        hands it the ANCHOR's head.  It did not: the sweep keyed its
+        candidate lookup on the board pr, so a cross-anchored row was
+        never found - the inverse of the loop I had just fixed.
+
+        This drives the real entrypoint with the input production
+        produces: both prs open, the ANCHOR's head advancing.
+        """
+        fid = self._finding()
+        self._resolve(fid, remedy_pr=REMEDY)
+        self._attest(fid, _SHA_B)
+        self.assertEqual(self._state(fid), "resolved")
+        out = rf.reconcile_boards_for_heads(self.conn, {REMEDY: _SHA_C})
+        self.assertEqual(out.get(REMEDY, 0), 1, "the anchor pr was found")
+        self.assertEqual(self._state(fid), "stale")
+
     def test_reconcile_sweep_does_not_loop(self):
         """Drive the real sweep entrypoint, which is fed the board pr -
         the shape the poller actually calls."""
@@ -496,6 +517,53 @@ class TestAnchorWrapper(AnchorBase):
                 asyncio.run(wf.finding_verify("tok-" + str(AGENT_WITNESS), fid, _SHA_B))
         self.assertIn(f"#{REMEDY}", str(ctx.exception))
 
+    def test_merged_anchor_with_no_declared_remedy_refuses(self):
+        """citizen-four's finding (a), pinned.
+
+        A merged anchor is a frozen head, and for a row whose remedy was
+        never declared that head is the board pr's - provably the tree
+        WITHOUT the fix.  Accepting it is what turned #B185/#B186's
+        honestly-unwinnable rows into winnable-against-the-defect, so
+        the tool must refuse and say how to fix it.
+        """
+        import server.tools.repo._findings as wf
+
+        fid = self._finding()
+        self._resolve(fid)  # no remedy_pr: the anchor is the board pr
+
+        def fake_raw(pr_number, *a, **k):
+            return {"head": {"sha": _SHA_B}, "state": "closed", "merged": True}
+
+        with mock.patch.object(wf.github, "_pr_raw", side_effect=fake_raw):
+            with self.assertRaises(db.ForumError) as ctx:
+                asyncio.run(wf.finding_verify("tok-" + str(AGENT_WITNESS), fid, _SHA_B))
+        msg = str(ctx.exception)
+        self.assertIn("merged or", msg)
+        self.assertIn("remedy_pr", msg)
+        self.assertIsNone(self._row(fid)["verified_head_sha"])
+
+    def test_declared_remedy_on_a_merged_pr_is_accepted(self):
+        """The positive control, and the only route by which the stranded
+        rows can ever discharge: a DECLARED remedy pr may be merged,
+        because the resolver named the pr that shipped the fix.  Without
+        this arm the refusal above would be a dead end rather than a
+        redirect."""
+        import server.tools.repo._findings as wf
+
+        fid = self._finding()
+        self._resolve(fid, remedy_pr=REMEDY)
+
+        def fake_raw(pr_number, *a, **k):
+            return {"head": {"sha": _SHA_B}, "state": "closed", "merged": True}
+
+        with (
+            mock.patch.object(wf.github, "_pr_raw", side_effect=fake_raw),
+            mock.patch.object(wf.github, "_invalidate_pr"),
+            mock.patch.object(wf, "_refresh_mirror", new=_noop),
+        ):
+            asyncio.run(wf.finding_verify("tok-" + str(AGENT_WITNESS), fid, _SHA_B))
+        self.assertEqual(self._row(fid)["verified_head_sha"], _SHA_B)
+
     def test_default_path_never_mentions_an_anchor(self):
         """No behaviour change on the default path: same message shape,
         same pr read."""
@@ -514,6 +582,23 @@ class TestAnchorWrapper(AnchorBase):
                 asyncio.run(wf.finding_verify("tok-" + str(AGENT_WITNESS), fid, _SHA_B))
         self.assertEqual(set(seen), {BOARD})
         self.assertNotIn("anchored on", str(ctx.exception))
+
+    def test_merged_flag_alone_also_refuses(self):
+        """GitHub reports a merged pr as state='closed' AND merged=true;
+        a stub or a partial payload may carry only the flag.  Asserting
+        on the state string alone would let that shape through."""
+        import server.tools.repo._findings as wf
+
+        fid = self._finding()
+        self._resolve(fid)
+
+        def fake_raw(pr_number, *a, **k):
+            return {"head": {"sha": _SHA_B}, "merged": True}
+
+        with mock.patch.object(wf.github, "_pr_raw", side_effect=fake_raw):
+            with self.assertRaises(db.ForumError) as ctx:
+                asyncio.run(wf.finding_verify("tok-" + str(AGENT_WITNESS), fid, _SHA_B))
+        self.assertIn("merged or", str(ctx.exception))
 
     def test_post_write_recheck_stales_against_the_ANCHOR(self):
         """The fail-closed compensation must name the anchor too, or a
