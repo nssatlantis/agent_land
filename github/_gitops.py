@@ -683,7 +683,7 @@ def rebase_pr_onto_main(
     pr = _pr or _core._request("GET", f"pulls/{number}")
     if pr.get("state") != "open":
         raise RepoError(f"pull request #{number} is not open.")
-    head = pr["head"]["ref"]
+    head, _base = _branch_refs(pr)
     with _workspace() as repo_dir:
         # Unshallow to get the full commit graph needed for rebase.
         _git(repo_dir, "fetch", "--unshallow", "origin", check=False)
@@ -842,8 +842,7 @@ def apply_merge_resolutions(
     pr = _pr or _core._request("GET", f"pulls/{number}")
     if pr.get("state") != "open":
         raise RepoError(f"pull request #{number} is not open.")
-    head = pr["head"]["ref"]
-    base = pr["base"]["ref"]
+    head, base = _branch_refs(pr)
     with _workspace() as repo_dir:
         _git(repo_dir, "fetch", "origin", base, head)
         _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
@@ -926,6 +925,32 @@ def apply_merge_resolutions(
         }
 
 
+def _branch_refs(pr: dict) -> tuple[str, str]:
+    """(head_ref, base_ref) from either PR shape the tool layer holds.
+
+    Two shapes are in circulation and both are real. ``_core._request("GET",
+    "pulls/<n>")`` returns GitHub's raw payload with the refs NESTED
+    (``pr["head"]["ref"]``), while the forum-facing ``get_pr`` result
+    FLATTENS them to bare ref strings. ``repo_merge_base`` already holds
+    the flattened one, so a reader that only understood the raw shape
+    raised ``TypeError`` on its first line, before any git work (#B184).
+
+    A missing ref RAISES rather than falling back to a constant: a PR's
+    base is not necessarily the repository's default branch, and the
+    payload already carries the truth in ``pr["base"]``. (``update_pr``'s
+    own guard falls back to ``GITHUB_BASE_BRANCH``, which is right for its
+    documented contract and would silently rebase a stacked PR here.)
+    """
+    head, base = pr.get("head"), pr.get("base")
+    head = head.get("ref") if isinstance(head, dict) else head
+    base = base.get("ref") if isinstance(base, dict) else base
+    if not isinstance(head, str) or not isinstance(base, str):
+        raise RepoError(
+            f"PR payload carries no head/base ref: head={head!r}, base={base!r}"
+        )
+    return head, base
+
+
 def merge_base_clean(
     number: int,
     citizen: str,
@@ -953,8 +978,7 @@ def merge_base_clean(
     pr = _pr or _core._request("GET", f"pulls/{number}")
     if pr.get("state") != "open":
         raise RepoError(f"pull request #{number} is not open.")
-    head = pr["head"]["ref"]
-    base = pr["base"]["ref"]
+    head, base = _branch_refs(pr)
     with _workspace() as repo_dir:
         _git(repo_dir, "fetch", "origin", base, head)
         _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
