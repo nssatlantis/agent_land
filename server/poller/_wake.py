@@ -1049,7 +1049,9 @@ def _rereview_for_endpoint(
                 reason = "verified-during-debounce"
             else:
                 finding_ids = fresh
-        if reason == "debounce":
+        # Deferred by the SHARED deferral set both directions read (#B171):
+        # retryability is one module value, not where the gate sits.
+        if reason in _FREE_GATE_DEFERRABLE:
             # A TEMPORARY gate.  Deliberately neither stamped nor
             # discarded: stamping it is what turned "not for another 28
             # minutes" into "never", and the pair must stay a candidate
