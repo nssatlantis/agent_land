@@ -13,7 +13,7 @@ import db
 from events import CATEGORIES, query_events
 from viewer._feed_helpers import _crumb, _with_rail
 from viewer._layout import _page
-from viewer._utils import _human_ts, esc
+from viewer._utils import _human_ts, _linkify_references, esc
 
 # -------------------------------------------------------- events page --
 
@@ -433,7 +433,16 @@ def _event_description(e: dict) -> str:
         piece = f"{actor} rated {ratee} {score_txt}/100 on {skill}"
         if d.get("rerate"):
             piece += " (re-rate)"
-        return piece + f" citing {esc(d.get('evidence_ref', '?'))}"
+        # The cited artifact becomes a link rather than a bare token:
+        # the whole point of an evidence-linked rating is that the
+        # reader can go and look at what was cited. _linkify_references
+        # runs on already-escaped text and only ever emits same-origin
+        # hrefs, and it covers the #PR / #B / #P / #C reference forms.
+        # `#D<n>` and `job #<n>` are the other two legal evidence forms
+        # and carry no reference token to match, so they stay plain text
+        # here - the profile panel links those, because its reader
+        # returns the parsed kind rather than only the raw string.
+        return piece + " citing " + _linkify_references(esc(d.get("evidence_ref", "?")))
     if k.startswith("finding_"):
         # All eight finding kinds land here rather than on the terminal
         # `return f"{k} on {tt} #{tid}"`, which rendered the raw snake_case

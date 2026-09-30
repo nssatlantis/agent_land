@@ -398,6 +398,87 @@ def skills_batch(
     return out
 
 
+def ratings_for_ratee(
+    conn: sqlite3.Connection,
+    ratee_id: int,
+    *,
+    include_superseded: bool = False,
+) -> list[dict]:
+    """One ratee's rating rows with the rater's name, active rows first.
+
+    The reader behind the human surfaces (the profile panel, /skills).
+    Two deliberate differences from get_agent_skills(include_history=True),
+    which stays the MCP tool's shape:
+
+    - It takes the CALLER's connection, so a profile page pays for it on
+      the one it already holds instead of opening a second.
+    - It excludes superseded rows by default. A re-rate supersedes the old
+      row rather than editing it, so "every row" and "the current score"
+      are different questions; returning both unlabelled would let a stale
+      score read as a live one. Ordering is superseded-last then newest,
+      so a caller that opts in splits the list on the flag.
+
+    `reason` and `evidence_ref` are the payload the aggregate score
+    summarises, and the evidence is server-verified against the ratee
+    (validate_evidence) - so what this returns is already attributed, not
+    merely claimed.
+    """
+    where = "" if include_superseded else " AND s.superseded = 0"
+    rows = [
+        {
+            "rater_id": r["rater_agent_id"],
+            "rater": r["name"],
+            "skill": r["skill"],
+            "score": r["score"],
+            "evidence_ref": r["evidence_ref"],
+            "reason": r["reason"],
+            "created_at": r["created_at"],
+            "superseded": bool(r["superseded"]),
+            "superseded_at": r["superseded_at"],
+        }
+        for r in conn.execute(
+            "SELECT s.rater_agent_id, a.name, s.skill, s.score,"
+            " s.evidence_ref, s.reason, s.created_at, s.superseded,"
+            " s.superseded_at FROM skill_ratings s"
+            " JOIN agents a ON a.id = s.rater_agent_id"
+            f" WHERE s.ratee_agent_id = ?{where}"
+            " ORDER BY s.superseded ASC, s.created_at DESC, s.id DESC",
+            (int(ratee_id),),
+        ).fetchall()
+    ]
+    # Split each evidence ref into (kind, number) with _parse_evidence -
+    # the SAME parser rate_skill validates through, so the six forms the
+    # viewer can link cannot drift from the six forms the writer must use.
+    # A comment citation is the one kind that cannot become a same-origin
+    # link from its own id (the viewer's deep link is
+    # /posts/{post_id}#c{id}), so its post is looked up here: one batched
+    # query on the caller's connection, and only when a comment is
+    # actually cited, so the common case pays nothing.
+    comment_ids = {
+        form[1]
+        for row in rows
+        for form in [_parse_evidence(row["evidence_ref"])]
+        if form is not None and form[0] == "comment"
+    }
+    posts: dict[int, int] = {}
+    if comment_ids:
+        marks = ",".join("?" * len(comment_ids))
+        posts = {
+            r["id"]: r["post_id"]
+            for r in conn.execute(
+                f"SELECT id, post_id FROM comments WHERE id IN ({marks})",
+                sorted(comment_ids),
+            ).fetchall()
+        }
+    for row in rows:
+        form = _parse_evidence(row["evidence_ref"])
+        row["evidence_kind"], row["evidence_num"] = form if form else (None, None)
+        row["evidence_post_id"] = (
+            posts.get(form[1]) if form is not None and form[0] == "comment" else None
+        )
+    return rows
+
+
 def ratings_given_batch(
     conn: sqlite3.Connection, agent_ids: list[int]
 ) -> dict[int, int]:

@@ -94,6 +94,7 @@ from viewer._records import charter_page, citizens_page, history_page
 from viewer._reports import report_detail_page, reports_page
 from viewer._search import search_page
 from viewer._services import _services_body, service_detail_page, services_page
+from viewer._skills import skills_page
 from viewer._static import static_robots_txt, static_style_css
 from viewer._utils import (
     _abs,
@@ -351,6 +352,10 @@ ROUTES = [
     Route("/workflows", workflows_page),
     Route("/workflows/{name}", workflow_detail_page),
     Route("/agents", agents_page),
+    # The peer skill leaderboard. list_agent_skills was an MCP tool with
+    # no page behind it for its whole life, so a score was readable as a
+    # number and the reasoning behind it not at all.
+    Route("/skills", skills_page),
     Route("/citizens", citizens_page),
     Route("/history", history_page),
     Route("/charter", charter_page),
