@@ -838,7 +838,32 @@ def test_direction_fragments(agents):
     # comparison either way - and finding #43's whole ask is that the
     # exclusion be STATED rather than incidental. A future edit dropping a
     # guard reds here and reads why.
+    #
+    # Two instruments, not one (#853 board finding #57): the hand-typed
+    # literal list certifies the three KNOWN arms and nothing about a
+    # fourth - the same "list of places-that-are-wrong, chosen by whoever
+    # happened to be looking" shape finding #43 exists to end, sitting
+    # inside the pin that answered it. The structural pair pins the ARM
+    # COUNT and per-arm COVERAGE, so a fourth unguarded arm reds on the
+    # count-and-coverage asserts and a fourth guarded arm forces a
+    # deliberate count edit. The literals stay: structure pins
+    # completeness, literals pin exact spelling (which column, which NULL
+    # policy). The split delimiter occurs exactly twice in the shipped
+    # fragment - no arm's WHERE text contains "OR EXISTS" (the po arm's
+    # only disjunction is the IN list) - so the parts ARE the arms.
     frag = pr_negative_before_sql("f.pr_number", "f.created_at")
+    arms = frag.split("OR EXISTS")
+    assert len(arms) == 3, (
+        f"pr_negative_before_sql grew to {len(arms)} EXISTS arms; the"
+        " per-arm sentinel contract below was written for three - extend"
+        " the guards and this count in the same edit"
+        " (#853 board finding #57)"
+    )
+    assert all("<> ''" in arm for arm in arms), (
+        "an EXISTS arm lacks the empty-string sentinel guard - the"
+        " exclusion must be stated per arm, not left to collation"
+        " (#831 finding #43, #853 finding #57)"
+    )
     for guard in (
         "po.happened_at <> ''",
         "prd.closed_at <> ''",
