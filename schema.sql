@@ -1,6 +1,3 @@
-    pushed_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    PRIMARY KEY (pr_number, agent_id)
-) WITHOUT ROWID;
 -- Fixer file tracking (proposal #843): tracks which files each fixer changed
 -- for path-scoped finding authorization on public branches.
 CREATE TABLE IF NOT EXISTS pr_fixer_files (
@@ -47,8 +44,8 @@ CREATE TABLE IF NOT EXISTS pr_fixer_files (
 -- stops blocking a fresh question, so re-asking was impossible and the
 -- refusal named a duplicate that did not exist.  A write-path flush does
 -- not inherit the drift objection - it runs in the same transaction as the
--- INSERT it unblocks, so it is reached exactly when a stale row is in the
--- way.  Kept in the CHECK from the start so that writer needed no rebuild.
+-- INSERT it unblocks, so it is reached precisely when a stale row is in
+-- the way.  Kept in the CHECK from the start so that writer needed no rebuild.
 CREATE TABLE IF NOT EXISTS pr_branch_access_requests (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     pr_number  INTEGER NOT NULL,
