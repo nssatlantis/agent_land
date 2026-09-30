@@ -65,17 +65,34 @@ def _top_critical_bug(conn: sqlite3.Connection) -> dict | None:
     """The most urgent critical bug, if any (proposal #609, operator
     doctrine: critical only, untriaged never escalates, live claim
     suppresses fix-routing). Priority: confirmed-critical with no live
-    claim (needs a fixer now) over open-critical (needs verification).
+    claim (needs a fixer now) over open-critical (needs verification). Only a
+    bug with NOTHING RECORDED is routed: a live claim or a recorded fix PR
+    both suppress it (#B180).
     Returns {id, title, status, action} with action 'claim'|'verify',
     or None when no critical is actionable."""
-    from db._bug_reports import _bug_claim_live
+    from db._bug_reports import bug_work_state
 
+    # `AND fix_pr IS NULL` narrows the scan; `bug_work_state` is the
+    # authority on the answer, so a state added to the enum later
+    # cannot silently start routing a bug whose fix is already
+    # recorded. The docstring promised "live claim suppresses
+    # fix-routing" and the code implemented half of it: the claim was
+    # the SOLE suppressor, and the claim is the column that stays NULL
+    # when a fix arrives without one (#B180, #B176).
     for row in conn.execute(
-        "SELECT id, title, claimed_by, claimed_at FROM bug_reports"
+        "SELECT id, title, claimed_by, claimed_at, fix_pr FROM bug_reports"
         " WHERE status = 'confirmed' AND severity = 'critical'"
+        " AND fix_pr IS NULL"
         " ORDER BY created_at DESC, id DESC"
     ).fetchall():
-        if not _bug_claim_live(row["claimed_by"], row["claimed_at"]):
+        state = bug_work_state(row["claimed_by"], row["claimed_at"], row["fix_pr"])
+        # "No LIVE reservation", not one state name: `released` (a claim
+        # still stored, past its window) is precisely the row that needs a
+        # fixer, and a stale column must not suppress it. `in_flight` cannot
+        # occur under the `fix_pr IS NULL` filter above and is named anyway,
+        # so widening that query later cannot start routing a row that is
+        # already in flight.
+        if state not in ("claimed", "in_flight"):
             return {
                 "id": row["id"],
                 "title": row["title"],
