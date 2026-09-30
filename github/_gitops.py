@@ -968,6 +968,11 @@ def merge_base_clean(
     pushes it, exactly as ``apply_merge_resolutions`` does on the
     conflict path.
 
+    ``_pr`` accepts either the raw GitHub response or the forum-facing
+    ``get_pr()`` result - ``_branch_refs`` reads the branch refs from
+    either shape, which ``repo_merge_base`` depends on since it hands
+    over ``get_pr``'s flattened payload (#B184).
+
     Returns ``{"status": "merged", "commit_sha": ...}`` when a merge
     commit was created and pushed, ``{"status": "up_to_date", ...}``
     when the head already contains base (no commit, no push), and raises
