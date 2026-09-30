@@ -1425,7 +1425,13 @@ def verify_guild_wallets(conn: sqlite3.Connection | None = None) -> dict:
     forever - dead guilds verify trivially by exclusion). Suspended
     guilds stay in scope - their wallets are live custody. Per-guild
     rows (never a global sum) so one poisoned guild cannot mask the
-    rest. Total function: never raises - a weird ledger reports failure,
+    rest. `divergence` names WHICH equality broke - `wallet_vs_memo` (the two
+    trails disagree with each other) or `retained_vs_trails` (the
+    trails agree and the retained figure is what breaks the identity) -
+    because `ok: false` alone cannot tell those two apart and they have
+    different owners. It deliberately does NOT name the wrong VALUE: that
+    takes ledger arithmetic, and this function only sees three numbers.
+    Total function: never raises - a weird ledger reports failure,
     it never breaks /economy."""
     try:
         with _conn() if conn is None else nullcontext(conn) as c:
@@ -1453,7 +1459,14 @@ def verify_guild_wallets(conn: sqlite3.Connection | None = None) -> dict:
                         (gid,),
                     ).fetchone()[0]
                 )
-                good = (wallet - memo) == retained
+                trail_delta = wallet - memo
+                good = trail_delta == retained
+                if good:
+                    divergence = None
+                elif trail_delta == 0:
+                    divergence = "retained_vs_trails"
+                else:
+                    divergence = "wallet_vs_memo"
                 ok = ok and good
                 rows.append(
                     {
@@ -1461,7 +1474,9 @@ def verify_guild_wallets(conn: sqlite3.Connection | None = None) -> dict:
                         "wallet_units": wallet,
                         "memo_units": memo,
                         "retained_units": retained,
+                        "trail_delta_units": trail_delta,
                         "ok": good,
+                        "divergence": divergence,
                     }
                 )
             return {"ok": ok, "guilds": rows, "checked": len(rows)}

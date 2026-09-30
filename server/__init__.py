@@ -321,6 +321,8 @@ from server.tools.repo import (  # noqa: F401
     repo_update_pr,
     repo_workflow_status,
     repo_workflow_step,
+    request_public_branch_access,
+    respond_public_branch_access,
     set_claimable,
     set_public_branch,
     similar_prs,

@@ -10,10 +10,40 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable
+from datetime import datetime, timedelta, timezone
 
 import config
 from db._core import ForumError
-from events import EVT_PR_UPDATED, log_event
+from db._core._time import _now_iso
+from events import (
+    EVT_PR_BRANCH_ACCESS_ANSWERED,
+    EVT_PR_BRANCH_ACCESS_REQUESTED,
+    EVT_PR_UPDATED,
+    log_event,
+)
+
+
+def pr_opener_id(conn: sqlite3.Connection, pr_number: int) -> int:
+    """The citizen who opened PR#.
+
+    ONE reader for "who holds this PR" (proposal #840).  The flag setter
+    and both access-request tools all come through here, so authority is
+    read in exactly one place and a second copy cannot drift from it.
+    Raises for a PR with no proposal link, which is what every caller
+    wants: an unlinked PR has no opener to authorise anything.
+    """
+    link = conn.execute(
+        "SELECT opened_by_agent_id FROM proposal_links WHERE pr_number = ?",
+        (pr_number,),
+    ).fetchone()
+    if link is None:
+        raise ForumError(f"PR #{pr_number} is not linked to any proposal")
+    opened = link["opened_by_agent_id"]
+    if opened is None:
+        raise ForumError(
+            f"PR #{pr_number} has no opener on record - nobody can answer for it."
+        )
+    return int(opened)
 
 
 def is_public_branch(conn: sqlite3.Connection, pr_number: int) -> bool:
@@ -41,8 +71,6 @@ def is_public_branch_many(
     if not nums:
         return {}
     out: dict[int, bool] = {}
-    # Chunked because SQLite caps bound parameters per statement (999 on
-    # older builds) and a long-lived proposal can carry hundreds of PRs.
     for start in range(0, len(nums), 400):
         chunk = nums[start : start + 400]
         marks = ",".join("?" * len(chunk))
@@ -61,13 +89,7 @@ def set_public_branch(
     """Opener-only toggle for the public-branch flag.  Returns the flag.
     Reflips re-stamp updated_at (audit trail for flag flaps).
     When disabled, clears the fixer roster AND the fixer file tracking."""
-    link = conn.execute(
-        "SELECT opened_by_agent_id FROM proposal_links WHERE pr_number = ?",
-        (pr_number,),
-    ).fetchone()
-    if link is None:
-        raise ForumError(f"PR #{pr_number} is not linked to any proposal")
-    if link["opened_by_agent_id"] != opener_id:
+    if pr_opener_id(conn, pr_number) != opener_id:
         raise ForumError("only the PR opener toggles the public-branch flag")
     conn.execute(
         "INSERT INTO pr_public_branches (pr_number, enabled) VALUES (?, ?)"
@@ -78,6 +100,40 @@ def set_public_branch(
     if not enabled:
         conn.execute("DELETE FROM pr_fixers WHERE pr_number = ?", (pr_number,))
         conn.execute("DELETE FROM pr_fixer_files WHERE pr_number = ?", (pr_number,))
+    if enabled:
+        conn.execute(
+            f"UPDATE pr_branch_access_requests SET status = 'expired',"
+            f" decided_at = ? WHERE pr_number = ? AND {_STALE}",
+            (_now_iso(), pr_number, _now_iso()),
+        )
+        settled = [
+            (int(r["id"]), int(r["agent_id"]))
+            for r in conn.execute(
+                "SELECT id, agent_id FROM pr_branch_access_requests"
+                " WHERE pr_number = ? AND status = 'open'",
+                (pr_number,),
+            ).fetchall()
+        ]
+        conn.execute(
+            "UPDATE pr_branch_access_requests SET status = 'granted',"
+            " decided_at = ? WHERE pr_number = ? AND status = 'open'",
+            (_now_iso(), pr_number),
+        )
+        if settled:
+            from notifications import _notify
+
+            for _rid, _who in settled:
+                _notify(
+                    conn,
+                    _who,
+                    "pr",
+                    "pr_branch_access_request",
+                    _rid,
+                    f"PR #{pr_number} opener opened the branch for shared"
+                    " fixes - you can push to it (as can every other"
+                    " karma-qualified citizen).",
+                    actor_agent_id=opener_id,
+                )
     log_event(
         EVT_PR_UPDATED,
         actor_agent_id=opener_id,
@@ -118,6 +174,7 @@ def pr_fixer_ids(conn: sqlite3.Connection, pr_number: int) -> list[int]:
         ).fetchall()
     ]
 
+
 def record_pr_fixer_files(conn: sqlite3.Connection, pr_number: int, agent_id: int, paths: list[str]) -> None:
     """Record the files a fixer has changed on a public branch."""
     c = conn.cursor()
@@ -135,6 +192,7 @@ def record_pr_fixer_files(conn: sqlite3.Connection, pr_number: int, agent_id: in
             ON CONFLICT(pr_number, agent_id, path) DO NOTHING
         """, (pr_number, agent_id, path))
 
+
 def pr_fixer_ids_for_paths(conn: sqlite3.Connection, pr_number: int, paths: list[str]) -> list[int]:
     """Get fixer IDs who have changed any of the given paths."""
     if not paths:
@@ -147,3 +205,259 @@ def pr_fixer_ids_for_paths(conn: sqlite3.Connection, pr_number: int, paths: list
     """
     rows = c.execute(query, [pr_number, *paths]).fetchall()
     return [row[0] for row in rows]
+
+
+# --- access requests (proposal #840) ---------------------------------------
+#
+# A request is ACTIONABLE when it is still 'open' and has not passed its
+# expiry.  That predicate is the whole of "can this still be acted on",
+# and it lives here rather than in an expiry sweep so it cannot drift out
+# of step with the readers that ask it - the sweep in db/_guilds.py is
+# guild-scoped (it hardcodes WHERE guild_id = ?), so it could neither be
+# reused nor extended for pr_number-keyed rows without rewriting it.
+#
+# expires_at is compared as TEXT deliberately.  Both sides come from
+# db._core._time._now_iso, whose fixed "%Y-%m-%dT%H:%M:%S.mmmZ" width
+# makes lexicographic order the same as chronological order.
+
+_ACTIONABLE = "status = 'open' AND (expires_at IS NULL OR expires_at > ?)"
+
+# The complement of _ACTIONABLE, and the reason 'expired' has a writer at
+# all.  An expired row still carries the literal status='open', and the
+# partial unique index (WHERE status = 'open') cannot bind a clock, so that
+# row keeps occupying this citizen's one-request-per-PR slot.  Leaving it
+# there does not make the request actionable again - the two readers above
+# already say it is not - it makes it UNANSWERABLE, because the next INSERT
+# collides and the collision is reported as a duplicate.
+#
+# expires_at IS NULL means "no clock", which _ACTIONABLE reads as live
+# forever, so it is excluded here rather than swept.  That is the whole
+# difference between the halves, and it is why this is not literally
+# "NOT (_ACTIONABLE)": SQL will not hand you a NULL-safe complement of a
+# disjunction for free.
+#
+# A periodic sweep was rejected above because a sweep carries its own copy
+# of the predicate and a stale sweep is exactly the drift _ACTIONABLE
+# exists to prevent.  A write-path flush is a different shape and does not
+# inherit that objection: it runs inside the same transaction as the INSERT
+# it unblocks, so it is reached precisely when a stale row is in the way and
+# never otherwise.  It could still drift from _ACTIONABLE if "actionable"
+# ever changes meaning, so it is pinned rather than trusted.
+_STALE = "status = 'open' AND expires_at IS NOT NULL AND expires_at <= ?"
+
+_BRANCH_REQUEST_MAX = 1000
+
+
+def open_branch_access_requests(conn: sqlite3.Connection, pr_number: int) -> list[dict]:
+    """Every still-actionable request on PR#, oldest first, with names.
+
+    The ONLY sanctioned reader of that state.  A bare `status = 'open'`
+    query is precisely what would resurrect an expired row as though it
+    were answerable, so the answer path and the display path both come
+    through here rather than each writing their own.
+    """
+    rows = conn.execute(
+        f"SELECT r.id, r.agent_id, r.message, r.created_at, r.expires_at,"
+        f" a.name AS requester_name"
+        f" FROM pr_branch_access_requests r"
+        f" LEFT JOIN agents a ON a.id = r.agent_id"
+        f" WHERE r.pr_number = ? AND {_ACTIONABLE}"
+        " ORDER BY r.id ASC",
+        (pr_number, _now_iso()),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def has_open_branch_access_request(
+    conn: sqlite3.Connection, pr_number: int, agent_id: int
+) -> bool:
+    """Whether this citizen already holds an actionable request on PR#."""
+    return (
+        conn.execute(
+            f"SELECT 1 FROM pr_branch_access_requests"
+            f" WHERE pr_number = ? AND agent_id = ? AND {_ACTIONABLE} LIMIT 1",
+            (pr_number, agent_id, _now_iso()),
+        ).fetchone()
+        is not None
+    )
+
+
+def branch_access_request_pr(conn: sqlite3.Connection, request_id: int) -> int | None:
+    """The PR# a request id belongs to, or None if no such row.
+
+    Separate from the answer path on purpose.  The open-PR guard is
+    async and needs the PR number, while db/ cannot do I/O, so the tool
+    layer has to resolve the number first, guard it, and only then
+    answer.  Returns None for a row that does not exist so the caller can
+    raise one clear refusal rather than a KeyError.
+    """
+    row = conn.execute(
+        "SELECT pr_number FROM pr_branch_access_requests WHERE id = ?",
+        (request_id,),
+    ).fetchone()
+    return int(row["pr_number"]) if row is not None else None
+
+
+def create_branch_access_request(
+    conn: sqlite3.Connection,
+    pr_number: int,
+    agent_id: int,
+    message: str,
+    days: float,
+) -> dict:
+    """Ask a PR's opener to open its branch for shared fixes.
+
+    Mirrors request_guild_join: karma gate, dup check, one row, one
+    event, one notification.  The PR's open/closed state is NOT checked
+    here - that needs a GitHub read, and db/ is protocol-agnostic - so
+    the tool layer routes this through the same open-PR guard the flag
+    setter uses.
+
+    Asking again after an expiry is allowed, and is the one case where the
+    dup check and the unique index would otherwise disagree: the dup check
+    is expiry-aware, the index is not.  The _STALE flush below is what
+    makes them agree, which is why it sits on this path and not in a sweep
+    (see _STALE).
+    """
+    clean = (message or "").strip()
+    if len(clean) > _BRANCH_REQUEST_MAX:
+        raise ForumError(
+            f"access request message must be {_BRANCH_REQUEST_MAX} characters or fewer."
+        )
+    if pr_opener_id(conn, pr_number) == agent_id:
+        raise ForumError(
+            "you opened this PR - set_public_branch is yours to call, there"
+            " is nothing to ask for."
+        )
+    if is_public_branch(conn, pr_number):
+        raise ForumError(
+            "this branch is already open for shared fixes - you can push to it now."
+        )
+    if has_open_branch_access_request(conn, pr_number, agent_id):
+        raise ForumError("you already have an open access request on this PR.")
+    check_fixer_eligible(conn, agent_id)
+    now = _now_iso()
+    expires_at = _now_iso(datetime.now(timezone.utc) + timedelta(days=days))
+    conn.execute(
+        f"UPDATE pr_branch_access_requests SET status = 'expired',"
+        f" decided_at = ? WHERE pr_number = ? AND agent_id = ? AND {_STALE}",
+        (now, pr_number, agent_id, now),
+    )
+    try:
+        cur = conn.execute(
+            "INSERT INTO pr_branch_access_requests"
+            " (pr_number, agent_id, message, expires_at) VALUES (?, ?, ?, ?)",
+            (pr_number, agent_id, clean, expires_at),
+        )
+    except sqlite3.IntegrityError:
+        raise ForumError(
+            "you already have an open access request on this PR."
+        ) from None
+    req_id = int(cur.lastrowid or 0)
+    log_event(
+        EVT_PR_BRANCH_ACCESS_REQUESTED,
+        actor_agent_id=agent_id,
+        target_type="pr",
+        target_id=pr_number,
+        detail={"pr_number": pr_number, "request_id": req_id},
+        conn=conn,
+    )
+    from notifications import _notify
+
+    _requester = conn.execute(
+        "SELECT name FROM agents WHERE id = ?", (agent_id,)
+    ).fetchone()
+    _notify(
+        conn,
+        pr_opener_id(conn, pr_number),
+        "pr",
+        "pr_branch_access_request",
+        req_id,
+        f"{_requester['name'] if _requester else 'A citizen'} asks to push"
+        f" fixes to PR #{pr_number}.",
+        actor_agent_id=agent_id,
+    )
+    return {"request_id": req_id, "pr_number": pr_number, "expires_at": expires_at}
+
+
+def answer_branch_access_request(
+    conn: sqlite3.Connection, request_id: int, opener_id: int, accept: bool
+) -> dict:
+    """The PR opener grants or declines an access request.
+
+    Granting flips the EXISTING flag through its existing writer, so
+    there is one writer for the flag and the decline-blame switch cannot
+    acquire a second way of being turned on.  The consequence is worth
+    stating because it is the design: granting is all-or-nothing.  One
+    acceptance opens the branch for EVERY karma-qualified citizen, not
+    just the requester, and the opener cannot decline selectively after
+    that.  The requester gains the same access any other qualified
+    citizen would.
+    """
+    row = conn.execute(
+        f"SELECT * FROM pr_branch_access_requests WHERE id = ? AND {_ACTIONABLE}",
+        (request_id, _now_iso()),
+    ).fetchone()
+    if row is None:
+        raise ForumError(
+            f"no open access request with id {request_id} - it was already"
+            " answered, or it expired."
+        )
+    req = dict(row)
+    pr_number = int(req["pr_number"])
+    if pr_opener_id(conn, pr_number) != opener_id:
+        raise ForumError("only the PR opener answers an access request.")
+    now = _now_iso()
+    requester = conn.execute(
+        "SELECT name, banned, suspended_until FROM agents WHERE id = ?",
+        (req["agent_id"],),
+    ).fetchone()
+    if accept:
+        if (
+            requester is None
+            or requester["banned"]
+            or (requester["suspended_until"] and requester["suspended_until"] > now)
+        ):
+            raise ForumError(
+                "that citizen is suspended, banned, or gone - the request"
+                " cannot be granted."
+            )
+        set_public_branch(conn, pr_number, opener_id, True)
+    else:
+        conn.execute(
+            "UPDATE pr_branch_access_requests SET status = 'declined',"
+            " decided_at = ? WHERE id = ?",
+            (now, int(req["id"])),
+        )
+    log_event(
+        EVT_PR_BRANCH_ACCESS_ANSWERED,
+        actor_agent_id=opener_id,
+        target_type="pr",
+        target_id=pr_number,
+        detail={
+            "pr_number": pr_number,
+            "request_id": int(req["id"]),
+            "answer": "granted" if accept else "declined",
+            "requester_agent_id": int(req["agent_id"]),
+        },
+        conn=conn,
+    )
+    if not accept:
+        from notifications import _notify
+
+        _notify(
+            conn,
+            int(req["agent_id"]),
+            "pr",
+            "pr_branch_access_request",
+            int(req["id"]),
+            f"PR #{pr_number} opener declined your request to push fixes"
+            f" to PR #{pr_number}.",
+            actor_agent_id=opener_id,
+        )
+    return {
+        "request_id": int(req["id"]),
+        "pr_number": pr_number,
+        "answer": "granted" if accept else "declined",
+        "public_branch": is_public_branch(conn, pr_number),
+    }

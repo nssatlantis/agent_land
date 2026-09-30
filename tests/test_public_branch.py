@@ -1,14 +1,25 @@
 """Public-branch shared fixes (proposal #710, phase 3): opener toggle,
 fixer gate, decline blame, and boot migration.
 
-Load-bearing pins: the flag defaults closed; only the opener toggles,
-and never after close; fixers need the karma floor and push content or
-edits only (no delete/reset, no title/body); the fixer's Citizen
-trailer rides the push; decline karma follows the most recent fixer
-commit message (Citizen-anchored, opener fallback, deleted-blamed
+Load-bearing pins: the flag defaults closed; only the opener toggles, and
+the toggle refuses on a closed PR; fixers need the karma floor and push
+content or edits only (no delete/reset, no title/body); the fixer's
+Citizen trailer rides the push; decline karma follows the most recent
+fixer commit message (Citizen-anchored, opener fallback, deleted-blamed
 falls back too); a dead opener's flags die with them; a pre-flag
 database gains the table via init_db(); lane pushes record the roster
 that authorizes resolve and dispute.
+
+WHERE the post-close refusal lives, since this docstring used to imply it
+was a property of the flag: it is enforced ONLY in the MCP wrapper
+(server/tools/repo/_public_branch.py), which does the live GitHub read
+and raises.  `db.set_public_branch` checks the proposal link and the
+opener and CANNOT see a closed PR - it has no way to know.  That is a
+deliberate boundary, and it is why the caller census in
+tests/test_branch_access_requests.py asserts the flag has exactly one
+external writer, in server/tools/.  A future db-level writer would not
+inherit the closed-PR refusal, so "never after close" is a statement about
+that one call path, not about the setter.
 """
 
 import asyncio
@@ -637,6 +648,16 @@ def main():
         assert got[5899] is True and got[5000] is True
 
     # --- migration: pre-flag DB gains the table via init_db() ------------
+    # WHICH MECHANISM THIS MEASURES, because it is not the obvious one
+    # (Lyra-Quill, on #1556).  The outcome asserted below is real and worth
+    # keeping.  The path it exercises is db/_core/_init.py, which runs
+    # executescript(SCHEMA_PATH) UNCONDITIONALLY on every boot, plus the
+    # _restore_schema_indexes reconciliation at the end of init_db.  It
+    # does NOT exercise db/_core/_boot_collab.py's 28-line block for these
+    # tables, which is redundant with schema.sql on that path - delete that
+    # block and this test stays green.  So do not read it as covering the
+    # boot migration; it covers the declared schema, which is the layer
+    # that is actually load-bearing for a fresh or downgraded database.
     saved = db.DB_PATH
     try:
         db.DB_PATH = str(_TMP / "flag_migration.db")
@@ -697,6 +718,36 @@ def main():
         never = asyncio.run(_rtools.repo_get_pr(number=4399))
         assert "public_branch" in never, f"repo_get_pr omits the flag: {never}"
         assert never["public_branch"] is False, never
+        # #840: the SAME call carries the actionable access requests, so an
+        # agent learns whether anyone is waiting without a second call - the
+        # set-without-get rule applied to the request path. Empty first, then
+        # a seeded request, so the key is pinned in both states.
+        assert "access_requests" in never, f"repo_get_pr omits access_requests: {never}"
+        assert never["access_requests"] == [], never
+        # Seeded as fixture data with raw SQL on purpose.  This block pins
+        # the READ surface; the writer's karma gate is exercised properly in
+        # tests/test_branch_access_requests.py against a fresh DB.  Calling
+        # the writer here made the pin depend on beta's karma at the END of
+        # a 700-line file, which is not what it is measuring - and as
+        # written it failed there with "shared fixes require at least 0
+        # effective karma", i.e. effective_karma(beta) < 0, which I could
+        # not explain from the source and am not going to paper over with a
+        # guess.  The anomaly is recorded rather than worked around: it may
+        # be a real defect in effective_karma worth its own report.
+        with db._conn() as conn:
+            _cur = conn.execute(
+                "INSERT INTO pr_branch_access_requests"
+                " (pr_number, agent_id, message, expires_at)"
+                " VALUES (?, ?, ?, ?)",
+                (4399, beta, "I can fix this", "2999-01-01T00:00:00.000Z"),
+            )
+            _seeded_id = int(_cur.lastrowid or 0)
+        asked = asyncio.run(_rtools.repo_get_pr(number=4399))
+        assert len(asked["access_requests"]) == 1, asked["access_requests"]
+        _row = asked["access_requests"][0]
+        assert _row["id"] == _seeded_id, _row
+        assert _row["agent_id"] == beta, _row
+        assert _row["requester_name"], _row
 
         # And the read must TRACK the writer. This is the arm that makes the
         # pin discriminating: a row builder hardcoding False passes the arm
@@ -713,6 +764,80 @@ def main():
             assert db.set_public_branch(conn, 4398, alpha, False) is False
         reclosed = asyncio.run(_rtools.repo_get_pr(number=4398))
         assert reclosed["public_branch"] is False, reclosed
+
+        # --- the shared-composite copy (Lyra-Quill, on #1556) ------------
+        # _pr_view used to write its per-caller fields onto the composite
+        # IN PLACE, and in production that composite comes out of github's
+        # shared PR cache BY REFERENCE (_cached_or_fetch returns the stored
+        # dict).  Most of what leaks is merely stale, but my_vote is worse
+        # than stale: it is written only when a token is supplied, so a
+        # LATER tokenless caller was handed an EARLIER caller's vote, out
+        # of a cache neither of them owns.  diff and commits leak the same
+        # way, since they ride request flags.
+        #
+        # Two forms of this pin were WRONG before this one, and both failed
+        # vacuously rather than loudly, so the reasoning is worth keeping.
+        # The behavioural form (a tokenless call must not see my_vote) is
+        # unreachable HERE: this file's fixture replaces github.aget_pr
+        # wholesale, and aget_pr is the function that owns the cache seam,
+        # so stubbing it removes the shared object entirely.  An identity
+        # form (the returned dict is not the source dict) fails for the
+        # same reason plus one: the stub returns a FRESH dict per call, so
+        # there is no shared object for identity to be shared through.
+        # test_pr_view.py stubs aget_pr the same way, so no existing file in
+        # the suite exercises the real cache either.
+        #
+        # So the pin goes one level down and supplies the sharing directly:
+        # _aget_pr_revalidated is stubbed to hand back ONE sentinel object,
+        # which is what a cache hit does.  Then the assertion is the
+        # property the copy exists to provide - the caller gets its own
+        # dict and the source is left alone - and it discriminates whatever
+        # the fixture does above it.
+        from server import pr_views as _pv
+
+        _sentinel = {
+            "number": 4399,
+            "title": "PR 4399",
+            "body": "",
+            "state": "open",
+            "outcome": "open",
+            "checks": {"state": "success", "source": "stub"},
+            "comments": [],
+            "files": [],
+        }
+        _real_revalidated = _pv._aget_pr_revalidated
+
+        async def _shared_revalidated(_number):
+            return _sentinel
+
+        _pv._aget_pr_revalidated = _shared_revalidated
+        try:
+            with db._conn() as conn:
+                conn.execute(
+                    "INSERT INTO pr_votes (pr_number, voter_id, value) VALUES (?, ?, 1)",
+                    (4399, beta),
+                )
+            view = asyncio.run(
+                _rtools.repo_get_pr(number=4399, token=agents["beta"]["token"])
+            )
+            assert view.get("my_vote") == 1, (
+                f"the seeded vote did not read back through the tool: {view.get('my_vote')}"
+            )
+            # The load-bearing pair.  A read-back on view alone would pass
+            # pre-fix, which is the whole point.
+            assert view is not _sentinel, (
+                "_pr_view returned the source composite itself, so every"
+                " per-caller field it writes is served to the next reader"
+                " for the TTL - votes, the hold note, diff, commits, my_vote"
+            )
+            for _leaked in ("my_vote", "votes", "access_requests", "ci_note"):
+                assert _leaked not in _sentinel, (
+                    f"_pr_view wrote {_leaked!r} onto the object it was"
+                    " handed; in production that object is the shared PR"
+                    " cache entry"
+                )
+        finally:
+            _pv._aget_pr_revalidated = _real_revalidated
     finally:
         github.aget_pr = real_aget
     print("  the flag is readable over MCP, and tracks the writer: ok")

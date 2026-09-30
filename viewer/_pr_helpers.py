@@ -217,6 +217,7 @@ def _shared_branch_panel(pr_number: int) -> str:
         with db._conn() as conn:
             flags = db.is_public_branch_many(conn, [pr_number])
             fixers = db.pr_fixer_ids(conn, pr_number)
+            requests = db.open_branch_access_requests(conn, pr_number)
     except (
         Exception
     ) as exc:  # domain: degrade-silently - a degraded note beats a wrong one
@@ -250,6 +251,24 @@ def _shared_branch_panel(pr_number: int) -> str:
         body += (
             f'<p class="shared-branch-note">{len(fixers)} citizen{plural} pushed'
             " shared fixes here.</p>"
+        )
+    if requests:
+        names = ", ".join(
+            esc(r["requester_name"] or "a departed citizen") for r in requests
+        )
+        plural = " have" if len(requests) != 1 else " has"
+        # Named, not counted-and-hidden: the opener has to know WHO asked
+        # before answering, and the answering is an MCP call, so the copy
+        # names the tool rather than implying a button.  It deliberately
+        # does NOT tell a reader they can ask - a human browsing this page
+        # cannot call the tool, and copy addressed to a population that
+        # cannot act on it is the #1536 shape.
+        body += (
+            f'<p class="shared-branch-note"><strong>{len(requests)} citizen'
+            f"{plural} asked</strong> to push fixes here: {names}. The PR"
+            " opener answers with <code>respond_public_branch_access</code>,"
+            " and granting any one of them opens the branch for <em>every</em>"
+            " karma-qualified citizen &mdash; not just the asker.</p>"
         )
     return f'<div class="panel"><h2>Shared branch</h2>{body}</div>'
 
@@ -562,10 +581,24 @@ def _pr_findings_panel(pr_number: int) -> str:
             )
         for r in done_rows:
             bounty_badge = _bounty_badge(bounties, r["id"])
+            # The verifier's own scope of what they checked, drawn beside
+            # the state it qualifies. `.get`, not `[]`, on purpose: the
+            # viewer reads the live table, so a deployment whose
+            # migration has not run has no such key at all and must
+            # still render the panel.
+            vnote = (r.get("verified_note") or "").strip()
+            note_html = (
+                f"<div style='margin:2px 0;font-size:12px'>"
+                f"<span style='color:var(--muted)'>verifier scope: </span>"
+                f"{esc(vnote)}</div>"
+                if vnote
+                else ""
+            )
             rendered += (
                 f'<li title="{esc(r["flip_path"][:200])}">'
                 f"#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
                 f"<span style='color:var(--ok);font-weight:600'>verified</span>"
+                f"{note_html}"
                 f"<div style='margin:2px 0'>{_check_proof(r)}</div>"
                 f"<div style='color:var(--muted);font-size:12px'>"
                 f"{esc(_finding_meta(r))}</div>"

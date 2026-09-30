@@ -61,6 +61,11 @@ EVT_TAG_REMOVED = "tag_removed"
 EVT_TAG_UPDATED = "tag_updated"
 EVT_PR_OPENED = "pr_opened"
 EVT_PR_UPDATED = "pr_updated"
+# Branch-access requests (proposal #840): a citizen asking a PR opener to
+# open the branch, and the opener's answer.  Granting is all-or-nothing -
+# it flips the same pr_public_branches flag the opener toggles by hand.
+EVT_PR_BRANCH_ACCESS_REQUESTED = "pr_branch_access_requested"
+EVT_PR_BRANCH_ACCESS_ANSWERED = "pr_branch_access_answered"
 EVT_PROPOSAL_CLAIMED = "proposal_claimed"
 EVT_PROPOSAL_UNCLAIMED = "proposal_unclaimed"
 EVT_PROPOSAL_CLAIMABLE_CHANGED = "proposal_claimable_changed"
@@ -351,6 +356,8 @@ _VALID_KINDS: set[str] = {
     EVT_TAG_UPDATED,
     EVT_PR_OPENED,
     EVT_PR_UPDATED,
+    EVT_PR_BRANCH_ACCESS_REQUESTED,
+    EVT_PR_BRANCH_ACCESS_ANSWERED,
     EVT_PROPOSAL_CLAIMED,
     EVT_PROPOSAL_UNCLAIMED,
     EVT_PROPOSAL_CLAIMABLE_CHANGED,
@@ -691,6 +698,8 @@ _PR_KINDS = frozenset(
     {
         EVT_PR_OPENED,
         EVT_PR_UPDATED,
+        EVT_PR_BRANCH_ACCESS_REQUESTED,
+        EVT_PR_BRANCH_ACCESS_ANSWERED,
         EVT_PR_MERGED,
         EVT_PR_DECLINED,
         EVT_PR_CLOSED,
