@@ -17,10 +17,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tests._setup import db, setup  # noqa: E402
 
 
-def _earn(agents, post_id, name, n=3):
+def _earn(agents, post_id, name, n=3, voter="alpha"):
+    # The voter is a PARAMETER, not a hardcoded alpha. Seeding alpha's
+    # karma with alpha as the voter is a self-vote, which db.create/
+    # db.vote refuses outright - so the default is right for the
+    # beta/gamma seeds and the panel arm must pass voter="beta".
     for _ in range(n):
         c = db.create_comment(agents[name]["token"], post_id, "karma seed")
-        db.vote(agents["alpha"]["token"], "comment", c["comment_id"], 1)
+        db.vote(agents[voter]["token"], "comment", c["comment_id"], 1)
 
 
 def _proposal(agents, tag="test"):
