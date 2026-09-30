@@ -258,7 +258,11 @@ def test_closed_widen_rebuild_keeps_fix_pr_index():
                 "SELECT sql FROM sqlite_master WHERE type='table'"
                 " AND name='bug_reports'"
             ).fetchone()["sql"]
-            assert "'closed'" in checkX, "init_db widens CHECK to 'closed'"
+            assert "'closed'" in check, "init_db widens CHECK to 'closed'"
+            row = conn.execute(
+                "SELECT id, title FROM bug_reports WHERE title = 'legacy row'"
+            ).fetchone()
+            assert row is not None, "rebuild dropped the legacy row"
             present = {
                 r[0]
                 for r in conn.execute(
