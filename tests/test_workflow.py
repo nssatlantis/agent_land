@@ -8,7 +8,7 @@ chunking (D7/D8/W9), restart (B2) and the run-ledger filters
 (W2/W3), plus the A1 boot-backfill guard (a proposal that ever ran is
 never re-seeded) and the A2 ghost-run reconcile (a folded run with no
 linked PR closes to 'closed' with reason no_pr_linked). PR B: the guided
-steps surface - parser (7 keys in order), snapshot/seed/backfill,
+steps surface - parser (8 keys in order), snapshot/seed/backfill,
 permissioned + audited manual ticks, managed-key refusals, the steps gate
 with its dry-run bypass, open/verify auto-ticks, and COUNT(*) vs the
 LIMIT-50 listing. Per-agent run ownership (the fork set ON here): the gate
@@ -1212,7 +1212,7 @@ def main():
     # --- guided steps (workflows part 2, PR B) ------------------------------
     # Every open create-pr run snapshots the workflow's `## Steps` checklist
     # (ordered `**key**` tokens) into workflow_run_steps. The parser yields
-    # create-pr's 7 keys in order; a fresh proposal's run carries them; manual
+    # create-pr's 8 keys in order; a fresh proposal's run carries them; manual
     # ticks are starter/author/delegate-only, idempotent and audited
     # (done_by); the managed 'open'/'verify' keys refuse hand ticks; the
     # steps gate (WORKFLOW_STEPS_ENFORCE=1) blocks until every step before
@@ -1229,12 +1229,13 @@ def main():
         "test",
         "open",
         "verify",
+        "rebase-while-open",
     ]
     assert [p["key"] for p in parsed] == expected_keys, [p["key"] for p in parsed]
     assert all(p["text"].startswith(f"{i}. ") for i, p in enumerate(parsed, start=1)), (
         "steps snapshot the whole numbered line"
     )
-    print("  steps: create-pr parser (7 keys in order) ok")
+    print("  steps: create-pr parser (8 keys in order) ok")
 
     ps = db.create_proposal(beta["token"], "T18 steps gate", "t18 body")["post_id"]
     with db._conn() as conn:
@@ -1243,7 +1244,7 @@ def main():
         assert [s["step_key"] for s in steps] == expected_keys, (
             "a fresh run carries the full checklist in order"
         )
-        assert [s["position"] for s in steps] == list(range(1, 8))
+        assert [s["position"] for s in steps] == list(range(1, 9))
         assert all(s["text"] for s in steps), "steps carry snapshotted text"
         assert all(not s["done"] for s in steps), "fresh steps start unticked"
         assert any(s["done_by_name"] is None for s in steps), (
