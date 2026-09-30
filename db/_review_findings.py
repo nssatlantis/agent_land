@@ -334,8 +334,19 @@ def finding_mark_resolved(
     opener = _recorded_opener(conn, row["pr_number"])
     if actor_id != opener and actor_id not in fixer_ids:
         raise ForumError("only the PR opener or an authorized fixer resolves")
+    # A VERIFIED row is refused a bare re-resolve: that would silently
+    # discard a third party's attestation, and the finder asked for it.
+    # But a resolver NAMING a remedy is re-anchoring, not re-resolving -
+    # and that is the only route by which an already-verified row can be
+    # re-pointed at the pr its fix actually shipped in (#75). Without it
+    # the stranded rows #B185 is about cannot be discharged by the
+    # mechanism this PR introduces, and under NULL-means-board-pr they
+    # read as verified against a head that still carries the defect.
+    # The UPDATE below already clears the whole attestation, so the
+    # declared anchor is the only thing that survives the re-anchor.
     if row["state"] == "resolved" and row["verified_by_agent_id"] is not None:
-        raise ForumError("that finding is already verified - file a new one")
+        if remedy_pr is None:
+            raise ForumError("that finding is already verified - file a new one")
     # The docstring's contract, made TRUE: omitted OR equal to the board
     # pr stores NULL. Normalising here keeps the default path byte-for-byte
     # today's behaviour AND the column single-valued - a board-pr value
@@ -352,8 +363,8 @@ def finding_mark_resolved(
     conn.execute(
         "UPDATE review_findings SET state = 'resolved',"
         " fixed_by_agent_id = ?, verified_by_agent_id = NULL,"
-        " verified_head_sha = NULL, verified_pr_number = NULL,"
-        " remedy_pr_number = ? WHERE id = ?",
+        " verified_head_sha = NULL, verified_note = NULL,"
+        " verified_pr_number = NULL, remedy_pr_number = ? WHERE id = ?",
         (actor_id, remedy_pr, finding_id),
     )
     # A re-declared fix retires prior attestations: witness rows that
