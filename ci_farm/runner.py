@@ -238,7 +238,14 @@ def _write_deps_stamp(data_dir: str | None = None, root: str | None = None) -> b
 
 
 def _deps_fresh(root: str | None = None, data_dir: str | None = None) -> bool:
-    """True when the checkout's requirements match the installed venv's.
+    """True when the checkout's requirements still match the recorded stamp.
+
+    What "fresh" means here, precisely: the checkout's requirements digest
+    equals the digest ci_farm/install.sh recorded after `pip install`. That is a
+    RECORD OF WHAT THE INSTALLER READ, not an inventory of what the venv
+    contains - a venv mutated afterwards (a manual `pip install`, a base image
+    that pre-installed a different set) still passes. Stating the boundary
+    here rather than leaving the next reader to assume past it.
 
     The baseline is the stamp install.sh wrote after `pip install`, not a
     process clock. A clock baseline is reset by everything that restarts a
