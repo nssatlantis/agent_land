@@ -709,6 +709,106 @@ def test_sweep_skips_resolved_during_debounce():
     assert any(o["outcome"] == "resolved-during-debounce" for o in out), out
 
 
+def test_debounce_keeps_the_finding_a_candidate():
+    """A finding debounced on the inbound path must stay a candidate (#B171).
+
+    `_discard` is for free-gate rejections that never change; a debounce
+    expires with `AGENT_WAKE_DEBOUNCE_SECONDS`. Sweep 2 therefore has to
+    report the outcome WITHOUT stamping `notified_at`, so that sweep 3 -
+    run after the window - still finds the row and delivers it. The row
+    may exist after sweep 2 (that is `_mark_seen`'s job); only the stamp
+    is forbidden, and that assertion is what reds if the guard is removed.
+    """
+    agents = AGENTS
+    alpha = agents["alpha"]["agent_id"]
+    beta = agents["beta"]["agent_id"]
+    restore = _wake_cfg(AGENT_WAKE_DEBOUNCE_SECONDS=1800)
+    pid = _proposal(agents, "alpha", "debounced")
+    with db._conn(immediate=True) as conn:
+        _link(conn, pid, 5042, alpha)
+        _register(conn, alpha, "dir")
+        first = _finding(conn, pid, beta, 5042)
+        second = _finding(conn, pid, beta, 5042)
+
+    sent = []
+    real, _ = _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        {
+                            "id": "ses_root",
+                            "parentID": None,
+                            "agent": "plan",
+                            "location": {"directory": "dir"},
+                            "time": {"updated": int(time.time() * 1000)},
+                            "model": {"id": "m", "providerID": "opencode"},
+                        }
+                    ]
+                }
+            ),
+            "/api/model": json.dumps(
+                {
+                    "data": [
+                        {
+                            "id": "m",
+                            "providerID": "opencode",
+                            "limit": {"context": 262144},
+                        }
+                    ]
+                }
+            ),
+            "/session/status": json.dumps({"data": {}}),
+            "/message": json.dumps(
+                [{"info": {"role": "assistant", "tokens": {"total": 1000}}}]
+            ),
+        }
+    )
+    real_send = wake.send_wake
+    wake.send_wake = lambda endpoint, session_id, text: (sent.append(text), True)[1]
+    try:
+        # Sweep 1: the first finding is delivered (the loop breaks), so a
+        # real debounce watermark exists for everything behind it.
+        sweep1 = wake.wake_sweep()
+        # Sweep 2: the second finding reads that fresh watermark and is
+        # debounced - the branch under test, reached without zeroing the
+        # window (zeroing is how the older tests BYPASS it, not reach it).
+        sweep2 = wake.wake_sweep()
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT notified_at FROM agent_wake_state WHERE finding_id = ?",
+                (second,),
+            ).fetchone()
+        # Age the delivered watermark out past the window, so sweep 3 has
+        # to come back to the debounced row rather than read a live one.
+        with db._conn(immediate=True) as conn:
+            conn.execute(
+                "UPDATE agent_wake_state SET notified_at = '2000-01-01T00:00:00.000Z' "
+                "WHERE finding_id = ?",
+                (first,),
+            )
+        sweep3 = wake.wake_sweep()
+    finally:
+        wake.send_wake = real_send
+        _restore(real)
+        restore()
+
+    assert any(o["finding_id"] == first and o["outcome"] == "sent" for o in sweep1), (
+        sweep1
+    )
+    assert any(
+        o["finding_id"] == second and o["outcome"] == "debounce" for o in sweep2
+    ), sweep2
+    assert row is not None and row["notified_at"] is None, (
+        "a debounced finding must stay a candidate (notified_at NULL), "
+        f"got {None if row is None else row['notified_at']!r}"
+    )
+    assert any(o["finding_id"] == second and o["outcome"] == "sent" for o in sweep3), (
+        sweep3
+    )
+    assert len(sent) == 2, f"one wake per delivered finding, got {len(sent)}"
+
+
 def test_daily_budget_is_a_hard_ceiling():
     agents = AGENTS
     alpha = agents["alpha"]["agent_id"]
@@ -2590,6 +2690,7 @@ def main():
         test_disabled_switch_is_a_no_op,
         test_sweep_burst_collapses_to_one_wake,
         test_sweep_skips_resolved_during_debounce,
+        test_debounce_keeps_the_finding_a_candidate,
         test_daily_budget_is_a_hard_ceiling,
         test_budget_rolls_over_on_a_new_utc_day,
         test_transport_failure_audits_and_never_self_clears,
