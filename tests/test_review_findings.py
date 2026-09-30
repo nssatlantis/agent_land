@@ -1081,10 +1081,7 @@ def main():
         for f in queue:
             ok = f["fixed_by_agent_id"] is not None and (
                 f["state"] == "stale"
-                or (
-                    f["state"] == "resolved"
-                    and f["verified_by_agent_id"] is None
-                )
+                or (f["state"] == "resolved" and f["verified_by_agent_id"] is None)
             )
             assert ok, f"non-witness row in the witness queue: {f['id']}"
         # Unknown filters still refuse, naming the new value.
