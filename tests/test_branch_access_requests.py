@@ -108,6 +108,81 @@ def _statuses(conn, pr_number):
     ]
 
 
+def _flag_writer_census(root: Path) -> dict[str, list[int]]:
+    """Every production call site of the public-branch writer, as
+    {relative path: [line numbers]}.
+
+    Collected as a helper so the real census and the probe in
+    `test_census_sees_a_reexport_spelled_writer` run the SAME code. A
+    mutation proof that re-implements the matcher proves nothing about the
+    matcher; this way it drives the thing under test.
+
+    The arm is bound NAMES, not module spellings, which is the whole fix
+    behind finding #55. `db/__init__.py:690` re-exports the writer on
+    purpose, so `from db import set_public_branch` + a bare call is an
+    advertised spelling - and the previous version keyed on
+    `_a.module == "db._public_branch"`, so that route was invisible while
+    the two asserts stayed green and decline karma could move on a closed
+    PR with nothing loud. Binding the name catches the aliased import and
+    the star import too, and neither depends on which module the symbol
+    was reached through.
+
+    RESIDUAL, stated rather than implied away: `getattr(db,
+    "set_public_branch")(...)` and any other dynamic resolution are
+    invisible to this shape by construction, as is a call assembled at
+    runtime. That is a limit of name binding, not an oversight - a pin
+    that claimed to cover them would be claiming coverage it does not
+    have.
+
+    `tests/` is excluded: its calls are fixtures, and a fixture cannot move
+    decline karma because it never runs in production.
+    """
+    skip = (".git", "temp", ".venv", "venv", "node_modules", "__pycache__")
+    found: dict[str, list[int]] = {}
+    for py in sorted(root.rglob("*.py")):
+        rel = py.relative_to(root).as_posix()
+        if rel.startswith("tests/") or rel.split("/")[0] in skip:
+            continue
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError, ValueError):
+            continue
+        # Seeded with "db" so the house idiom `import db` + `db.writer(...)`
+        # is counted whether or not the import is spelled in this file.
+        roots = {"db"}
+        bound: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module in (
+                "db",
+                "db._public_branch",
+            ):
+                for al in node.names:
+                    if al.name == "set_public_branch":
+                        bound.add(al.asname or al.name)
+                    elif al.name == "*":
+                        bound.add("set_public_branch")
+            elif isinstance(node, ast.Import):
+                for al in node.names:
+                    if al.name.split(".")[0] in ("db", "db._public_branch"):
+                        roots.add(al.asname or al.name.split(".")[0])
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            # `db.writer(...)` or `<aliased db>.writer(...)`
+            attribute_form = (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "set_public_branch"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in roots
+            )
+            # A bare call, but only where that name is a BOUND import of the
+            # writer - not a local that happens to share the name.
+            bound_form = isinstance(node.func, ast.Name) and node.func.id in bound
+            if attribute_form or bound_form:
+                found.setdefault(rel, []).append(node.lineno)
+    return found
+
+
 def main():
     agents, post_id = setup()
     alpha = agents["alpha"]["agent_id"]
@@ -760,46 +835,7 @@ def main():
     # tests/ is excluded on purpose: its calls are fixtures, and a fixture
     # cannot move decline karma because it never runs in production.
     _root = Path(__file__).resolve().parent.parent
-    _SKIP = (".git", "temp", ".venv", "venv", "node_modules", "__pycache__")
-    _external: dict[str, list[int]] = {}
-    for _py in sorted(_root.rglob("*.py")):
-        _rel = _py.relative_to(_root).as_posix()
-        if _rel.startswith("tests/") or _rel.split("/")[0] in _SKIP:
-            continue
-        try:
-            _t = ast.parse(_py.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError, ValueError):
-            continue
-        for _n in ast.walk(_t):
-            # TWO shapes, because one is not enough.  The attribute form
-            # (`db.set_public_branch(...)`) is the house idiom at every
-            # existing call site, but `from db._public_branch import
-            # set_public_branch` followed by a bare call is an equally valid
-            # way to write the same thing, and its AST is an `ast.Name` -
-            # so a census collecting only the attribute form reports "no
-            # writer outside the tool layer" while one is sitting there.
-            # The first version of this pin had exactly that hole, and the
-            # comment below promised a future writer would be loud.
-            if not isinstance(_n, ast.Call):
-                continue
-            _is_external = (
-                isinstance(_n.func, ast.Attribute)
-                and _n.func.attr == "set_public_branch"
-                and isinstance(_n.func.value, ast.Name)
-                and _n.func.value.id == "db"
-            )
-            # An import-style call, but only where the name is actually the
-            # public-branch writer and not a local of the same name.
-            _is_imported = (
-                isinstance(_n.func, ast.Name) and _n.func.id == "set_public_branch"
-            ) and any(
-                isinstance(_a, ast.ImportFrom)
-                and _a.module == "db._public_branch"
-                and any(al.name == "set_public_branch" for al in _a.names)
-                for _a in ast.walk(_t)
-            )
-            if _is_external or _is_imported:
-                _external.setdefault(_rel, []).append(_n.lineno)
+    _external = _flag_writer_census(_root)
     assert list(_external) == ["server/tools/repo/_public_branch.py"], (
         "db.set_public_branch gained a writer outside the tool layer, where"
         " _require_open_pr does not run.  Nothing in db/ can refuse a closed"
@@ -835,5 +871,64 @@ def main():
     print("test_branch_access_requests: all assertions passed")
 
 
+def test_census_sees_a_reexport_spelled_writer():
+    """Finding #55, shipped as an executed probe rather than a promise.
+
+    The census previously keyed on `_a.module == "db._public_branch"`, so a
+    writer written the way `db/__init__.py:690` advertises -
+    `from db import set_public_branch` plus a bare call - matched NEITHER
+    arm: the attribute arm needs an `ast.Attribute` func, and the import
+    arm needed the other module name. Both asserts stayed green while
+    decline karma could move on a closed PR.
+
+    This builds a real tree on disk and drives the SAME helper the real
+    census uses, so the proof cannot drift from the matcher. Three things
+    are asserted, and the last is the one that matters:
+
+      1. the re-export spelling IS reported, with its line number;
+      2. the SANCTIONED attribute spelling is still reported - a mutation
+         that broke the existing arm would not be a fix;
+      3. the aliased import (`as spb`) is reported too, since that is the
+         spelling that survives even a naive `func.id == name` check.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "db").mkdir()
+        (root / "db" / "__init__.py").write_text("", encoding="utf-8")
+        tool = root / "server" / "tools" / "repo"
+        tool.mkdir(parents=True)
+        (tool / "_public_branch.py").write_text(
+            "import db\n"
+            "\n"
+            "def toggle(conn, pr_number, opener_id, enabled):\n"
+            "    return db.set_public_branch(conn, pr_number, opener_id, enabled)\n",
+            encoding="utf-8",
+        )
+        probe = root / "moderation.py"
+        probe.write_text(
+            "from db import set_public_branch\n"
+            "from db import set_public_branch as spb\n"
+            "\n"
+            "def sneak(conn, pr_number, opener_id):\n"
+            "    set_public_branch(conn, pr_number, opener_id, True)\n"
+            "    return spb(conn, pr_number, opener_id, False)\n",
+            encoding="utf-8",
+        )
+        found = _flag_writer_census(root)
+
+    assert "moderation.py" in found, (
+        "a writer spelled `from db import set_public_branch` + a bare call is"
+        f" invisible to the census, which is finding #55 exactly: {found}"
+    )
+    assert found["moderation.py"] == [5, 6], (
+        "both the bare and the aliased call must be reported, WITH their line"
+        f" numbers so the finding names a location: {found}"
+    )
+    assert "server/tools/repo/_public_branch.py" in found, (
+        f"the probe must not come at the cost of the sanctioned arm: {found}"
+    )
+
+
 if __name__ == "__main__":
     main()
+    test_census_sees_a_reexport_spelled_writer()
