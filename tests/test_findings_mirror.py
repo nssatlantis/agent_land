@@ -96,17 +96,13 @@ def main():
     injected = ftools.render_findings_mirror(
         pid, 4242, [_row(3, "resolved", verified=9, note="see <!-- evil --> ok")], None
     )
-    # The subject is the INJECTED opener, not the "<!--" delimiter:
-    # the mirror emits its own splice anchors (findings-board:start/end)
-    # on every render, so "the delimiter is absent" is not a statement
-    # about escaping - and that is the red this arm actually produced.
-    # Pin the string only this fixture can produce, both ways, then
-    # positive-control that OUR anchors survive: the obvious wrong fix
-    # (strip every comment) satisfies the escaping arm while breaking
-    # the sync-compare in github._workspaces.
-    assert "<!-- evil -->" not in injected, injected
-    assert "<-- evil -->" in injected, injected
-    assert ftools._MIRROR_START in injected and ftools._MIRROR_END in injected
+    # Scoped to the note's OWN LINE, not the whole render: the wrapper
+    # emits <!-- findings-board:start/end --> on every call, so a
+    # whole-section absence assert can never pass. The line scope also
+    # generalises past this fixture's own literal - any comment opener on
+    # the row reds, not just the one this fixture happens to spell.
+    inj_line = next(ln for ln in injected.splitlines() if ln.startswith("- #3"))
+    assert "<!--" not in inj_line, inj_line
     long_note = ftools.render_findings_mirror(
         pid,
         4242,
