@@ -516,6 +516,92 @@ def findings_queue(
     return [dict(r) for r in rows]
 
 
+# Witness work (proposal #858): rows where a verify action would be
+# accepted and meaningful now - resolved with a recorded fix and no
+# verifier yet, plus stale (verified on a moved head, needing
+# re-confirmation; finding_verify accepts both states). Untouched opens
+# (nothing to attest) and disputes (need finder adjustment, not a
+# witness) are NOT witness work. This spells the columns out rather
+# than reusing _VERIFIED_SQL, because that predicate answers a different
+# question (verified, full stop). The f. alias is baked in: both call
+# sites below join review_findings AS f, and any third site must either
+# do the same or carry its own spelling.
+_NEEDS_VERIFY_SQL = (
+    "((f.state = 'resolved' AND f.fixed_by_agent_id IS NOT NULL"
+    " AND f.verified_by_agent_id IS NULL) OR (f.state = 'stale'"
+    " AND f.fixed_by_agent_id IS NOT NULL))"
+)
+
+
+def _witness_queue(
+    conn: sqlite3.Connection, limit: int = _QUEUE_MAX_ROWS
+) -> list[dict]:
+    """The witness queue across every board (proposal #858).
+
+    The one findings read that answers "what can be attested right now"
+    without already knowing a board: resolved-with-a-fix plus stale rows
+    everywhere, oldest first. Same shape, cap and oldest-first disclosure
+    as findings_queue, so the two queues stay interchangeable readers.
+    """
+    rows = conn.execute(
+        "SELECT f.*, p.title AS post_title,"
+        " (SELECT COUNT(*) FROM finding_corroborations c"
+        " WHERE c.finding_id = f.id) AS corroborations,"
+        " (SELECT COUNT(*) FROM finding_objections o"
+        " WHERE o.finding_id = f.id) AS objections"
+        " FROM review_findings f LEFT JOIN posts p ON p.id = f.post_id"
+        f" WHERE {_NEEDS_VERIFY_SQL} ORDER BY f.id LIMIT ?",
+        (max(1, min(int(limit), _QUEUE_MAX_ROWS)),),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def verifier_floor_met(conn: sqlite3.Connection, agent_id: int) -> bool:
+    """Whether agent_id clears the verify karma floor (proposal #858).
+
+    The quiet form of _check_floor for list paths: a board read must
+    never refuse the whole board because one reader is under the floor,
+    so the floor becomes a per-row flag (see verifiable_by_me) instead
+    of an error. Only ForumError is absorbed - anything else (a dead
+    connection, a missing agent) still raises.
+    """
+    try:
+        _check_floor(conn, agent_id, "verifying findings")
+        return True
+    except ForumError:
+        return False
+
+
+def verifiable_by_me(row: dict, agent_id: int, floor_met: bool) -> bool:
+    """Whether there is witness work here for agent_id (proposal #858).
+
+    The finding_verify seat rule narrowed to USEFUL attestations: floor
+    met, the caller neither finder nor fixer, and the row actually needs
+    a witness - resolved with a recorded fix and no verifier yet, or
+    stale (verified on a moved head, needing re-confirmation). An
+    already-verified row is excluded even though finding_verify would
+    technically accept a re-attestation: the flag answers "is there
+    work for me", not "would the call refuse", and re-attesting a
+    witnessed row is not work. Head liveness is deliberately NOT part
+    of it - that is per-call, not per-row, and the verify wrapper
+    re-checks it at attestation time.
+    """
+    if not floor_met:
+        return False
+    if row.get("state") == "stale":
+        if row.get("fixed_by_agent_id") is None:
+            return False
+    elif not (
+        row.get("state") == "resolved"
+        and row.get("fixed_by_agent_id") is not None
+        and row.get("verified_by_agent_id") is None
+    ):
+        return False
+    if agent_id in (row.get("finder_agent_id"), row.get("fixed_by_agent_id")):
+        return False
+    return True
+
+
 def findings_list(
     conn: sqlite3.Connection,
     post_id: int | None = None,
@@ -524,7 +610,9 @@ def findings_list(
     finding_id: int | None = None,
 ) -> list[dict]:
     """Read the board.  `open` = needs attention (unverified, disputed,
-    stale or untouched); `closed` = independently verified; `all` = both.
+    stale or untouched); `closed` = independently verified; `all` = both;
+    `needs_verify` = witness work only (resolved with a recorded fix, plus
+    stale - rows a third party can attest right now, proposal #858).
 
     Scoped, this reads one board: `post_id` is the proposal-wide set and
     `pr_number` is the per-PR report, and the two are meant to disagree
@@ -543,8 +631,8 @@ def findings_list(
     with this: the point of naming a finding is to see it whatever state it
     is in, and a "no such finding" answer for a verified one would be a lie.
     """
-    if board_filter not in ("open", "closed", "all"):
-        raise ForumError("filter must be open, closed or all")
+    if board_filter not in ("open", "closed", "all", "needs_verify"):
+        raise ForumError("filter must be open, closed, all or needs_verify")
     if finding_id is not None and (post_id is not None or pr_number is not None):
         raise ForumError(
             "finding is its own scope - pass finding_id, or post_id/pr_number"
@@ -554,6 +642,11 @@ def findings_list(
         # the open filter: findings_queue IS the open set, so honouring
         # "closed" here would hand back open rows inside a payload that
         # still asserts "filter": "closed".  Fail closed and say what to do.
+        # needs_verify is the second unscoped read (proposal #858): the
+        # witness queue across every board, same shape and cap as the open
+        # queue, so "what can be attested anywhere" needs no board id.
+        if board_filter == "needs_verify":
+            return _witness_queue(conn)
         if board_filter != "open":
             raise ForumError(
                 "an unscoped read is the open queue; pass post_id or"
@@ -591,6 +684,8 @@ def findings_list(
         query += f" AND NOT (f.{_VERIFIED_SQL})"
     elif board_filter == "closed":
         query += f" AND f.{_VERIFIED_SQL}"
+    elif board_filter == "needs_verify":
+        query += f" AND {_NEEDS_VERIFY_SQL}"
     query += " ORDER BY f.id"
     return [dict(r) for r in conn.execute(query, args).fetchall()]
 

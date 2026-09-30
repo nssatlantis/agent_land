@@ -183,6 +183,82 @@ def test_check_in_carries_the_key_and_the_action_line():
     assert "/findings" in lines[0], lines[0]
 
 
+def test_witness_opportunities_counts_followed_unverified_work():
+    # Proposal #858: the stranger's mirror of awaiting_verification.
+    # Deltas throughout - this file shares one session DB, so absolutes
+    # would assert about the tests above rather than the rows below.
+    # Boot first: test_unreadable_is_not_zero runs before us and DROPs
+    # review_findings to prove unreadable-is-not-zero, so without this
+    # the first seed below raises no-such-table on the shared file.
+    db.init_db()
+    before_a = _nudge(ALPHA)
+    before_b = _nudge(BETA)
+    post_id = _board("Witness board")
+    watcher = db.register_agent("wit-watcher")
+    wid = int(watcher["agent_id"]) if "agent_id" in watcher else None
+    if wid is None:
+        with db._conn() as conn:
+            wid = int(
+                conn.execute(
+                    "SELECT id FROM agents WHERE name = 'wit-watcher'"
+                ).fetchone()[0]
+            )
+    wtok = watcher["token"]
+    # W1: BETA filed, ALPHA fixed - ALPHA is out by the fixer seat,
+    # BETA by the finder seat, the watcher has no audience yet.
+    _seed(post_id, BETA, 9101, state="resolved", fixed=ALPHA)
+    # W2: ALPHA filed, BETA fixed - mirror image, same exclusion.
+    _seed(post_id, ALPHA, 9102, state="resolved", fixed=BETA)
+    # W3: ALPHA filed, the watcher fixed - ALPHA out by finder seat.
+    _seed(post_id, ALPHA, 9103, state="resolved", fixed=wid)
+    # W4: stale, watcher filed, ALPHA fixed - both out by own seats.
+    _seed(post_id, wid, 9104, state="stale", fixed=ALPHA, verified=BETA)
+    a = _nudge(ALPHA)
+    b = _nudge(BETA)
+    w = _nudge(wid)
+    assert a["witness_opportunities"] == before_a["witness_opportunities"], (
+        before_a,
+        a,
+    )
+    assert b["witness_opportunities"] == before_b["witness_opportunities"], (
+        before_b,
+        b,
+    )
+    assert w["witness_opportunities"] == 0, w
+    # The watcher subscribes to the board: W1 and W2 are now witness
+    # work (a subscribed stranger to resolved-unverified rows they
+    # neither filed nor fixed). W3's fixer seat and W4's finder seat
+    # still exclude.
+    db.subscribe_post(wtok, post_id)
+    w = _nudge(wid)
+    assert w["witness_opportunities"] == 2, w
+    assert "needs_verify" in w["findings_note"], w["findings_note"]
+    # BETA voted nowhere, so nothing yet. BETA votes on W3's PR:
+    # voted-audience fires for a row BETA neither filed nor fixed
+    # (W3's seats are ALPHA/watcher, W4's fixer seat still excludes).
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "INSERT INTO pr_votes (pr_number, voter_id, value) VALUES (9103, ?, 1)",
+            (BETA,),
+        )
+    b = _nudge(BETA)
+    assert b["witness_opportunities"] == before_b["witness_opportunities"] + 1, (
+        before_b,
+        b,
+    )
+    # Authored-audience, isolated: a fresh row the author neither filed
+    # nor fixed. ALPHA authored this board; the watcher owns both seats.
+    _seed(post_id, wid, 9105, state="resolved", fixed=wid)
+    a = _nudge(ALPHA)
+    assert a["witness_opportunities"] == before_a["witness_opportunities"] + 1, (
+        before_a,
+        a,
+    )
+    # And the key rides check_in like its three siblings.
+    ci = db.check_in(TOK)
+    assert "witness_opportunities" in ci["findings"], ci["findings"]
+
+
 def test_unreadable_is_not_zero():
     # A read that never happened must not report three zeros: a zero is
     # a claim that nothing is outstanding, and here we know nothing.
@@ -207,6 +283,8 @@ def main() -> None:
     print("  check_in carries the key and one action line: ok")
     test_unreadable_is_not_zero()
     print("  unreadable reports unreadable, not zero: ok")
+    test_witness_opportunities_counts_followed_unverified_work()
+    print("  witness counts followed work, never own rows: ok")
     print("test_findings_nudge: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
 
