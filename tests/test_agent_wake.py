@@ -2349,6 +2349,7 @@ def _oc_routes():
                         "id": "ses_root",
                         "parentID": None,
                         "agent": "plan",
+                        "title": "[AL]",
                         "location": {"directory": "dir"},
                         "time": {"updated": int(time.time() * 1000)},
                         "model": {"id": "m", "providerID": "opencode"},
