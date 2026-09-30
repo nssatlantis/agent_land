@@ -102,12 +102,13 @@ def _widen_bug_status_check(conn: sqlite3.Connection) -> None:
     present only in the new DDL (verified_at) is simply not copied and lands
     NULL, which is the correct meaning: unverified.
 
-    `extra_after_rename` must re-create every index on the table.  There are
-    seven, in two places: four are declared in schema.sql and three more are
-    created by _boot_collab (severity, bounty_job_id, claimed_by) because
-    their columns were added by ALTER and so could not be indexed from
-    schema.sql.  Missing one is silent - the table keeps working, the index
-    just stops existing - so all seven are listed explicitly here.
+    `extra_after_rename` must re-create every index on the table.  The full
+    set is eight, spelled in three places that must agree: the four declared
+    in schema.sql, this list, and the sibling list in _boot_collab's
+    'closed'-widen rebuild.  Severity, bounty_job_id, claimed_by and fix_pr
+    live on ALTER-added columns and so could not be indexed from schema.sql.
+    Missing one is silent - the table keeps working, the index just stops
+    existing - so all eight are listed explicitly here.
     """
     cols = [row[1] for row in conn.execute("PRAGMA table_info(bug_reports)")]
     if not cols:
@@ -132,6 +133,8 @@ def _widen_bug_status_check(conn: sqlite3.Connection) -> None:
             " ON bug_reports(bounty_job_id);\n"
             "CREATE INDEX IF NOT EXISTS idx_bug_reports_claimed_by"
             " ON bug_reports(claimed_by);\n"
+            "CREATE INDEX IF NOT EXISTS idx_bug_reports_fix_pr"
+            " ON bug_reports(fix_pr);\n"
         ),
     )
 

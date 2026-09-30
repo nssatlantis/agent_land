@@ -633,17 +633,32 @@ async def findings_list(
     post_id: int | None = None,
     pr_number: int | None = None,
     board_filter: str = "open",
+    token: str | None = None,
 ) -> dict:
     """Read the review findings board. Filter open (needs attention),
-    closed (independently verified) or all. The two scopes answer
+    closed (independently verified), all, or needs_verify (witness work
+    only: resolved with a recorded fix, plus stale - rows a third party
+    can attest right now, proposal #858). The two scopes answer
     different questions and are meant to disagree: post_id is the
     proposal-wide board, pr_number is the per-PR report. Pass NEITHER for
     the open queue across every board - what is outstanding anywhere and
     which PR each finding was reported against - bounded to the oldest
-    200 open rows. The verdict is scoped to the same PR as the rows,
-    never mixed, and is null on an unscoped read. Public read."""
+    200 open rows (the needs_verify queue reads the same way, same cap).
+    Pass token to add verifiable_by_me per row - whether YOU may verify
+    it (not your finding, not your fix, karma floor met). The verdict is
+    scoped to the same PR as the rows, never mixed, and is null on an
+    unscoped read. Public read."""
     with db._conn() as conn:
+        me = None
+        floor_met = False
+        if token is not None:
+            db.require_active(token, conn)
+            me = db.whoami(token, conn)["agent_id"]
+            floor_met = db.verifier_floor_met(conn, me)
         rows = db.findings_list(conn, post_id, pr_number, board_filter)
+        if me is not None:
+            for r in rows:
+                r["verifiable_by_me"] = db.verifiable_by_me(r, me, floor_met)
         verdict = None
         if post_id is not None:
             verdict = db.finding_verdict(conn, post_id, pr_number)
