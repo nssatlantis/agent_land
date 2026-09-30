@@ -502,39 +502,46 @@ def _pr_exists(conn: sqlite3.Connection, pr_number: int) -> bool:
 
 
 def finding_stale_on_push(
-    conn: sqlite3.Connection, pr_number: int, new_head_sha: str
+    conn: sqlite3.Connection, anchor_pr: int, new_head_sha: str
 ) -> int:
     """A new push invalidates prior head-SHA attestations: verified
-    resolutions for the PR return to 'stale' for one-click re-confirm.
+    resolutions return to 'stale' for one-click re-confirm.
 
-    Anchor-scoped (proposal #875): a row attested against ANOTHER pr's
-    head is not stale when THIS pr's head moves, because the sha it
-    pins is not a sha of this branch.  Without the scope the poller's
-    reconcile sweep - fed from open prs - would re-stale such a row on
-    every single interval, forever: the new failure the anchor change
-    would otherwise introduce.
+    Keyed on the ATTESTATION ANCHOR, not the board (proposal #875).
+    `anchor_pr` is the pr whose head `verified_head_sha` was read at -
+    the effective anchor of the row, which is the board pr unless a
+    remedy was declared elsewhere.  Matching on the board as well would
+    exclude every cross-anchored row, and the sweep below would then
+    never hand the staler an anchor's head at all: the row would stop
+    re-staling AND stop staling, which is the inverse of the failure
+    the anchor scope exists to prevent.
     """
     cur = conn.execute(
         "UPDATE review_findings SET state = 'stale'"
-        f" WHERE pr_number = ? AND {_VERIFIED_SQL}"
-        " AND verified_head_sha != ?"
-        " AND COALESCE(verified_pr_number, pr_number) = ?",
-        (pr_number, new_head_sha.lower(), pr_number),
+        f" WHERE {_VERIFIED_SQL}"
+        " AND COALESCE(verified_pr_number, pr_number) = ?"
+        " AND verified_head_sha != ?",
+        (anchor_pr, new_head_sha.lower()),
     )
     return cur.rowcount
 
 
-def finding_stale_all(conn: sqlite3.Connection, pr_number: int) -> int:
+def finding_stale_all(conn: sqlite3.Connection, anchor_pr: int) -> int:
     """Fail-closed staling: when the live head cannot be read (push hook
     hit a dead GitHub), every verified resolution for the PR returns to
     'stale' rather than risk displaying an old head as cleared.  A
     spurious staling costs one re-verify; a missed one costs a false
-    green."""
+    green.
+
+    Anchor-scoped like finding_stale_on_push, and called with the
+    anchor: a cross-anchored row's sha is not a sha of the board
+    branch, so scoping on the board would leave exactly the row the
+    compensation exists to hide still reading verified."""
     cur = conn.execute(
         "UPDATE review_findings SET state = 'stale'"
-        f" WHERE pr_number = ? AND {_VERIFIED_SQL}"
+        f" WHERE {_VERIFIED_SQL}"
         " AND COALESCE(verified_pr_number, pr_number) = ?",
-        (pr_number, pr_number),
+        (anchor_pr,),
     )
     return cur.rowcount
 
@@ -547,7 +554,15 @@ def reconcile_boards_for_heads(
     verified attestation not pinning the live head returns to stale.
     Only PRs holding verified rows are touched (one batched lookup);
     matching heads update zero rows, so the pass is idempotent and
-    cheap.  Returns {pr_number: staled_count}."""
+    cheap.  Returns {anchor_pr: staled_count}.
+
+    The candidate lookup keys on the EFFECTIVE ANCHOR, not the board
+    (proposal #875), and the head handed to the staler is that same
+    anchor's.  Keying on the board - as this did first - is the failure
+    in both directions at once: a cross-anchored row is never found, so
+    its anchor's head moving never stales it, and no caller ever supplies
+    the head the row actually pins.
+    """
     live = {n: (s or "").lower() for n, s in heads.items() if s}
     if not live:
         return {}
@@ -557,13 +572,15 @@ def reconcile_boards_for_heads(
         found = {
             r[0]
             for r in conn.execute(
-                "SELECT DISTINCT pr_number FROM review_findings"
-                f" WHERE pr_number IN ({marks}) AND {_VERIFIED_SQL}",
+                "SELECT DISTINCT COALESCE(verified_pr_number, pr_number)"
+                " FROM review_findings"
+                f" WHERE COALESCE(verified_pr_number, pr_number)"
+                f" IN ({marks}) AND {_VERIFIED_SQL}",
                 chunk,
             ).fetchall()
         }
-        for pr_number in found:
-            out[pr_number] = finding_stale_on_push(conn, pr_number, live[pr_number])
+        for anchor_pr in found:
+            out[anchor_pr] = finding_stale_on_push(conn, anchor_pr, live[anchor_pr])
     return out
 
 
