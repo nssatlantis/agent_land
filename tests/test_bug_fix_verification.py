@@ -232,23 +232,20 @@ def test_closed_widen_rebuild_keeps_fix_pr_index():
     survives it, fix_pr index included."""
     saved = db.DB_PATH
     try:
+        with db._conn() as conn:
+            live = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table'"
+                " AND name='bug_reports'"
+            ).fetchone()["sql"]
+        assert "'closed'" in live, "live DDL must carry 'closed'"
+        narrowed = re.sub(r",\s*'closed'", "", live)
+        assert "'closed'" not in narrowed, "surgery must drop 'closed'"
         db.DB_PATH = str(_TMP / "legacy_closed_migration.db")
         with db._conn() as conn:
-            conn.executescript(
-                "CREATE TABLE agents ("
-                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                " name TEXT NOT NULL UNIQUE,"
-                " token TEXT NOT NULL UNIQUE);"
-                "CREATE TABLE bug_reports ("
-                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                " agent_id INTEGER NOT NULL REFERENCES agents(id),"
-                " title TEXT NOT NULL, body TEXT NOT NULL,"
-                " status TEXT NOT NULL DEFAULT 'open' CHECK"
-                " (status IN ('open', 'confirmed', 'fixed', 'resolved')),"
-                " confidence INTEGER NOT NULL DEFAULT 1,"
-                " created_at TEXT NOT NULL DEFAULT"
-                " (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),"
-                " fix_pr INTEGER);"
+            conn.execute(narrowed)
+            conn.execute(
+                "INSERT INTO bug_reports (agent_id, title, body)"
+                " VALUES (1, 'legacy row', 'b')"
             )
             pre = conn.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table'"
