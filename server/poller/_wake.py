@@ -692,10 +692,20 @@ def _delivered(conn: sqlite3.Connection, finding_id: int) -> bool:
     """True only if this finding was actually delivered in a wake.
 
     The seen-set is NOT "row exists" - that is what made a deferred wake
-    (busy / quiet-hours / budget / no-session / not-deliverable /
-    occupancy-unreadable) permanently lost: the row existed, so the finding
-    never became a candidate again. `notified_at` is the delivery receipt,
-    and it is what the filter keys on.
+    permanently lost: the row existed, so the finding never became a
+    candidate again. `notified_at` is the delivery receipt, and it is what
+    the filter keys on.
+
+    The reasons a wake can be deferred live in two DIFFERENT ladders and
+    must not be conflated (the module header's POLICY GATES / PHYSICAL
+    GATES table says so): the PHYSICAL ladder is what `_wake_one` reports
+    after a wake was attempted and refused (busy / quiet-hours / budget /
+    no-session / not-deliverable / occupancy-unreadable); the POLICY ladder
+    is what `gate_free` and `_rereview_gate_free` can return BEFORE
+    anything is delivered, and it is exactly `_FREE_GATE_DEFERRABLE` plus
+    the terminal trio (self-filed / category-not-bug / not-auto-flip).
+    `test_every_free_gate_reason_is_classified_and_producible` pins that
+    second ladder as a value; this paragraph only names the first.
     """
     row = conn.execute(
         "SELECT notified_at FROM agent_wake_state WHERE finding_id = ?",
@@ -1127,7 +1137,7 @@ def _rereview_for_endpoint(
                     "agent_id": agent_id,
                     "direction": "rereview",
                     "pr_number": pr_number,
-                    "outcome": "debounce",
+                    "outcome": reason,
                 }
             )
             logutil.log("agent_wake_rereview_decision", **outcomes[-1])
