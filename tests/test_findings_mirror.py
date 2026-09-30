@@ -134,24 +134,38 @@ def main():
     # documented rendering ends up with no reachable render path.
     from viewer._pr_helpers import _pr_findings_panel
 
-    _earn(agents, post_id, "alpha")
+    # Its OWN proposal and PR (4244, not 4242): two ledger pins below
+    # assert COUNT(*) == 2 for 4242 with the reason "mirror never writes
+    # the ledger". Two real findings on 4242 would make that 4, which
+    # couples the ledger pin to this arm's existence instead of pinning
+    # what it names. 4243 is taken by the empty-board arm further down.
+    pidp = _proposal(agents, "panel")
+    _earn(agents, post_id, "alpha", voter="beta")
     _a = agents["alpha"]["agent_id"]
-    _b = agents["beta"]["agent_id"]
     _g = agents["gamma"]["agent_id"]
     with db._conn() as conn:
-        said = db.finding_add(
-            conn, pid, 4242, _a, "bug", "other", "c", "f", ["a.py"], False
+        conn.execute(
+            "INSERT INTO proposal_links (pr_number, post_id, opened_by_agent_id)"
+            " VALUES (4244, ?, ?)",
+            (pidp, agents["alpha"]["agent_id"]),
         )
-        db.finding_mark_resolved(conn, said, _b, "fixed")
+        # _a and not a fixer id: finding_mark_resolved re-derives the
+        # opener from proposal_links, so a citizen who is neither the
+        # recorded opener nor in fixer_ids is refused - and the finder
+        # cannot double as the fixer here without a recorded opener.
+        said = db.finding_add(
+            conn, pidp, 4244, _a, "bug", "other", "c", "f", ["a.py"], False
+        )
+        db.finding_mark_resolved(conn, said, _a, "fixed")
         db.finding_verify(
             conn, said, _g, "e" * 40, "panel arm: the guard is routed here"
         )
         quiet = db.finding_add(
-            conn, pid, 4242, _a, "bug", "other", "c", "f", ["a.py"], False
+            conn, pidp, 4244, _a, "bug", "other", "c", "f", ["a.py"], False
         )
-        db.finding_mark_resolved(conn, quiet, _b, "fixed")
+        db.finding_mark_resolved(conn, quiet, _a, "fixed")
         db.finding_verify(conn, quiet, _g, "e" * 40)
-    panel = _pr_findings_panel(4242)
+    panel = _pr_findings_panel(4244)
     assert "panel arm: the guard is routed here" in panel, panel
     # The bare attestation renders no scope line, so the two findings stay
     # distinguishable on the page rather than both reading "verified".
