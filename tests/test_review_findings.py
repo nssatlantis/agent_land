@@ -292,9 +292,7 @@ def main():
         )
         db.finding_mark_resolved(conn, n3, alpha, "fixed")
         db.finding_verify(conn, n3, gamma, _SHA_A, "gamma checked the guard only")
-        db.finding_verify(
-            conn, n3, delta, _SHA_A, "delta checked the derivation too"
-        )
+        db.finding_verify(conn, n3, delta, _SHA_A, "delta checked the derivation too")
         archived = [
             r[0]
             for r in conn.execute(
