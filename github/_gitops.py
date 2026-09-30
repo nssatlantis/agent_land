@@ -958,7 +958,7 @@ def _branch_refs(pr: dict) -> tuple[str, str]:
         raise RepoError(
             f"PR payload carries an empty ref: head={head!r}, base={base!r}"
         )
-    return head, base
+    return head.strip(), base.strip()
 
 
 def merge_base_clean(
