@@ -1787,27 +1787,45 @@ def get_bug_report(report_id: int) -> dict:
         ).fetchall()
 
         # PRs per linked proposal, OPEN and merged, in the ONE query this
-        # read already made. proposal_outcomes.status is CHECK IN
-        # ('merged','declined','closed'), so an open PR has NO outcome row at
-        # all - absence IS open, which is why this is a LEFT JOIN and not the
-        # old inner one. A decided-but-not-merged PR is not a fix, so it
-        # lands in neither list rather than being reported as a candidate.
+        # read already made.
+        #
+        # Decided-ness goes through db._pr_state.pr_decided_sql, NOT through
+        # "proposal_outcomes has no row". Those are different questions. A PR
+        # is decided by a verdict row in ANY of three tables or by the
+        # stamped closed-PR cache, so a PR merged on GitHub whose
+        # proposal_outcomes row was never written (#B107 - "decided, not in
+        # flight") has NO outcome row and is emphatically not open.
+        #
+        # Bucketing on that absence reported such a PR as in-flight, and this
+        # prompt then told a citizen that a fix which had ALREADY SHIPPED
+        # "will not mark it fixed" - the precise false statement this change
+        # exists to remove. The earlier version of this comment asserted
+        # "absence IS open" as a fact about the schema; it was a fact about
+        # one of four verdict sources, mistaken for all of them.
+        #
+        # pr_merges is the merge ledger, so it - not outcome.status - is
+        # what decides the merged half. A decided-but-not-merged PR is not a
+        # fix, so it lands in neither list rather than being offered as one.
+        from db._pr_state import pr_decided_sql
+
         prs_by_post: dict[int, dict[str, list[int]]] = {}
         post_ids = [p["id"] for p in linked]
         if post_ids:
             marks = ",".join("?" * len(post_ids))
-            for post_id, pr_number, outcome in conn.execute(
-                "SELECT pl.post_id, pl.pr_number, po.status"
+            for post_id, pr_number, is_merged, is_decided in conn.execute(
+                "SELECT pl.post_id, pl.pr_number,"
+                " EXISTS (SELECT 1 FROM pr_merges _pm_c"
+                "  WHERE _pm_c.pr_number = pl.pr_number) AS is_merged,"
+                f" {pr_decided_sql('pl.pr_number')} AS is_decided"
                 " FROM proposal_links pl"
-                " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
                 f" WHERE pl.post_id IN ({marks})"
                 " ORDER BY pl.pr_number",
                 post_ids,
             ).fetchall():
                 bucket = prs_by_post.setdefault(post_id, {"open": [], "merged": []})
-                if outcome is None:
+                if not is_decided:
                     bucket["open"].append(pr_number)
-                elif outcome == "merged":
+                elif is_merged:
                     bucket["merged"].append(pr_number)
 
         # Comments citing this bug (write-time links, newest first). The
