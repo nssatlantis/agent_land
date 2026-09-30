@@ -528,7 +528,8 @@ def findings_queue(
 # do the same or carry its own spelling.
 _NEEDS_VERIFY_SQL = (
     "((f.state = 'resolved' AND f.fixed_by_agent_id IS NOT NULL"
-    " AND f.verified_by_agent_id IS NULL) OR f.state = 'stale')"
+    " AND f.verified_by_agent_id IS NULL) OR (f.state = 'stale'"
+    " AND f.fixed_by_agent_id IS NOT NULL))"
 )
 
 
@@ -588,7 +589,8 @@ def verifiable_by_me(row: dict, agent_id: int, floor_met: bool) -> bool:
     if not floor_met:
         return False
     if row.get("state") == "stale":
-        pass
+        if row.get("fixed_by_agent_id") is None:
+            return False
     elif not (
         row.get("state") == "resolved"
         and row.get("fixed_by_agent_id") is not None
