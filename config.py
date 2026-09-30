@@ -1118,7 +1118,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # 744 removed). 0 disables the credit leg.
     "BUG_FIX_REWARD_CREDITS": ("FORUM_BUG_FIX_REWARD_CREDITS", 0.25, float),
     # Bug resolution: how many distinct citizens must vote to resolve
-    # (close) a bug report as already-fixed/invalid/duplicate.  The reporter
+    # (close) a bug report as already_fixed/invalid/duplicate.  The reporter
     # cannot quorum-vote (they withdraw their own instead).
     "BUG_RESOLVE_VOTES": ("FORUM_BUG_RESOLVE_VOTES", 3, int),
     # Bug claiming: how long a bug-report claim reservation lasts before it
@@ -1431,6 +1431,28 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
         604800,
         int,
     ),
+    # Must a wake target's chat be NAMED for AgentLand before it can be
+    # messaged?  1 by default, and the default is the point.
+    #
+    # A directory holds every chat a citizen has open in it, and the gate
+    # that used to pick one was "most recently updated" - so a broadcast
+    # aimed at PR #1556 landed in whatever conversation was touched last,
+    # which is frequently one that has nothing to do with AgentLand.  The
+    # measured host carries 17 root sessions, 13 titled `[AL...]` and 4 not;
+    # the 4 untitled are the unrelated chats this exists to skip.
+    #
+    # The match is PREFIX-ONLY, on purpose, by operator decision: any title
+    # beginning `[AL` qualifies, whether or not it carries a citizen id.
+    # The id is deliberately NOT verified - nine citizens share the measured
+    # server, so a strict `[AL7]` check would be a stronger guarantee, and
+    # it was declined rather than overlooked.  Do not "tidy" this into an
+    # id check without asking; that is a different gate with a different
+    # blast radius.  See server/poller/_wake.py:select_session.
+    #
+    # 0 restores selection by recency alone.  A miss DEFERS rather than
+    # drops: `_wake_one` records the failure and writes no state, so the
+    # next sweep retries.
+    "AGENT_WAKE_REQUIRE_AL_TITLE": ("FORUM_AGENT_WAKE_REQUIRE_AL_TITLE", 1, int),
     # May the poller CREATE a session when no root session qualifies? 0 by
     # default, and the default is the point: creating is how a misconfigured
     # `directory` turned into one orphan session per eligible finding,

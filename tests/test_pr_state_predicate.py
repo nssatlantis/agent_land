@@ -782,7 +782,74 @@ def test_direction_fragments(agents):
             "a filing in the same second as a second-precision outcome is"
             " not 'strictly before' it - bug #168"
         )
-    print("  direction fragments (merged/negative arms, strict window): ok")
+        # 9-12. MISSING-TIMESTAMP SENTINELS (#831 board finding #43): each
+        #    arm states its exclusion, and one arm's sentinel never masks
+        #    another arm's attestation.  These arms pass with OR without
+        #    the explicit <> '' guards - SQLite's `x < ''` is already
+        #    false - which is exactly the finding's point: the pins lock
+        #    the BEHAVIOUR so a future comparison edit cannot silently
+        #    flip exclusion into inclusion, and the fragment's guards
+        #    state the intent in the SQL itself.
+        conn.execute(
+            "INSERT INTO proposal_outcomes (pr_number, post_id, status,"
+            " happened_at) VALUES (991410, ?, 'declined', '')",
+            (post_id,),
+        )
+        assert _dirs(conn, 991410) == (0, 0, 0, 0), (
+            "an empty-string happened_at attests no decision time"
+        )
+        conn.execute(
+            "INSERT INTO pr_record (pr_number, agent_id, status, karma,"
+            " closed_at) VALUES (991411, ?, 'declined', 0, '')",
+            (gid,),
+        )
+        assert _dirs(conn, 991411) == (0, 0, 0, 0), (
+            "an empty-string closed_at attests no decision time"
+        )
+        # The cross-arm pair that distinguishes on-purpose from by-accident:
+        # an empty outcome sentinel beside a VALID pr_record stamp on the
+        # same PR - the record arm still attests.
+        conn.execute(
+            "INSERT INTO proposal_outcomes (pr_number, post_id, status,"
+            " happened_at) VALUES (991412, ?, 'declined', '')",
+            (post_id,),
+        )
+        conn.execute(
+            "INSERT INTO pr_record (pr_number, agent_id, status, karma,"
+            " closed_at) VALUES (991412, ?, 'declined', 0, ?)",
+            (gid, t_out),
+        )
+        assert _dirs(conn, 991412) == (0, 1, 0, 0), (
+            "one arm's empty sentinel must not mask another arm's stamp"
+        )
+        # Stamped cache with an empty closed_at: the writer's stamp is
+        # present and no merge time exists, but the decision time was
+        # never captured - attests nothing.
+        conn.execute(
+            "INSERT OR REPLACE INTO pr_rows (pr_number, state, merged_at,"
+            " closed_at, verified_at) VALUES (991413, 'closed', NULL, '', ?)",
+            (_STAMP,),
+        )
+        assert _dirs(conn, 991413) == (0, 0, 0, 0), (
+            "a stamped cache row with an empty closed_at attests no time"
+        )
+    # The guards themselves are pinned as SOURCE SHAPE (the house idiom):
+    # behaviour alone cannot see them - SQLite excludes '' from every
+    # comparison either way - and finding #43's whole ask is that the
+    # exclusion be STATED rather than incidental. A future edit dropping a
+    # guard reds here and reads why.
+    frag = pr_negative_before_sql("f.pr_number", "f.created_at")
+    for guard in (
+        "po.happened_at <> ''",
+        "prd.closed_at <> ''",
+        "pw.closed_at IS NOT NULL AND pw.closed_at <> ''",
+    ):
+        assert guard in frag, (
+            f"sentinel guard missing from pr_negative_before_sql: {guard}"
+            " - the exclusion must be stated, not left to collation"
+            " (#831 board finding #43)"
+        )
+    print("  direction fragments (merged/negative arms, strict window, sentinels): ok")
 
 
 _ABSENCE_ALIAS_RE = re.compile(r"proposal_outcomes\s+(?:AS\s+)?(\w+)\s+ON\b", re.I)

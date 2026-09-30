@@ -1482,6 +1482,7 @@ _perf_indexes = (
     "idx_bug_reports_url",
     "idx_bug_reports_created",
     "idx_bug_reports_severity",
+    "idx_bug_reports_fix_pr",
     "idx_bug_comment_links_comment",
     "idx_bug_comment_links_report",
     "idx_bug_duplicates_original",

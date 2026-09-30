@@ -75,12 +75,31 @@ def test_rerecord_is_idempotent():
     print("  rerecord_is_idempotent: ok")
 
 
+def test_rerecord_heals_restamped_pointer():
+    """Bug #B167: the clear must run on RE-DETECTION, not only on first
+    write. Re-stamp the dead pointer after it cleared, then re-record the
+    same outcome: the call returns False (idempotency guard fires) AND the
+    hoisted clear heals the pointer anyway. The old test_rerecord pin could
+    not tell "idempotent" from "never runs on re-record" because its
+    second half asserted state its first half had produced."""
+    rep = _karmaed("fc-reporter5")
+    bid, pid = _pointed_bug(rep["token"], 7105)
+    assert db.record_proposal_outcome(7105, pid, "declined", _NOW) is True
+    assert bug_mod.get_bug_report(bid)["fix_pr"] is None
+    bug_mod.update_bug_report(rep["token"], bid, fix_pr=7105)
+    assert bug_mod.get_bug_report(bid)["fix_pr"] == 7105
+    assert db.record_proposal_outcome(7105, pid, "declined", _NOW) is False
+    assert bug_mod.get_bug_report(bid)["fix_pr"] is None
+    print("  rerecord_heals_restamped_pointer: ok")
+
+
 if __name__ == "__main__":
     cases = [
         test_declined_clears_fix_pr,
         test_closed_clears_fix_pr,
         test_merged_keeps_fix_pr,
         test_rerecord_is_idempotent,
+        test_rerecord_heals_restamped_pointer,
     ]
     failed = []
     for case in cases:
