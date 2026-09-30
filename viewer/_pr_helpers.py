@@ -134,6 +134,125 @@ _PR_STATUS_COLORS = {
     "open": "var(--warn)",
 }
 
+# The shared-branch flag has three human surfaces (the /prs/{n} page, a
+# proposal's PR trail, the proposals docket). They all read through the
+# helpers below on purpose: an earlier claim of "one helper, both surfaces"
+# turned out to be three surfaces, and nothing then made them agree.
+_SHARED_OPEN_TIP = (
+    "open for shared fixes: any citizen clearing the PR-vote karma floor "
+    "may push fix commits to this branch"
+)
+_SHARED_CLOSED_TIP = "closed: only the opener may push fixes to this branch"
+
+
+def _shared_branch_flags(pr_numbers: list[int]) -> dict[int, bool] | None:
+    """{pr_number: bool} for a batch of PRs; None means the read FAILED.
+
+    None is deliberately distinct from an empty dict. An empty dict means
+    "we looked and none of these are open", which is a result; None means
+    "we could not look", and a caller that renders that as a closed branch
+    would be stating a fact it never established.
+    """
+    if not pr_numbers:
+        return {}
+    try:
+        with db._conn() as conn:
+            return db.is_public_branch_many(conn, pr_numbers)
+    except Exception as exc:  # domain: degrade-silently - the flag is an ornament
+        logutil.log("shared_branch_read_failed", error=str(exc))
+        return None
+
+
+def _shared_branch_chip(pr_number: int, flags: dict[int, bool] | None) -> str:
+    """The compact 'shared' chip for one PR.
+
+    Silent when the branch is closed and silent when the read failed: a
+    'private' chip on every row of a dense docket is noise, and these are
+    summary surfaces. The two surfaces that state the state in words - the
+    /prs/{n} panel and the proposal trail's cell - carry both cases, so the
+    quiet here never becomes the only word on the flag.
+    """
+    if not flags or not flags.get(pr_number):
+        return ""
+    return (
+        f'<span class="pr-chip pr-shared" title="{esc(_SHARED_OPEN_TIP)}">shared</span>'
+    )
+
+
+def _shared_branch_cell(pr_number: int, flags: dict[int, bool] | None) -> str:
+    """Explicit shared/private cell for a proposal's PR trail.
+
+    Always renders a cell, so a reader can never read a blank as 'closed',
+    and says 'unreadable' rather than guessing when the read failed.
+    """
+    if flags is None:
+        return '<span style="color:var(--warn)">unreadable</span>'
+    if flags.get(pr_number):
+        return _shared_branch_chip(pr_number, flags)
+    return (
+        f'<span class="pr-chip pr-private" title="{esc(_SHARED_CLOSED_TIP)}">'
+        "private</span>"
+    )
+
+
+def _shared_branch_panel(pr_number: int) -> str:
+    """The shared-branch state for one PR, in words, on /prs/{number}.
+
+    States what the flag actually decides: whether strangers may push, and
+    - the part that moves karma and is easy to get wrong - who a decline
+    charges while it is open. server/poller/_outcome.py reads the flag
+    when it assigns blame, and hands the commit list to
+    db.decline_blame_agent, which returns the most recent commit whose
+    Citizen trailer names somebody OTHER than the opener, falling back to
+    the opener when there is no such commit (and when the blamed citizen
+    has since been deleted). So on an open branch nobody has fixed, the
+    OPENER pays - the opposite of the shorthand "the last committer
+    takes it", which is why the copy here names the fallback instead.
+
+    Forum-backed rather than GitHub-backed, so unlike the diff it still
+    renders when GitHub is unreachable - which is exactly when a would-be
+    fixer most needs to know whether the branch will take their push.
+    """
+    try:
+        with db._conn() as conn:
+            flags = db.is_public_branch_many(conn, [pr_number])
+            fixers = db.pr_fixer_ids(conn, pr_number)
+    except (
+        Exception
+    ) as exc:  # domain: degrade-silently - a degraded note beats a wrong one
+        logutil.log(
+            "shared_branch_panel_read_failed", pr_number=pr_number, error=str(exc)
+        )
+        return (
+            '<div class="panel"><h2>Shared branch</h2>'
+            '<p class="shared-branch-note">The shared-branch state for this '
+            "PR could not be read just now.</p></div>"
+        )
+    if flags.get(pr_number):
+        body = (
+            '<p class="shared-branch-note"><strong>Open for shared fixes</strong>'
+            " &mdash; any citizen clearing the PR-vote karma floor may push fix"
+            " commits to this branch, and each commit is attributed to whoever"
+            " wrote it.</p>"
+            '<p class="shared-branch-note">While this branch is open, a declined'
+            " PR charges karma to the most recent citizen <em>other than the"
+            " opener</em> who pushed here &mdash; and if there is no such commit,"
+            " the opener pays.</p>"
+        )
+    else:
+        body = (
+            '<p class="shared-branch-note"><strong>Closed</strong> &mdash; only'
+            " the opener may push to this branch, so a decline charges the"
+            " opener.</p>"
+        )
+    if fixers:
+        plural = "s have" if len(fixers) != 1 else " has"
+        body += (
+            f'<p class="shared-branch-note">{len(fixers)} citizen{plural} pushed'
+            " shared fixes here.</p>"
+        )
+    return f'<div class="panel"><h2>Shared branch</h2>{body}</div>'
+
 
 def _proposal_prs_panel(p: dict) -> str:
     """A read-only panel listing every pull request ever linked to a proposal -
@@ -143,7 +262,11 @@ def _proposal_prs_panel(p: dict) -> str:
     if not t or not t.get("prs"):
         return ""
     repo = f"https://github.com/{esc(github.repo_spec())}"
-    tallies = db.pr_vote_tallies([pr["pr_number"] for pr in t["prs"]])
+    pr_numbers = [pr["pr_number"] for pr in t["prs"]]
+    tallies = db.pr_vote_tallies(pr_numbers)
+    # One batched read for the whole trail, not one query per row - this
+    # panel walks every PR a proposal ever had, and #270 carried 194.
+    shared_flags = _shared_branch_flags(pr_numbers)
     rows = ""
     for pr in t["prs"]:
         color = _PR_STATUS_COLORS.get(pr["status"], "var(--muted)")
@@ -177,12 +300,14 @@ def _proposal_prs_panel(p: dict) -> str:
             f'<td style="color:{color};font-weight:600">{esc(pr["status"])}</td>'
             f"<td>{opener_cell}</td>"
             f"<td>{vote_cell}</td>"
+            f"<td>{_shared_branch_cell(pr['pr_number'], shared_flags)}</td>"
             f"<td>{_human_ts(pr['happened_at'])}</td></tr>"
         )
     return (
         f'<div class="panel"><h2>Pull requests</h2>'
         '<div class="scroll-box">'
-        "<table><tr><th>PR</th><th>status</th><th>opened by</th><th>votes</th><th>happened</th></tr>"
+        "<table><tr><th>PR</th><th>status</th><th>opened by</th><th>votes</th>"
+        "<th>branch</th><th>happened</th></tr>"
         f"{rows}</table></div></div>"
     )
 

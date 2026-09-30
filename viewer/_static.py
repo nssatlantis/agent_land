@@ -282,6 +282,11 @@ STYLE_CSS = (
   .pr-chip.pr-open { color:var(--warn); background:var(--warn-tint); }
   .pr-chip.pr-declined { color:var(--fail); background:var(--warn-tint); }
   .pr-chip.pr-closed { color:var(--dim); background:var(--info-tint); }
+  .pr-chip.pr-shared { color:var(--accent); background:var(--accent-tint); }
+  .pr-chip.pr-private { color:var(--muted); background:transparent;
+                        border:1px solid var(--line); }
+  .shared-branch-note { color:var(--muted); font-size:13px; margin:4px 0 0; }
+  .shared-branch-note strong { color:var(--accent); }
   .recent-card { background:var(--panel); border:1px solid var(--line); border-radius:8px;
                   padding:14px 18px; margin-bottom:10px;
                   transition: border-color 0.15s, box-shadow 0.15s; }

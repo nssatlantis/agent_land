@@ -6,6 +6,7 @@ from ._migrate import (
     _ensure_column,
     _ensure_column_with_backfill,
     _rebuild_table,
+    _widen_bug_status_check,
     _widen_notifications_check,
 )
 
@@ -236,7 +237,8 @@ def run(conn) -> set:
                 body            TEXT NOT NULL,
                 url             TEXT,
                 status          TEXT NOT NULL DEFAULT 'open'
-                                CHECK (status IN ('open', 'confirmed', 'fixed')),
+                                CHECK (status IN ('open', 'confirmed', 'fixed',
+                                                  'resolved', 'closed')),
                 confidence      INTEGER NOT NULL DEFAULT 1,
                 created_at      TEXT NOT NULL DEFAULT
                     (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -330,6 +332,19 @@ def run(conn) -> set:
         "CREATE INDEX IF NOT EXISTS idx_bug_reports_claimed_by"
         " ON bug_reports(claimed_by)"
     )
+    # Second bar + the 'resolved' status (proposal #821).  verified_at is an
+    # ordinary added column and goes in by ALTER like every other one here.
+    _ensure_column(conn, "bug_reports", "verified_at", "TEXT")
+    # The status CHECK cannot be ALTERed - SQLite has no such statement - so
+    # the table is rebuilt with the same _rebuild_table pattern that widened
+    # posts.proposal_kind and notifications.kind.  Idempotent: once the stored
+    # DDL mentions 'resolved' it no-ops.
+    #
+    # This call goes LAST in the bug block on purpose.  The rebuild derives its
+    # copy list from the live table_info, so it preserves whatever columns
+    # exist at the moment it runs; keeping it last leaves every _ensure_column
+    # in this block on the same side of it.
+    _widen_bug_status_check(conn)
     # Bug-comment links: fresh databases carry the table via schema.sql;
     # existing ones get it via CREATE TABLE IF NOT EXISTS (no backfill -
     # comment #B cites accrue live from here on).
@@ -719,6 +734,47 @@ def run(conn) -> set:
         )
     if "guild_job_links" in _guild_tables:
         _ensure_column(conn, "guild_job_links", "grace_until", "TEXT")
+    # guild_stake_links: drop opener_bonus_pct (proposal #839). The opener
+    # of a merged PR is now paid the whole per_pr bounty, so the split the
+    # column recorded is neither written nor read. SQLite has no portable
+    # DROP COLUMN, so this is the standard table rebuild: the new shape
+    # comes from schema.sql and the surviving columns are copied across.
+    #
+    # The OUTER guard is a PRAGMA table_info membership test rather than
+    # _rebuild_table's usual DDL-substring guard, and that is deliberate.
+    # _rebuild_table no-ops when its guard string is ALREADY present in the
+    # stored DDL, which suits every sibling call here (each guards on a
+    # shape the fresh DDL already has). This call REMOVES a column, so the
+    # inverted string is the one absent from a fresh database - a substring
+    # guard on its own would fire the rebuild on every fresh boot instead
+    # of only on a legacy one. A column-presence test states the real
+    # precondition and is correct in both directions. The INNER guard below
+    # is the new DDL's own shape, so the rebuild is a no-op once it ran.
+    #
+    # The copy list is safe to hardcode: every column in it is present in
+    # every shape this table has ever had. The table was created new in
+    # PR-4 already carrying the split column, so no legacy variant lacks
+    # any of these. (The table_info-derived copy discipline the
+    # notifications rebuild needs is for tables that GAINED a column
+    # mid-life; this one never did.)
+    #
+    # Existing rows keep their stake_id/guild_id/created_at, so a live
+    # guild-backed stake survives untouched except that its opener now
+    # receives the full bounty - the intended behaviour change, lossless
+    # otherwise.
+    if "guild_stake_links" in _guild_tables and "opener_bonus_pct" in {
+        row[1] for row in conn.execute("PRAGMA table_info(guild_stake_links)")
+    }:
+        _rebuild_table(
+            conn,
+            "guild_stake_links",
+            "stake_id, guild_id, created_at",
+            "created_at        TEXT NOT NULL DEFAULT",
+            extra_after_rename=(
+                "CREATE INDEX IF NOT EXISTS idx_guild_stake_links_guild"
+                " ON guild_stake_links(guild_id);\n"
+            ),
+        )
     # Citizen deletion (proposal #525, PR-14, item 5069) NULLs attribution
     # on survivor guild rows: four NOT NULL agent legs relax. Guarded
     # rebuilds: the guard substrings must match schema.sql VERBATIM

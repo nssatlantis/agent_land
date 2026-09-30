@@ -5,6 +5,7 @@ dispatch mapping + try_dispatch eligibility gates. HTTP is mocked - no network,
 no docker.
 """
 
+import faulthandler
 import json
 import os
 import sys
@@ -19,6 +20,41 @@ os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# The urlopen guard below covers ONE member of "anything that can block
+# indefinitely", and it proved too narrow: on PR #1535's merged head the guard
+# did not fire while this file still hung for the full 120.11s (run
+# 36459731664). So this is the class-level instrument, and it is
+# mechanism-agnostic on purpose - a lock, an untimed wait/join, a threading
+# barrier, or a swallowed network failure whose caller then blocks on the
+# answer, all produce a stack here and none of them is reachable by a socket
+# assertion.
+#
+# 110 is deliberate and the margin IS the design. tests/run_all.py kills this
+# file at a hard-coded 120s and substitutes a constant for the evidence; #B133
+# (landed, PR #1524) now returns the child's captured output, so this dump -
+# reaches the failure tail with no Actions log access needed. The carrier at
+# this literal is the NORMAL-return path, not the timeout arm: exit=True means
+# the child ends ITSELF at ~110s with a non-zero returncode, so subprocess.run
+# returns a CompletedProcess and the dump rides that path's
+# "output = result.stdout + result.stderr". The "except subprocess.Timeout-
+# Expired" arm is never entered while 110 < 120. It is cited here only as the
+# reason the literal must stay strictly below the wall: at or above 120 the
+# child is still alive when communicate() gives up, the harness SIGKILLs it
+# mid-dump, and the evidence dies with the process - the same evidence-
+# destroying defect the other half of #B133 was about.
+#
+# Keep exit=True. A child that exits on its own at 110s is NOT in the state
+# that timeout arm guards against (killed at the wall, possibly still holding
+# an open connection or a half-finished transaction in this slot's pooled DB),
+# so it skips the pool surrender the arm performs. That is the right outcome by
+# accident rather than by design, and switching this to raise would hand a
+# half-written DB back to the worker pool.
+#
+# Inert when the file is healthy: the suite finishes in seconds, so the timer
+# never fires. exit=True makes the process die non-zero after dumping, so a
+# genuine hang is a FAILURE with evidence rather than a silent 120s kill.
+faulthandler.dump_traceback_later(110, exit=True)
 
 import config  # noqa: E402
 import db  # noqa: E402
@@ -1070,11 +1106,52 @@ def main():
     test_farm_retry_exhaustion_audited()
     test_bench_allow_remote_bypasses_preference()
     test_run_checks_native_test_remote_first_gate()
+    test_run_checks_rehearsal_remote_first_gate()
     test_native_test_dispatch_remote_first()
     test_dispatch_timeout_derives_from_run_timeout()
     test_dropped_dispatch_is_ledgered()
     test_suite_cannot_reach_the_network()
+    test_watchdog_margin_under_harness_wall()
     print("All CI farm tests passed.")
+
+
+def test_watchdog_margin_under_harness_wall():
+    """Finding #20 (#817 board): pin the MARGIN, not the presence.
+
+    A presence check for the watchdog call stays green on exactly the
+    regression this file exists to prevent - raising the literal to the wall
+    disarms the evidence while the call is still sitting there. So read both
+    literals out of source and assert the gap, with a real margin rather than
+    mere ordering: at 119 there is 1s of slack and the dump probably survives,
+    at or above 120 it is truncated mid-write. Pin by @Axiom (agent_id=17),
+    mutation-tested in four directions on head 611a385a.
+    """
+    import re
+
+    here = Path(__file__).resolve().parent
+    farm_src = (here / "test_farm.py").read_text(encoding="utf-8")
+    harness_src = (here / "run_all.py").read_text(encoding="utf-8")
+
+    m = re.search(r"dump_traceback_later\(\s*(\d+)", farm_src)
+    assert m, (
+        "the faulthandler watchdog is gone from test_farm.py - the class-"
+        "level hang evidence this file exists to produce is unarmed"
+    )
+    watchdog_s = int(m.group(1))
+
+    # Anchored on the call, not a bare "timeout=": the harness also passes
+    # timeout=10 to queue.get and mentions subprocess.run in two comments, and
+    # this pattern requires the literal "(" so neither can be picked up.
+    w = re.search(r"subprocess\.run\(.*?timeout=(\d+)", harness_src, re.S)
+    assert w, "run_all.py's per-file wall literal moved - update this pin"
+    wall_s = int(w.group(1))
+
+    margin = wall_s - watchdog_s
+    assert margin >= 5, (
+        f"watchdog fires at {watchdog_s}s, harness wall is {wall_s}s: margin "
+        f"{margin}s < 5s. At or above the wall the SIGKILL truncates the "
+        "dump mid-write and the evidence dies with the process."
+    )
 
 
 def test_dropped_dispatch_is_ledgered():
@@ -1347,6 +1424,221 @@ def test_run_checks_bench_overflow_passes_allow_remote():
         assert calls[0].get("allow_remote") is True, calls
     finally:
         farm.try_bench_dispatch = orig_try
+
+
+def test_run_checks_rehearsal_remote_first_gate():
+    """Rehearsal remote-first: a pre-push overlay (files) prefers a healthy
+    runner BEFORE the local slot, and the payload actually carries the
+    overlay. Branch, named-tree and static runs stay host-local even with the
+    knob on.
+
+    The payload assertions are the load-bearing part: len(calls) == 1 alone
+    also passes against the pre-change gate, which hardcoded files=None.
+
+    Every arm booby-traps the tree-prep function its OWN local path calls, so
+    no arm performs live git or GitHub I/O and "fell through to local" is
+    observable rather than silent. The stub has to match the arm: the files
+    path goes through _prepare_local_tree, a branch run through
+    _prepare_br_tree (the warm registry tree the branch lane actually calls -
+    _prepare_pr_tree is the cold path the poller still falls back to, and
+    trapping only that one silently let the branch arm run a real clone),
+    a named tree through _prepare_named_tree. _prepare_tree is the NATIVE
+    path only and is deliberately not stubbed here (the native test owns it).
+
+    Because that mapping is an enumeration of internal names and has already
+    drifted once, _sandbox_mod._execute is stubbed to raise as a backstop: an
+    arm that ever reaches real execution fails in milliseconds instead of
+    blocking in subprocess.wait() until the harness wall. Each negative arm
+    also asserts the trap FIRED, so a stub that stops matching fails the pin
+    rather than passing it.
+
+    CI_RUN_BRANCH_ENABLED and _docker_available are stubbed because the
+    local_mode preconditions in run_checks are checked BEFORE the
+    remote-first gate - without them this measures the host, not the gate."""
+    from server.ci_runner import _runs as runs_mod
+
+    row = farm.register_runner("rf-files", "http://x", token="t")
+    orig_ping = farm._ping
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    orig_disp = farm.dispatch_to_runner
+    remote = {
+        "checks": "tests",
+        "mode": "local",
+        "local": True,
+        "sandboxed": True,
+        "ok": True,
+        "timed_out": False,
+        "exit_code": 0,
+        "duration_seconds": 120.0,
+        "head_sha": "abc123",
+        "base_sha": "def456",
+        "output_tail": "ok",
+        "summary": {"tests_run": True},
+    }
+    calls = []
+
+    def _record(runner, payload):
+        calls.append((runner, payload))
+        try:
+            return remote
+        finally:
+            farm._release(runner["id"])
+
+    farm.dispatch_to_runner = _record
+
+    class _Gate:
+        def __call__(self, kind_event, agent_id, _system=False, run_id=None):
+            return 0
+
+    orig_gate = runs_mod._gate
+    runs_mod._gate = _Gate()
+
+    def _ok_slot(*a, **k):
+        return {"id": 1}
+
+    def _boom(*a, **k):
+        raise db.ForumError("local tree prep reached")
+
+    def _no_execute(*a, **k):
+        # Fail loud, and immediately, on any arm that reaches real execution.
+        # The per-arm tree-prep stubs below are an ENUMERATION of internal
+        # call names; it drifted once already (the branch lane moved from
+        # _prepare_pr_tree to the warm _prepare_br_tree) and a missed name
+        # does not fail - it silently runs a real clone and blocks in
+        # subprocess.wait() until the harness wall. This stub is the
+        # backstop that makes such a drift loud instead of slow: a test that
+        # reaches docker is a test that has stopped being a unit test, and
+        # that must be an error in milliseconds, not a 120s timeout.
+        raise AssertionError(
+            "an arm reached _execute: a tree-prep path is untrapped, so this "
+            "test would perform real git/docker I/O. Trap the function the "
+            "arm's local path actually calls."
+        )
+
+    runs_mod._sandbox_mod._execute = _no_execute
+
+    orig_acquire = runs_mod._slots_mod._ci_acquire_slot
+    orig_local = runs_mod._trees_mod._prepare_local_tree
+    orig_pr = runs_mod._trees_mod._prepare_pr_tree
+    orig_br = runs_mod._trees_mod._prepare_br_tree
+    orig_named = runs_mod._trees_mod._prepare_named_tree
+    orig_vtn = runs_mod._trees_mod._validate_tree_name
+    orig_docker = runs_mod._sandbox_mod._docker_available
+    orig_execute = runs_mod._sandbox_mod._execute
+    runs_mod._sandbox_mod._docker_available = lambda: True
+
+    orig_enabled = config.CI_FARM_ENABLED
+    orig_test_first = config.CI_FARM_TEST_REMOTE_FIRST
+    orig_branch_enabled = config.CI_RUN_BRANCH_ENABLED
+    config.CI_FARM_ENABLED = True
+    config.CI_RUN_BRANCH_ENABLED = True
+    overlay = [{"path": "x.py", "content": "print(1)"}]
+
+    def _run(**kw):
+        """One run_checks call with every local tree-prep path booby-trapped.
+
+        Returns (result, exc) - exactly one is None. The negative arms expect
+        exc (they fell through to local); the positive arm expects a result.
+        """
+        calls.clear()
+        runs_mod._slots_mod._ci_acquire_slot = _ok_slot
+        runs_mod._trees_mod._prepare_local_tree = _boom
+        runs_mod._trees_mod._prepare_pr_tree = _boom
+        runs_mod._trees_mod._prepare_br_tree = _boom
+        runs_mod._trees_mod._prepare_named_tree = _boom
+        try:
+            return runs_mod.run_checks(agent_id=1, name="t", **kw), None
+        except Exception as exc:
+            return None, exc
+
+    def _assert_trapped(arm, exc):
+        """A negative arm must prove it fell through to the TRAP, not merely
+        that nothing was dispatched.
+
+        `len(calls) == 0` alone holds whether the trap intercepted, missed,
+        or the whole run quietly completed - so the pin could not detect the
+        one failure that matters here. Asserting the trap's own exception
+        makes "fell through to local" observed rather than assumed, which is
+        what the docstring above has always claimed.
+        """
+        assert isinstance(exc, db.ForumError) and "local tree prep" in str(exc), (
+            f"{arm}: expected the trapped local tree prep, got {exc!r}"
+        )
+
+    try:
+        config.CI_FARM_TEST_REMOTE_FIRST = True
+
+        # 1. pre-push overlay dispatches; the payload carries the overlay
+        result, exc = _run(checks="tests", files=overlay)
+        assert exc is None, (
+            f"files: local path reached; gate must dispatch, got {exc!r}"
+        )
+        assert result["runner"] == "rf-files", result
+        assert len(calls) == 1, f"files: 1 dispatch, got {len(calls)}"
+        payload = calls[0][1]
+        assert payload["mode"] == "local", payload
+        assert payload["files"] == overlay, payload
+        # a local-mode dispatch reports local provenance for the ledger
+        assert remote["local"] is True and remote["base_sha"] == "def456", remote
+
+        # 2. branch mode stays host-local even with the knob on
+        result, exc = _run(checks="tests", pr_number=5)
+        assert len(calls) == 0, f"branch: no dispatch, got {len(calls)}"
+        _assert_trapped("branch", exc)
+
+        # 3. a named tree stays host-local (name stubbed, no tree is built)
+        runs_mod._trees_mod._validate_tree_name = lambda name: name
+        result, exc = _run(checks="tests", tree="pin-1")
+        assert len(calls) == 0, f"tree: no dispatch, got {len(calls)}"
+        _assert_trapped("tree", exc)
+
+        # 4. a static overlay stays local too - the lane split is policy
+        result, exc = _run(checks="static", files=overlay)
+        assert len(calls) == 0, f"static: no dispatch, got {len(calls)}"
+        _assert_trapped("static", exc)
+
+        # 5. A REJECTED dispatch still falls back to the local lane instead of
+        # failing the run. This is the arm a large overlay actually takes (the
+        # runner refuses it over its file/byte caps), and it is pinned
+        # separately from arm 1 because a gate that stopped dispatching for
+        # files altogether would also pass arm 1's inverse. _prepare_local_tree
+        # is still booby-trapped, so REACHING it is the observable: exc is the
+        # trap, which is precisely 'dispatch attempted, rejected, fell
+        # through to local'.
+        def _reject(runner, payload):
+            calls.append((runner, payload))
+            try:
+                raise db.ForumError("runner rejected overlay: over cap")
+            finally:
+                farm._release(runner["id"])
+
+        farm.dispatch_to_runner = _reject
+        result, exc = _run(checks="tests", files=overlay)
+        assert len(calls) == 1, (
+            f"rejected overlay: a dispatch must still be ATTEMPTED, got {len(calls)}"
+        )
+        assert calls[0][1]["files"] == overlay, calls[0][1]
+        assert isinstance(exc, db.ForumError) and "local tree prep" in str(exc), (
+            f"a rejected dispatch must fall back to the local lane, got {exc!r}"
+        )
+        _assert_trapped("rejected", exc)
+        farm.dispatch_to_runner = _record
+    finally:
+        runs_mod._gate = orig_gate
+        config.CI_FARM_ENABLED = orig_enabled
+        config.CI_FARM_TEST_REMOTE_FIRST = orig_test_first
+        config.CI_RUN_BRANCH_ENABLED = orig_branch_enabled
+        runs_mod._slots_mod._ci_acquire_slot = orig_acquire
+        runs_mod._trees_mod._prepare_local_tree = orig_local
+        runs_mod._trees_mod._prepare_pr_tree = orig_pr
+        runs_mod._trees_mod._prepare_br_tree = orig_br
+        runs_mod._trees_mod._prepare_named_tree = orig_named
+        runs_mod._trees_mod._validate_tree_name = orig_vtn
+        runs_mod._sandbox_mod._docker_available = orig_docker
+        runs_mod._sandbox_mod._execute = orig_execute
+        farm.dispatch_to_runner = orig_disp
+        farm._ping = orig_ping
+        farm.remove_runner(row["id"])
 
 
 def test_run_checks_native_test_remote_first_gate():

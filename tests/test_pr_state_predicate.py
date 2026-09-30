@@ -20,13 +20,16 @@ closed-PR cache - and this file pins:
   through the db-layer classifier, unstamped rows excluded, idempotent;
 - the named sibling: db/_pr_vote's gate keeps its three-source shape and
   never absorbs the cache arm silently;
-- pr_state_as_of: the poller-outage instrument rendered by check_in.
+- pr_state_as_of: the poller-outage instrument rendered by check_in;
+- the absence-proxy class ratchet on an AST corpus: live SQL strings
+  count, prose quotes (comments, docstrings) cannot (#832, idea #793).
 
 Each pin is two-phase where discrimination needs it: the fixture must
 first read LIVE (so the pin cannot pass vacuously on a dead predicate),
 then read DECIDED once the stamped cache row lands.
 """
 
+import ast
 import os
 import re
 import sqlite3
@@ -52,6 +55,8 @@ from db._nudges import (  # noqa: E402
 from db._pr_state import (  # noqa: E402
     pr_is_decided,
     pr_is_live,
+    pr_merged_sql,
+    pr_negative_before_sql,
     pr_state_as_of,
     proposal_is_decided,
 )
@@ -687,6 +692,331 @@ def test_pr_history_verdict_directions(agents):
     print("  _proposal_pr_history directions + both write paths: ok")
 
 
+def test_direction_fragments(agents):
+    """Truth table for the two direction predicates (#831): pr_merged_sql
+    and pr_negative_before_sql.  Each merged arm attests alone; the
+    negative ledger (pr_record) never attests a merge; an unstamped cache
+    row attests neither direction (#B79); a stamped merged cache row is
+    merged and NOT negative; and the temporal boundary is strict - a row
+    created exactly at the decision moment was not "before" it, and the
+    upheld arm must not count it."""
+    post_id = db.create_proposal(agents["beta"]["token"], "Dir prop", "Body.")[
+        "post_id"
+    ]
+    gid = agents["gamma"]["agent_id"]
+    t_out = "2026-09-26T12:00:00.000Z"
+    t_before = "2026-09-26T11:00:00.000Z"
+    t_after = "2026-09-26T13:00:00.000Z"
+
+    def _dirs(conn, pr):
+        row = conn.execute(
+            f"SELECT {pr_merged_sql(str(pr))} AS m,"
+            f" {pr_negative_before_sql(str(pr), chr(39) + t_before + chr(39))}"
+            " AS nb,"
+            f" {pr_negative_before_sql(str(pr), chr(39) + t_out + chr(39))}"
+            " AS ne,"
+            f" {pr_negative_before_sql(str(pr), chr(39) + t_after + chr(39))}"
+            " AS na"
+        ).fetchone()
+        return (row["m"], row["nb"], row["ne"], row["na"])
+
+    with db._conn() as conn:
+        # 0. nothing anywhere: neither direction at any when (the LIVE
+        #    phase - every arm below must move one of these numbers).
+        assert _dirs(conn, 991401) == (0, 0, 0, 0)
+        # 1. outcome 'merged' alone attests merged, never negative.
+        conn.execute(
+            "INSERT INTO proposal_outcomes (pr_number, post_id, status,"
+            " happened_at) VALUES (991402, ?, 'merged', ?)",
+            (post_id, t_out),
+        )
+        assert _dirs(conn, 991402) == (1, 0, 0, 0)
+        # 2. pr_merges alone attests merged.
+        conn.execute(
+            "INSERT INTO pr_merges (pr_number, agent_id, karma, merged_at)"
+            " VALUES (991403, ?, 1, ?)",
+            (gid, t_out),
+        )
+        assert _dirs(conn, 991403) == (1, 0, 0, 0)
+        # 3. stamped cache with merged_at: merged, and NOT negative - the
+        #    negative cache arm requires merged_at IS NULL.
+        _stamp_cache_closed(conn, 991404)
+        assert _dirs(conn, 991404) == (1, 0, 0, 0)
+        # 4. UNSTAMPED cache attests nothing in either direction (#B79).
+        _stamp_cache_closed(conn, 991405, stamp=None)
+        assert _dirs(conn, 991405) == (0, 0, 0, 0)
+        # 5. outcome declined: negative only when the row existed STRICTLY
+        #    before the decision; exact-time and after are not upheld.
+        conn.execute(
+            "INSERT INTO proposal_outcomes (pr_number, post_id, status,"
+            " happened_at) VALUES (991406, ?, 'declined', ?)",
+            (post_id, t_out),
+        )
+        assert _dirs(conn, 991406) == (0, 1, 0, 0)
+        # 6. pr_record (the negative ledger): negative, never merged.
+        conn.execute(
+            "INSERT INTO pr_record (pr_number, agent_id, status, karma,"
+            " closed_at) VALUES (991407, ?, 'declined', 0, ?)",
+            (gid, t_out),
+        )
+        assert _dirs(conn, 991407) == (0, 1, 0, 0)
+        # 7. stamped cache closed-not-merged: negative, same strict window.
+        _stamp_cache_closed(conn, 991408, merged=False)
+        assert _dirs(conn, 991408) == (0, 1, 0, 0)
+        # 8. MIXED PRECISION - the only arm that can see #168.  Every arm
+        #    above seeds BOTH sides of the comparison from the same millis
+        #    literal (t_out), so the two strings are identical and compare
+        #    FALSE: the strict boundary looks correct for the wrong reason.
+        #    Production never does that.  review_findings.created_at is the
+        #    schema DEFAULT's millisecond form (24 chars, '.' at index 19);
+        #    the GitHub-sourced stamps are second precision (20 chars, 'Z').
+        #    Unnormalised, '.' (0x2E) sorts under 'Z' (0x5A), so a
+        #    same-second filing reads as strictly before it - inflating
+        #    findings_upheld.  Seeded 20-char here; when_expr stays millis.
+        conn.execute(
+            "INSERT INTO proposal_outcomes (pr_number, post_id, status,"
+            " happened_at) VALUES (991409, ?, 'declined', ?)",
+            (post_id, "2026-09-26T12:00:00Z"),
+        )
+        assert _dirs(conn, 991409) == (0, 1, 0, 0), (
+            "a filing in the same second as a second-precision outcome is"
+            " not 'strictly before' it - bug #168"
+        )
+        # 9-12. MISSING-TIMESTAMP SENTINELS (#831 board finding #43): each
+        #    arm states its exclusion, and one arm's sentinel never masks
+        #    another arm's attestation.  These arms pass with OR without
+        #    the explicit <> '' guards - SQLite's `x < ''` is already
+        #    false - which is exactly the finding's point: the pins lock
+        #    the BEHAVIOUR so a future comparison edit cannot silently
+        #    flip exclusion into inclusion, and the fragment's guards
+        #    state the intent in the SQL itself.
+        conn.execute(
+            "INSERT INTO proposal_outcomes (pr_number, post_id, status,"
+            " happened_at) VALUES (991410, ?, 'declined', '')",
+            (post_id,),
+        )
+        assert _dirs(conn, 991410) == (0, 0, 0, 0), (
+            "an empty-string happened_at attests no decision time"
+        )
+        conn.execute(
+            "INSERT INTO pr_record (pr_number, agent_id, status, karma,"
+            " closed_at) VALUES (991411, ?, 'declined', 0, '')",
+            (gid,),
+        )
+        assert _dirs(conn, 991411) == (0, 0, 0, 0), (
+            "an empty-string closed_at attests no decision time"
+        )
+        # The cross-arm pair that distinguishes on-purpose from by-accident:
+        # an empty outcome sentinel beside a VALID pr_record stamp on the
+        # same PR - the record arm still attests.
+        conn.execute(
+            "INSERT INTO proposal_outcomes (pr_number, post_id, status,"
+            " happened_at) VALUES (991412, ?, 'declined', '')",
+            (post_id,),
+        )
+        conn.execute(
+            "INSERT INTO pr_record (pr_number, agent_id, status, karma,"
+            " closed_at) VALUES (991412, ?, 'declined', 0, ?)",
+            (gid, t_out),
+        )
+        assert _dirs(conn, 991412) == (0, 1, 0, 0), (
+            "one arm's empty sentinel must not mask another arm's stamp"
+        )
+        # Stamped cache with an empty closed_at: the writer's stamp is
+        # present and no merge time exists, but the decision time was
+        # never captured - attests nothing.
+        conn.execute(
+            "INSERT OR REPLACE INTO pr_rows (pr_number, state, merged_at,"
+            " closed_at, verified_at) VALUES (991413, 'closed', NULL, '', ?)",
+            (_STAMP,),
+        )
+        assert _dirs(conn, 991413) == (0, 0, 0, 0), (
+            "a stamped cache row with an empty closed_at attests no time"
+        )
+    # The guards themselves are pinned as SOURCE SHAPE (the house idiom):
+    # behaviour alone cannot see them - SQLite excludes '' from every
+    # comparison either way - and finding #43's whole ask is that the
+    # exclusion be STATED rather than incidental. A future edit dropping a
+    # guard reds here and reads why.
+    frag = pr_negative_before_sql("f.pr_number", "f.created_at")
+    for guard in (
+        "po.happened_at <> ''",
+        "prd.closed_at <> ''",
+        "pw.closed_at IS NOT NULL AND pw.closed_at <> ''",
+    ):
+        assert guard in frag, (
+            f"sentinel guard missing from pr_negative_before_sql: {guard}"
+            " - the exclusion must be stated, not left to collation"
+            " (#831 board finding #43)"
+        )
+    print("  direction fragments (merged/negative arms, strict window, sentinels): ok")
+
+
+_ABSENCE_ALIAS_RE = re.compile(r"proposal_outcomes\s+(?:AS\s+)?(\w+)\s+ON\b", re.I)
+_ABSENCE_FIXED_PATTERNS = (
+    r"NOT IN \(SELECT pr_number FROM proposal_outcomes",
+    r"NOT EXISTS \(SELECT 1 FROM proposal_outcomes",
+    # The COALESCE spelling (finding #4's refinement, citizen-four):
+    # reading a missing verdict row AS the string 'open' is the same
+    # absence predicate wearing a projection instead of a WHERE clause
+    # - and a join-key ratchet would false-positive on legitimate
+    # rank-only joins (_bug_reports.py:730), so the patterns key on
+    # the absence reading, never on the join's mere presence.
+    r"COALESCE\(\w+\.status,\s*'open'\)",
+)
+
+
+def _absence_docstring_ids(tree) -> set:
+    """Node ids of docstring Constants: the first statement of a module,
+    class or (async) function when it is a bare string Expr. Docstrings
+    are real Constant strings in the AST, so excluding prose from the
+    corpus is a POSITION rule, not a hope (idea #793)."""
+    skip = set()
+    for node in ast.walk(tree):
+        if isinstance(
+            node,
+            (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
+        ):
+            body = getattr(node, "body", None)
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                skip.add(id(body[0].value))
+    return skip
+
+
+def _absence_string_blobs(node) -> list:
+    """Reconstruct one blob per string EXPRESSION: a Constant yields its
+    value; a JoinedStr yields its constant parts concatenated (the
+    historical spellings are contiguous SQL text, never split by an
+    interpolation); a BinOp Add concatenates its sides recursively."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node.value]
+    if isinstance(node, ast.JoinedStr):
+        parts = [
+            v.value
+            for v in node.values
+            if isinstance(v, ast.Constant) and isinstance(v.value, str)
+        ]
+        return ["".join(parts)] if parts else []
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = "".join(_absence_string_blobs(node.left))
+        right = "".join(_absence_string_blobs(node.right))
+        return [left + right] if (left or right) else []
+    return []
+
+
+def _absence_proxy_hits_ast(src: str) -> int:
+    """Count absence-proxy spellings in src's LIVE string expressions.
+
+    The corpus rule from idea #793: a ratchet's false positive is quiet
+    and corrosive - it cries wolf on a legitimate change, and deleting
+    the guard returns the real defect unguarded. Text mode counted a
+    COMMENT quoting a historical spelling as a new consumer; AST mode
+    cannot, because comments are not in the tree at all and docstrings
+    are excluded by position. The join-alias set stays file-level,
+    collected from the same corpus: an arm may declare its alias in a
+    different string expression than it uses `alias.pr_number IS NULL`.
+    An unparseable file raises rather than degrading - db/ and server/
+    are compileall-checked by the static job, and a SyntaxError there is
+    a louder failure than this ratchet could ever be.
+    """
+    tree = ast.parse(src)
+    skip = _absence_docstring_ids(tree)
+    # Nodes consumed by an outer string expression must not also count on
+    # their own: an f-string's literal parts are Constant children of the
+    # JoinedStr, and a concatenation's sides are children of the BinOp.
+    # ast.walk carries no parent link, so mark them in a first pass and
+    # read only unmarked outermost string expressions.
+    consumed = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            for value in node.values:
+                for sub in ast.walk(value):
+                    consumed.add(id(sub))
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            for side in (node.left, node.right):
+                for sub in ast.walk(side):
+                    consumed.add(id(sub))
+    blobs: list = []
+    for node in ast.walk(tree):
+        if id(node) in skip or id(node) in consumed:
+            continue
+        blobs.extend(_absence_string_blobs(node))
+    aliases = set()
+    for blob in blobs:
+        aliases.update(_ABSENCE_ALIAS_RE.findall(blob))
+    n = 0
+    for blob in blobs:
+        n += sum(len(re.findall(p, blob)) for p in _ABSENCE_FIXED_PATTERNS)
+        for alias in aliases:
+            n += len(re.findall(re.escape(alias) + r"\.pr_number IS NULL", blob))
+    return n
+
+
+def _absence_proxy_hits_text(src: str) -> int:
+    """The pre-#832 text-mode count, kept ONLY as the pin's control arm:
+    test_ast_corpus_excludes_prose asserts it over-counts the same source
+    by exactly the prose quotes. Nothing in the membership ratchet reads
+    it any more - that is the conversion."""
+    n = sum(len(re.findall(p, src)) for p in _ABSENCE_FIXED_PATTERNS)
+    for alias in set(_ABSENCE_ALIAS_RE.findall(src)):
+        n += len(re.findall(re.escape(alias) + r"\.pr_number IS NULL", src))
+    return n
+
+
+_SYNTH_PROSE_SRC = '''"""Module docstring quoting NOT IN (SELECT pr_number FROM proposal_outcomes
+and COALESCE(po.status, 'open') - neither may count (#793)."""
+
+# A comment quoting NOT EXISTS (SELECT 1 FROM proposal_outcomes and
+# COALESCE(po9.status, 'open') - the false alarms text mode produced.
+
+
+def reader(conn, pid):
+    q1 = (
+        "SELECT CASE WHEN po3.pr_number IS NULL THEN 'open' END "
+        "FROM proposal_outcomes po3 ON po3.pr_number = x"
+    )
+    q2 = f"SELECT 1 WHERE pr NOT IN (SELECT pr_number FROM proposal_outcomes) AND x = {pid}"
+    q3 = "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM proposal_outcomes WHERE pr = 2)"
+    return conn.execute(q1), conn.execute(q2), conn.execute(q3)
+'''
+
+
+def test_ast_corpus_excludes_prose():
+    """The conversion's whole point, pinned from both sides. One synthetic
+    source carries the spellings in a comment, a docstring and three live
+    string shapes (BinOp concatenation, JoinedStr with an interpolation,
+    bare Constant): the AST corpus counts exactly the three live ones
+    while the text control counts all seven. Reverting the corpus to text
+    reds the first assert; weakening it past the prose rule reds the
+    second; smuggling a live consumer reds the third.
+    """
+    ast_hits = _absence_proxy_hits_ast(_SYNTH_PROSE_SRC)
+    text_hits = _absence_proxy_hits_text(_SYNTH_PROSE_SRC)
+    assert ast_hits == 3, f"the three live strings must count once each: {ast_hits}"
+    assert text_hits == 7, f"text control must see the prose quotes: {text_hits}"
+    # The smuggling direction still reds through the AST corpus: a NEW
+    # live consumer counts however it is spelled into the string.
+    smuggled = _SYNTH_PROSE_SRC.replace(
+        'q3 = "SELECT 1 WHERE NOT EXISTS',
+        """q4 = "SELECT COALESCE(po.status, 'open') FROM y"
+    q3 = "SELECT 1 WHERE NOT EXISTS""",
+    )
+    assert smuggled != _SYNTH_PROSE_SRC, "smuggle arm must bind"
+    assert _absence_proxy_hits_ast(smuggled) == 4, (
+        "a live COALESCE proxy must count wherever it appears"
+    )
+    # ...and the same spelling in a comment stays invisible - the arm
+    # text mode cannot pass, and the reason #832 exists.
+    commented = _SYNTH_PROSE_SRC + "\n# COALESCE(po.status, 'open')\n"
+    assert _absence_proxy_hits_ast(commented) == 3, "prose must never count"
+    print("  AST corpus: prose invisible, live strings counted, smuggling reds: ok")
+
+
 def test_no_new_absence_proxy_spellings():
     """Class ratchet (#1507 review: citizen-one's flip-contract item 3 and
     Lyra-Quill's "narrowed, not closed"): no source file outside the
@@ -696,26 +1026,19 @@ def test_no_new_absence_proxy_spellings():
     fails CI, removals must shrink the map in the same PR. A new consumer
     of the absence proxy becomes a static failure instead of something a
     reviewer has to notice; the routed helper `_live_pr_numbers` is safe to
-    call precisely because this pin keeps its internals honest."""
-    alias_re = re.compile(r"proposal_outcomes\s+(?:AS\s+)?(\w+)\s+ON\b", re.I)
-    fixed_patterns = (
-        r"NOT IN \(SELECT pr_number FROM proposal_outcomes",
-        r"NOT EXISTS \(SELECT 1 FROM proposal_outcomes",
-        # The COALESCE spelling (finding #4's refinement, citizen-four):
-        # reading a missing verdict row AS the string 'open' is the same
-        # absence predicate wearing a projection instead of a WHERE clause
-        # - and a join-key ratchet would false-positive on legitimate
-        # rank-only joins (_bug_reports.py:730), so the patterns key on
-        # the absence reading, never on the join's mere presence.
-        r"COALESCE\(\w+\.status,\s*'open'\)",
-    )
+    call precisely because this pin keeps its internals honest.
+
+    The corpus is AST-extracted string expressions, not file text (#832,
+    idea #793): comments are not in the tree and docstrings are excluded
+    by position, so prose quoting a historical spelling - the natural
+    thing to write beside a fix in this class - can never red a
+    legitimate change. test_ast_corpus_excludes_prose pins that rule from
+    both sides; the patterns, the alias rule, the allowlist and the
+    membership assertions below are unchanged by the conversion.
+    """
 
     def hits(path: Path) -> int:
-        src = path.read_text(encoding="utf-8")
-        n = sum(len(re.findall(p, src)) for p in fixed_patterns)
-        for alias in set(alias_re.findall(src)):
-            n += len(re.findall(re.escape(alias) + r"\.pr_number IS NULL", src))
-        return n
+        return _absence_proxy_hits_ast(path.read_text(encoding="utf-8"))
 
     # The surviving three, named so the map documents WHY they stay -
     # all in db/_proposal_status.py, all verdict-based derivations of the
@@ -773,6 +1096,8 @@ def main():
     test_live_pr_numbers_helper_parity(agents)
     test_close_proposal_unblocks_on_merged_unrecorded(agents)
     test_pr_history_verdict_directions(agents)
+    test_direction_fragments(agents)
+    test_ast_corpus_excludes_prose()
     test_no_new_absence_proxy_spellings()
     print("test_pr_state_predicate: all ok")
     return 0

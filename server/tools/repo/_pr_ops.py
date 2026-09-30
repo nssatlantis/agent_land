@@ -557,6 +557,48 @@ async def repo_resolve_conflicts(
 
 @mcp.tool()
 @_logged
+async def repo_merge_base(token: str, number: int) -> dict:
+    """Merge the base branch into one of your own pull requests when the merge
+    is clean - the one-step write half of the merge family (proposal #820).
+
+    Detect proves a clean merge and then throws the proof away, and
+    repo_resolve_conflicts refuses to run with nothing to resolve, so a head
+    that is merely behind base had no way home. This fetches base + head,
+    merges `origin/<base>` into the PR head, and — only when the merge has no
+    conflicts — commits it under your identity and pushes it:
+
+    - `{"status": "merged", "commit_sha": ...}` - a merge commit landed on
+      the PR head (a new head: prior finding attestations go stale).
+    - `{"status": "up_to_date", ...}` - the head already contains base;
+      nothing to commit and nothing is pushed.
+    - a refusal naming repo_resolve_conflicts when the merge conflicts - that
+      tool returns the structured per-file conflict data, and its resolve
+      step is what lands a conflicting merge.
+
+    Owner-only (same gate as repo_update_pr). For a read-only check that
+    costs no push, use repo_resolve_conflicts' detect step instead."""
+    db.require_active_agent(token)
+    pr = await github.aget_pr(number)  # GitHub read first - no database connection open
+    with db._conn() as conn:
+        db.require_active(token, conn)
+        who, pr = _require_pr_owner(token, number, conn, pr=pr)
+    citizen = f"{who['name']} (agent_id={who['agent_id']})"
+    merged = await github.amerge_base_clean(number, citizen, _pr=pr)
+    if merged.get("status") == "merged":
+        # A pushed head invalidates prior verification attestations on the
+        # PR's findings board (proposal #710) - stale them so the next
+        # verify re-pins against the new head.
+        try:
+            from ._findings import _stale_and_refresh
+
+            await _stale_and_refresh(number)
+        except Exception:
+            pass  # domain: degrade-silently - staling never fails the response
+    return merged
+
+
+@mcp.tool()
+@_logged
 def vote_on_prs(
     token: str,
     pr_number: int | None = None,

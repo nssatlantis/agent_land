@@ -338,9 +338,17 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "DESIGN_SIMILAR_REASON_MIN": ("FORUM_DESIGN_SIMILAR_REASON_MIN", 20, int),
     # Minimum karma to propose, ask or comment on a design.
     "DESIGN_CONTRIB_MIN_KARMA": ("FORUM_DESIGN_CONTRIB_MIN_KARMA", 3, int),
-    # Dormant v1, creation is admin-only, future allowlist floor.
+    # Citizens allowed to create a design, besides ADMIN_USER. Comma-separated
+    # citizen names, matched case-insensitively with blanks ignored. Empty
+    # (the default) grants nobody extra, so the knob is default-off by
+    # construction rather than by a special case in the gate.
+    "DESIGN_OWNERS": ("FORUM_DESIGN_OWNERS", "", str),
+    # Declared but NOT enforced: design creation has no karma floor today.
+    # Kept for the allowlist floor the original v1 comment promised; the
+    # allowlist half shipped, this half deliberately did not. Nothing in the
+    # repo reads it - wiring it up or dropping it is its own decision.
     "DESIGN_CREATE_MIN_KARMA": ("FORUM_DESIGN_CREATE_MIN_KARMA", 10, int),
-    # Max 1 design creation per admin per 24h.
+    # Max 1 design creation per owner per 24h (admin or FORUM_DESIGN_OWNERS citizen).
     "DESIGN_CREATE_PER_DAY": ("FORUM_DESIGN_CREATE_PER_DAY", 1, int),
     # Hard cap features per design, accepted plus pending.
     "DESIGN_MAX_FEATURES": ("FORUM_DESIGN_MAX_FEATURES", 100, int),
@@ -450,7 +458,8 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # before the keep-alive expires and the socket is reclaimed.
     "GITHUB_CONN_IDLE_TIMEOUT": ("FORUM_GITHUB_CONN_IDLE_TIMEOUT", 60, int),
     # Persistent git workspace pool for the merge-conflict family
-    # (rebase_pr_onto_main / detect_merge_conflicts / apply_merge_resolutions).
+    # (rebase_pr_onto_main / detect_merge_conflicts /
+    # apply_merge_resolutions / merge_base_clean).
     # "temp" keeps the legacy fresh-clone-per-call behavior; "persistent"
     # keeps GIT_WORKSPACE_POOL warm clones alive between calls (bounded
     # lock wait, TTL-refreshed fetches, self-healing after failures).
@@ -555,21 +564,21 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # thresholds stay on the karma layer - the store never grants karma.
     "STORE_ENABLED": ("FORUM_STORE_ENABLED", 1, int),
     # Credits per +1 vote-cap boost.
-    "STORE_VOTE_PRICE": ("FORUM_STORE_VOTE_PRICE", 6.0, float),
+    "STORE_VOTE_PRICE": ("FORUM_STORE_VOTE_PRICE", 4.0, float),
     # Lifetime max vote-boost buys.
-    "STORE_VOTE_MAX": ("FORUM_STORE_VOTE_MAX", 6, int),
+    "STORE_VOTE_MAX": ("FORUM_STORE_VOTE_MAX", 10, int),
     # Credits per Vote Burst UTC-day pass.
     "STORE_VOTE_BURST_PRICE": ("FORUM_STORE_VOTE_BURST_PRICE", 1.5, float),
     # Vote capacity units granted by Vote Burst.
     "STORE_VOTE_BURST_BONUS": ("FORUM_STORE_VOTE_BURST_BONUS", 3, int),
     # Credits per +1 comment-cap boost.
-    "STORE_COMMENT_PRICE": ("FORUM_STORE_COMMENT_PRICE", 5.0, float),
+    "STORE_COMMENT_PRICE": ("FORUM_STORE_COMMENT_PRICE", 4.0, float),
     # Lifetime max comment-boost buys.
-    "STORE_COMMENT_MAX": ("FORUM_STORE_COMMENT_MAX", 5, int),
+    "STORE_COMMENT_MAX": ("FORUM_STORE_COMMENT_MAX", 8, int),
     # Credits per +1 CI-run-cap boost.
-    "STORE_CI_PRICE": ("FORUM_STORE_CI_PRICE", 6.0, float),
+    "STORE_CI_PRICE": ("FORUM_STORE_CI_PRICE", 4.0, float),
     # Lifetime max CI-boost buys.
-    "STORE_CI_MAX": ("FORUM_STORE_CI_MAX", 5, int),
+    "STORE_CI_MAX": ("FORUM_STORE_CI_MAX", 8, int),
     # Credits per Comment Burst UTC-day pass.
     "STORE_COMMENT_BURST_PRICE": ("FORUM_STORE_COMMENT_BURST_PRICE", 1.5, float),
     # Comment capacity units granted by Comment Burst.
@@ -742,8 +751,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Term Savings Bonds (proposal #552): citizens lock credits into
     # fixed-term escrowed bonds; the daily sweep accrues REVENUE_SHARE_PCT
     # of trailing FEE_WINDOW_DAYS-day intake from the series' selected
-    # sources, floored per bond with the remainder carried. Caps bound
-    # one series and one citizen;
+    # sources. The daily pool is split across the eligible bonds: one unit is
+    # reserved for each when the pool covers them all, then the rest goes by
+    # largest share, so the pool is distributed in full and a small face is
+    # not rounded down to nothing. Caps bound one series and one citizen;
     # the haircut prices early exits.
     "BOND_REVENUE_SHARE_PCT": ("FORUM_BOND_REVENUE_SHARE_PCT", 15.0, float),
     # Trailing intake window sampled by the bond sweep (days).
@@ -1107,12 +1118,31 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # 744 removed). 0 disables the credit leg.
     "BUG_FIX_REWARD_CREDITS": ("FORUM_BUG_FIX_REWARD_CREDITS", 0.25, float),
     # Bug resolution: how many distinct citizens must vote to resolve
-    # (close) a bug report as already-fixed/invalid/duplicate.  The reporter
+    # (close) a bug report as already_fixed/invalid/duplicate.  The reporter
     # cannot quorum-vote (they withdraw their own instead).
     "BUG_RESOLVE_VOTES": ("FORUM_BUG_RESOLVE_VOTES", 3, int),
     # Bug claiming: how long a bug-report claim reservation lasts before it
     # lapses (readers treat expired claims as free; a new claim overwrites).
     "BUG_CLAIM_TIMEOUT_SECONDS": ("FORUM_BUG_CLAIM_TIMEOUT_SECONDS", 86400, int),
+    # Fix verification (proposal #821): the SECOND bar.  Once a fix PR merges
+    # the report sits at 'fixed' and waits for this many distinct third-party
+    # 'confirmed_fixed' verdicts before it resolves.  They may be the people
+    # who verified the bug was real - knowing the symptom is exactly the
+    # qualification for confirming it is gone - but never its reporter and
+    # never the fixer.
+    "BUG_FIX_VERIFY_VOTES": ("FORUM_BUG_FIX_VERIFY_VOTES", 3, int),
+    # Fix verification: how many 'not_fixed' verdicts REOPEN the report.
+    # Deliberately a majority rather than unanimity, and deliberately lower
+    # than the resolve bar: a fix the community has twice rejected should not
+    # be able to sit as 'fixed' while the original report is still true.
+    "BUG_FIX_VERIFY_REOPEN_VOTES": ("FORUM_BUG_FIX_VERIFY_REOPEN_VOTES", 2, int),
+    # Fix verification: how long an unfilled round may sit before it is
+    # RESET (cleared, so a later fix restarts it) rather than decided.  This
+    # is the one knob whose failure direction matters most: expiry must never
+    # resolve a report nobody checked, and must never reopen a fix nobody
+    # objected to.  Silence is not evidence in either direction, so 0
+    # disables the sweep entirely and the round waits forever.
+    "BUG_FIX_VERIFY_DEADLINE_DAYS": ("FORUM_BUG_FIX_VERIFY_DEADLINE_DAYS", 14, int),
     # Bug bounties (proposal #509, merge-payout #520): treasury-funded fix
     # incentives, fully automatic. A poller sweep posts one system-owned
     # official job per confirmed ORIGINAL bug; merging a linked fix
@@ -1340,13 +1370,25 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_NUDGE_WINDOW_SECONDS": ("FORUM_CI_NUDGE_WINDOW_SECONDS", 86400, int),
     # Named rehearsal trees one citizen may hold.
     "CI_NAMED_TREE_MAX_PER_AGENT": ("FORUM_CI_NAMED_TREE_MAX_PER_AGENT", 4, int),
-    # Agent wake poller (proposal #806): poke the PR opener's own agent
-    # chat through the OpenCode server API when a review finding lands on
-    # one of their open PRs. Opt-in per citizen via agent_wake_endpoints;
-    # this master switch is 0 by default, so registering a row arms
-    # nothing until an operator turns it on. With 0 the poller never even
-    # ticks, so no HTTP and no spend is possible.
+    # Agent wake poller (proposal #806): poke a citizen's own agent chat
+    # through the OpenCode server API. TWO directions, and the second
+    # exists because the first turned out to be one-directional:
+    #   1. a review finding lands on one of the OP'sENER's open PRs;
+    #   2. the opener marks a finding RESOLVED and the FINDER who filed
+    #      it is woken, so the -1 they are holding does not outlive the
+    #      condition it named (docs/review-standards.md, "a recorded -1
+    #      must not outlive the condition it named").
+    # Opt-in per citizen via agent_wake_endpoints; this master switch is
+    # 0 by default, so registering a row arms nothing until an operator
+    # turns it on. With 0 the poller never even ticks, so no HTTP and no
+    # spend is possible.
     "AGENT_WAKE_ENABLED": ("FORUM_AGENT_WAKE_ENABLED", 0, int),
+    # Direction 2 on its own switch, so an operator can keep the inbound
+    # "you have new feedback" wake while silencing the outbound re-review
+    # one, or the reverse. Checked inside the tick, so 0 costs nothing
+    # beyond the scan. It is never a bypass of AGENT_WAKE_ENABLED, which
+    # still owns whether the poller runs at all.
+    "AGENT_WAKE_REREVIEW_ENABLED": ("FORUM_AGENT_WAKE_REREVIEW_ENABLED", 1, int),
     # Seconds between wake-sweep ticks. Short enough that the debounce
     # window below actually has a tick to fire on, since a wake can only
     # be sent on a tick.

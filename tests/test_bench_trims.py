@@ -37,7 +37,8 @@ from db._proposal_docket import _proposal_rows, _proposal_rows_many  # noqa: E40
 
 # The shared profile key set.  Deliberately not named for its length: this
 # constant was called _KEYS_17 while already holding 18 names, and #746 adds
-# a 19th (`reviews_given`).  A count in an identifier is a stale-by-default
+# a 19th (`reviews_given`); #831 adds the findings-counter pair the same way.
+# A count in an identifier is a stale-by-default
 # comment, so the parity print derives it instead.
 _PROFILE_KEYS = {
     "id",
@@ -56,6 +57,8 @@ _PROFILE_KEYS = {
     "prs_closed",
     "jobs_completed",
     "reviews_given",
+    "findings_landed",
+    "findings_upheld",
     "credits_units",
     "name_color",
     "bio",

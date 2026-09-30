@@ -41,7 +41,10 @@ def my_profile(token: str, summary_only: bool = False) -> dict:
     proposal / assigned counts (`votes_cast` counts post/comment and proposal
     votes - one pool), `reviews_given` (how many PRs you have a recorded vote
     on; a review that ends in no vote is not counted, so it is a floor on your
-    review labour, never a ceiling), your PR track record (open PRs read live
+    review labour, never a ceiling), `findings_landed` / `findings_upheld`
+    (findings you filed whose PR merged after third-party verification, and
+    findings on record before their PR's negative outcome - presence at the
+    decision, not proven influence), your PR track record (open PRs read live
     from GitHub,
     0 when GitHub is unreachable), your unread mailbox count, the per-kind
     `cooldowns` (the per-kind post throttle; replaces the removed

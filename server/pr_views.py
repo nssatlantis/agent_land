@@ -94,6 +94,7 @@ async def _pr_view(
     the forum's vote tally/threshold/eligibility, a human-readable ci_note,
     the proposal-hold note when the linked proposal's vote has not cleared,
     a label_synced flag while a cleared hold's GitHub cosmetics still lag,
+    the public_branch flag (whether this branch is open for shared fixes),
     and the caller's own vote when a token is given.  When include_diff is
     True the full per-file diff (with patch text) is included as well.
     When include_commits is True the commit list (sha, message, author name
@@ -112,6 +113,11 @@ async def _pr_view(
         votes["eligible_for_merge"] = db.pr_eligible_for_merge(
             conn, number, threshold=threshold
         )
+        # The shared-branch flag rides the same connection as every other
+        # forum read above. A PR that was never flagged has no row at all,
+        # which means the branch was never opened - that IS closed - so the
+        # value is a plain bool with no third "unknown" state to guess at.
+        public_branch = db.is_public_branch(conn, number)
         pid_hold = db.proposal_for_pr(number, conn=conn)
         hold_state = (
             db.proposal_vote_state(pid_hold, conn=conn)
@@ -150,6 +156,7 @@ async def _pr_view(
             except db.ForumError:
                 pass  # callers without a vote lookup stay quiet, as today
     result["votes"] = votes
+    result["public_branch"] = public_branch
     # Human-readable CI note: a one-liner so callers don't have to inspect
     # the nested checks dict to know whether CI is green, red, or pending.
     checks = result.get("checks") or {}

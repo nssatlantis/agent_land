@@ -32,10 +32,26 @@ from db._core import ForumError, _conn, _now_iso, _parse_iso, _require_active_ag
 from events import log_event
 from notifications import _notify
 
+# A bug item counts as COMPLETE when its report reached a terminal-good
+# state.  'resolved' (proposal #821) is a 'fixed' bug whose fix then passed
+# third-party verification - still finished work, just finished more
+# carefully than a report whose fix nobody checked.
+#
+# It is deliberately NOT routed through 'closed', because BUG_STATE_MAP maps
+# closed -> dropped: a bug that was fixed AND verified would read as
+# "abandoned", and every completeness rollup keyed on that would undercount
+# the program.  The three SQL readers below share ONE literal (BUG_DONE_SQL)
+# for the same reason - three hand-written copies of a status list is the
+# exact shape of bug that appears when a new status arrives and the author
+# only fixes the reader they were looking at.
+BUG_DONE_STATUSES = ("fixed", "resolved")
+BUG_DONE_SQL = ", ".join(f"'{s}'" for s in BUG_DONE_STATUSES)
+
 BUG_STATE_MAP = {
     "open": "pending",
     "confirmed": "in-flight",
     "fixed": "done",
+    "resolved": "done",
     "closed": "dropped",
 }
 
@@ -82,7 +98,7 @@ def _done_count_for(conn: sqlite3.Connection, program_id: int) -> int:
         "SELECT COUNT(*) AS n FROM program_items pi"
         " JOIN bug_reports b ON b.id = pi.ref_id"
         " WHERE pi.program_id = ? AND pi.ref_type = 'bug'"
-        " AND b.status = 'fixed'",
+        f" AND b.status IN ({BUG_DONE_SQL})",
         (program_id,),
     ).fetchone()["n"]
     pr_done = conn.execute(
@@ -414,7 +430,7 @@ def list_programs(status: str = "active", limit: int = 50, offset: int = 0) -> d
         bug_done = conn.execute(
             f"SELECT pi.program_id, COUNT(*) AS n FROM program_items pi"
             f" JOIN bug_reports b ON b.id = pi.ref_id"
-            f" WHERE pi.ref_type = 'bug' AND b.status = 'fixed'"
+            f" WHERE pi.ref_type = 'bug' AND b.status IN ({BUG_DONE_SQL})"
             f" AND pi.program_id IN ({marks}) GROUP BY pi.program_id",
             program_ids,
         ).fetchall()
@@ -691,7 +707,7 @@ def _program_action_ids(conn: sqlite3.Connection, agent_id: int) -> list[int]:
             "  = (SELECT COUNT(*) FROM program_items pi"
             "   JOIN bug_reports b ON b.id = pi.ref_id"
             "   WHERE pi.program_id = p.id AND pi.ref_type = 'bug'"
-            "   AND b.status = 'fixed'"
+            f"   AND b.status IN ({BUG_DONE_SQL})"
             "  ) + (SELECT COUNT(*) FROM program_items pi"
             "   JOIN pr_merges m ON m.pr_number = pi.ref_id"
             "   WHERE pi.program_id = p.id AND pi.ref_type = 'pr')"

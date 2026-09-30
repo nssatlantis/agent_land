@@ -492,6 +492,21 @@ def main():
     except github.RepoError as exc:
         assert "too many edits" in str(exc), str(exc)
 
+    # B146: the {"item": [...]} envelope unwraps at this layer too, through the
+    # shared github._unwrap_item_envelope - the workspace edit path reaches this
+    # validator, so both edit surfaces must accept one shape.
+    assert github._validate_edits(
+        "docs/f.txt", {"item": [{"find": "x", "replace": "y"}]}
+    ) == [{"find": "x", "replace": "y"}]
+    # a dict that is not the envelope stays refused, so a malformed envelope can
+    # never be silently rebuilt into a positional or a list value
+    for bad in ({"item": "nope"}, {"item": [], "extra": 1}):
+        try:
+            github._validate_edits("docs/f.txt", bad)
+            raise AssertionError(f"dict edits {bad!r} must be rejected")
+        except github.RepoError as exc:
+            assert "edits" in str(exc), (bad, str(exc))
+
     # the pure apply core also refuses an empty find directly - _validate_edits
     # catches it upstream, but a direct call must error, not spin forever.
     try:
@@ -750,6 +765,10 @@ def main():
             return None
         if method == "GET" and path.startswith("contents/reset.py?ref="):
             return {"content": crlf_b64, "sha": "reset-sha", "encoding": "base64"}
+        if method == "GET" and path == "contents/drift.py?ref=feature/x":
+            return {"content": crlf_b64, "sha": "drift-sha", "encoding": "base64"}
+        if method == "GET" and path.startswith("contents/drift.py?ref="):
+            return {"content": same_b64, "sha": "drift-sha", "encoding": "base64"}
         raise AssertionError(f"unexpected request {method} {path}")
 
     noop_patch = [{"path": "app.py", "edits": [{"find": "same", "replace": "same"}]}]
@@ -824,8 +843,11 @@ def main():
     finally:
         github._core._request = real_request
 
-    # 5. new files and resets always count as changes (head unknown or
-    # base-restored without a branch-bytes comparison).
+    # 5. new files always count (head unknown). A byte-identical reset is
+    # refused like any other no-op, dry and real, before any PUT; an
+    # EOL-only reset difference still counts, because the reset PUT
+    # writes the base bytes verbatim.
+    calls = []
     github._core._request = fake_request
     try:
         plan = github.update_pr(
@@ -835,13 +857,34 @@ def main():
             dry_run=True,
         )
         assert plan["changes"] == ["new.py"], plan["changes"]
+        try:
+            github.update_pr(
+                9,
+                [{"path": "reset.py", "reset": True}],
+                citizen="curious-alpha (agent_id=3)",
+                dry_run=True,
+            )
+            raise AssertionError("a byte-identical reset must be refused")
+        except github.RepoError as exc:
+            assert "made no changes" in str(exc), str(exc)
+        try:
+            github.update_pr(
+                9,
+                [{"path": "reset.py", "reset": True}],
+                citizen="curious-alpha (agent_id=3)",
+                dry_run=False,
+            )
+            raise AssertionError("a byte-identical reset must be refused")
+        except github.RepoError as exc:
+            assert "made no changes" in str(exc), str(exc)
+        assert not [c for c in calls if c[0] in ("PUT", "DELETE", "PATCH")], calls
         plan = github.update_pr(
             9,
-            [{"path": "reset.py", "reset": True}],
+            [{"path": "drift.py", "reset": True}],
             citizen="curious-alpha (agent_id=3)",
             dry_run=True,
         )
-        assert plan["changes"] == ["reset.py"], plan["changes"]
+        assert plan["changes"] == ["drift.py"], plan["changes"]
     finally:
         github._core._request = real_request
 
@@ -2425,6 +2468,50 @@ def main():
             {"find": "x", "replace": "1"},
             {"find": "y", "replace": "2"},
         ], "positional-key dict edits must rebuild to the op list in order"
+
+    # --- B146: the {"item": [...]} envelope ---
+    # Some clients serialize the nested array under a single wrapper key; the
+    # git-side mirror (_writes._validate_edits) unwraps it through the shared
+    # github._unwrap_item_envelope, so the server-side check accepts the same
+    # shape on the file-edit path and neither validator can drift from it.
+    envelope_edits = {
+        "item": [{"find": "x", "replace": "1"}, {"find": "y", "replace": "2"}]
+    }
+    for fn, args in (
+        (
+            rh._changes_for_repo_propose,
+            (None, None, [{"path": "a.md", "edits": envelope_edits}]),
+        ),
+        (rh._changes_for_repo_update, ([{"path": "a.md", "edits": envelope_edits}],)),
+    ):
+        parsed = fn(*args)
+        assert parsed[0]["edits"] == [
+            {"find": "x", "replace": "1"},
+            {"find": "y", "replace": "2"},
+        ], "the {'item': [...]} envelope must unwrap to the op list in order"
+    # parity: the git-side validator normalizes the same envelope to the same
+    # op list, because both now call the one _unwrap_item_envelope
+    assert github._validate_edits("a.md", envelope_edits) == [
+        {"find": "x", "replace": "1"},
+        {"find": "y", "replace": "2"},
+    ], "both validators must accept the envelope identically"
+    # An empty envelope unwraps to the empty list, which is refused by name
+    try:
+        rh._changes_for_repo_update([{"path": "a.md", "edits": {"item": []}}])
+        raise AssertionError("an empty envelope must be rejected")
+    except db.ForumError as e:
+        assert "got empty list" in str(e), f"error must name the empty list: {e}"
+    # An envelope whose value is not a list stays refused, as does a dict
+    # that carries an extra key beside `item` - never mistaken for an envelope
+    for bad, needle in (
+        ({"item": "nope"}, "keys ['item']"),
+        ({"item": [], "extra": 1}, "keys ['extra', 'item']"),
+    ):
+        try:
+            rh._changes_for_repo_update([{"path": "a.md", "edits": bad}])
+            raise AssertionError(f"dict edits {bad!r} must be rejected")
+        except db.ForumError as e:
+            assert needle in str(e), f"error must echo {needle}: {e}"
     # Sparse, non-canonical, empty and single-op dicts stay refused with keys echo
     for bad, needle in (
         (

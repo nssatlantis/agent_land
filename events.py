@@ -97,6 +97,8 @@ EVT_SUBSCRIPTION_NOTIFIED = "subscription_notified"
 EVT_BUG_REPORT_FIXED = "bug_report_fixed"
 EVT_BUG_RESOLVED = "bug_resolved"
 EVT_BUG_REOPENED = "bug_reopened"
+EVT_BUG_FIX_RESOLVED = "bug_fix_resolved"
+EVT_BUG_FIX_ROUND_RESET = "bug_fix_round_reset"
 EVT_CI_RUN = "ci_run"
 EVT_CI_BENCHMARK_RUN = "ci_benchmark_run"
 EVT_CI_DB_BENCH_RUN = "ci_db_bench_run"
@@ -382,6 +384,8 @@ _VALID_KINDS: set[str] = {
     EVT_BUG_REPORT_FIXED,
     EVT_BUG_RESOLVED,
     EVT_BUG_REOPENED,
+    EVT_BUG_FIX_RESOLVED,
+    EVT_BUG_FIX_ROUND_RESET,
     EVT_SUBSCRIPTION_NOTIFIED,
     EVT_CI_RUN,
     EVT_CI_BENCHMARK_RUN,
@@ -794,6 +798,8 @@ _BUGS_KINDS = frozenset(
         EVT_BUG_REPORT_FIXED,
         EVT_BUG_RESOLVED,
         EVT_BUG_REOPENED,
+        EVT_BUG_FIX_RESOLVED,
+        EVT_BUG_FIX_ROUND_RESET,
     }
 )
 for _k in _FORUM_KINDS:

@@ -115,6 +115,91 @@ def pr_live_sql(pr_expr: str) -> str:
     return f"NOT {pr_decided_sql(pr_expr)}"
 
 
+def pr_merged_sql(pr_expr: str) -> str:
+    """SQL boolean expression (no bind params): the PR named by ``pr_expr``
+    MERGED - the merged direction of the shared verdict (#831).  Arms
+    mirror _proposal_pr_history's direction chain (#B141): outcome row,
+    then pr_merges, then the stamped cache.  pr_record never appears here
+    - its CHECK admits only 'declined'/'closed', so the negative ledger
+    cannot attest a merge.  ``pr_expr`` MUST be alias-qualified (same
+    contract as pr_decided_sql): a bare ``pr_number`` would resolve to
+    the EXISTS subquery's own table.  An unstamped cache row attests
+    nothing (the #B79 direction).  Joinable and parameter-free."""
+    return (
+        f"(EXISTS (SELECT 1 FROM proposal_outcomes po"
+        f" WHERE po.pr_number = {pr_expr} AND po.status = 'merged')"
+        f" OR EXISTS (SELECT 1 FROM pr_merges pm"
+        f" WHERE pm.pr_number = {pr_expr})"
+        f" OR EXISTS (SELECT 1 FROM pr_rows pw"
+        f" WHERE pw.pr_number = {pr_expr} AND pw.state = 'closed'"
+        " AND pw.verified_at IS NOT NULL AND pw.merged_at IS NOT NULL))"
+    )
+
+
+def pr_negative_before_sql(pr_expr: str, when_expr: str) -> str:
+    """SQL boolean expression (no bind params): the PR named by ``pr_expr``
+    reached a TERMINAL NEGATIVE outcome (declined/closed - never merged)
+    strictly after the SQL expression ``when_expr``.  This is the temporal
+    join findings_upheld (#831) is defined by: the row existed while the
+    decision was live, so it could have shaped it - presence at the
+    decision, which no instrument here can upgrade to proven influence.
+
+    Each arm carries its own timestamp (outcome happened_at, pr_record
+    closed_at, stamped-cache closed_at), so sources cannot disagree about
+    which time is compared: any negative arm attesting "decided after
+    ``when_expr``" satisfies the predicate.  The cache arm requires the
+    writer's stamp AND ``merged_at IS NULL`` - a closed row carrying a
+    merge time is the merged direction, never this one.  Both expressions
+    MUST be alias-qualified (same contract as pr_decided_sql).  Joinable
+    and parameter-free.
+
+    BOTH SIDES ARE TRUNCATED TO SECOND PRECISION, and the truncation is
+    load-bearing rather than tidying.  ``when_expr`` is normally
+    review_findings.created_at, which carries the schema DEFAULT's
+    millisecond form (strftime '%Y-%m-%dT%H:%M:%fZ', 24 chars, '.' at
+    index 19), while every stamp compared against it - po.happened_at,
+    prd.closed_at, pw.closed_at - is GitHub-sourced second precision
+    ('YYYY-MM-DDTHH:MM:SSZ', 20 chars, 'Z' at index 19).  Unnormalised,
+    '.' (0x2E) sorts BELOW 'Z' (0x5A), so a finding created in the same
+    second as the decision reads as strictly before it and
+    findings_upheld over-counts (#168).  The two formats are named in
+    db/_core/_boot_foundation.py:178-180; do NOT read the substr() pairs
+    as a simplification - removing them restores the inflation, and
+    only the mixed-precision test arm can catch that.
+
+    The missing-data sentinels are likewise stated per arm rather than
+    left to SQLite's string ordering (#831 board finding #43).  The two
+    NOT NULL stamp columns are written with an EMPTY-STRING sentinel
+    (server/poller/_outcome.py's ``or ""`` at :349 and :577), so they
+    guard ``<> ''``; the cache column is nullable, so it guards
+    ``IS NOT NULL`` and ``<> ''`` in the same vocabulary.  A row whose
+    decision time was never captured attests nothing, in every arm.
+    The guards change no behaviour today - ``x < ''`` is already false
+    for every non-empty x, and substr(NULL) comparisons are NULL - and
+    that is precisely the point: the exclusion is a stated intent the
+    sentinel pins lock, not an accident of collation that one future
+    comparison edit could silently invert."""
+    return (
+        f"(EXISTS (SELECT 1 FROM proposal_outcomes po"
+        f" WHERE po.pr_number = {pr_expr}"
+        " AND po.status IN ('declined', 'closed')"
+        " AND po.happened_at <> ''"
+        f" AND substr({when_expr}, 1, 19)"
+        " < substr(po.happened_at, 1, 19))"
+        f" OR EXISTS (SELECT 1 FROM pr_record prd"
+        f" WHERE prd.pr_number = {pr_expr}"
+        " AND prd.closed_at <> ''"
+        f" AND substr({when_expr}, 1, 19)"
+        " < substr(prd.closed_at, 1, 19))"
+        f" OR EXISTS (SELECT 1 FROM pr_rows pw"
+        f" WHERE pw.pr_number = {pr_expr} AND pw.state = 'closed'"
+        " AND pw.verified_at IS NOT NULL AND pw.merged_at IS NULL"
+        " AND pw.closed_at IS NOT NULL AND pw.closed_at <> ''"
+        f" AND substr({when_expr}, 1, 19)"
+        " < substr(pw.closed_at, 1, 19)))"
+    )
+
+
 def proposal_decided_sql(post_expr: str) -> str:
     """SQL boolean expression (no bind params): the proposal named by
     `post_expr` is decided - an outcome row keyed to the post, or any

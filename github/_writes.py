@@ -501,6 +501,12 @@ def update_pr(
                 "GET", f"contents/{p['path']}?ref={branch}", ok_404=True
             )
             p["sha"] = pr_data.get("sha") if pr_data else None
+            # PR-branch bytes for the no-op check (None = absent or
+            # undecodable head: always treated as a change).
+            try:
+                p["_head_text"] = _decode_content_text(p["path"], pr_data)
+            except RepoError:  # domain:degrade-silently - reset no-op head decode
+                p["_head_text"] = None
 
     plan = {
         "dry_run": dry_run,
@@ -832,20 +838,24 @@ def _preview_list(planned: list[dict]) -> list[dict]:
 
 
 def _planned_changed(p: dict) -> bool:
-    """True when one resolved entry would change branch bytes. Deletes and
-    resets always count (a missing delete target already refuses
-    elsewhere); patch entries count exactly when their preview is
-    non-empty (identical texts preview as ("", False)); content entries
-    compare EOL-insensitively against the fetched PR-branch text, and
-    count when no head text was fetched (new files, and content dry_runs,
-    which stay network-free by design)."""
-    if p.get("delete") or p.get("reset"):
+    """True when one resolved entry would change branch bytes. Deletes
+    always count (a missing delete target already refuses elsewhere);
+    patch entries count exactly when their preview is non-empty
+    (identical texts preview as ("", False)); content entries compare
+    EOL-insensitively against the fetched PR-branch text; reset entries
+    compare byte-exactly - a reset PUT writes the base bytes verbatim,
+    so an EOL-only difference is a real change. Every entry counts when
+    no head text was fetched (new files, content dry_runs - which stay
+    network-free by design - and undecodable heads)."""
+    if p.get("delete"):
         return True
     if "edits" in p:
         return bool(p.get("preview_hunks"))
     head = p.get("_head_text")
     if head is None:
         return True
+    if p.get("reset"):
+        return head != p["content"]
     return _normalize_eol(head, "\n") != _normalize_eol(p["content"], "\n")
 
 
@@ -954,11 +964,28 @@ def _check_occurrence(path: str, i: int, occurrence) -> None:
         )
 
 
+def _unwrap_item_envelope(edits):
+    """Unwrap the {"item": [...]} envelope some clients ship for a nested
+    array (bug #B146): a dict whose only key is 'item' and whose value is a
+    list unwraps to that list; every other value returns unchanged. The one
+    definition this module and server.repo_helpers both call, so the two edit
+    surfaces can never disagree on what the envelope is."""
+    if (
+        isinstance(edits, dict)
+        and list(edits) == ["item"]
+        and isinstance(edits["item"], list)
+    ):
+        return edits["item"]
+    return edits
+
+
 def _validate_edits(path: str, edits) -> list[dict]:
     """Shape-validate a patch mode `edits` list. Mirrors server.py's normalizer
     so github.py can be used standalone: each op is {find: non-empty str,
     replace: str, occurrence: optional int >= 1 (not bool)}, at most
-    _MAX_EDITS_PER_FILE per file."""
+    _MAX_EDITS_PER_FILE per file. The {"item": [...]} envelope unwraps first,
+    through the same github._unwrap_item_envelope the server-side twin calls."""
+    edits = _unwrap_item_envelope(edits)
     if not isinstance(edits, list) or not edits:
         raise RepoError(
             f"edits for {path!r} must be a non-empty list of "

@@ -19,6 +19,7 @@ from viewer._cache import _cached
 from viewer._feed_helpers import _crumb, _with_rail
 from viewer._guilds import guild_badge_for as _guild_badge_for
 from viewer._layout import POLL_MS, _page, _poll_config
+from viewer._pr_helpers import _shared_branch_chip, _shared_branch_flags
 from viewer._render_helpers import (
     _proposal_lineage_badge,
     _proposal_marker,
@@ -80,8 +81,27 @@ def _guild_badge_html(p: dict, guild_map: dict | None) -> str:
         return ""
 
 
+def _docket_shared_flags(rows: list[dict]) -> dict[int, bool] | None:
+    """One batched shared-branch read for a WHOLE docket page.
+
+    _docket_card renders once per row, so reading inside it costs one
+    connection plus one SELECT per card - exactly the per-row cost that
+    db.is_public_branch_many exists to remove. Collect the page's PR
+    numbers here and read once. None propagates deliberately: a failed read
+    must reach the cells as "unreadable", never as a closed branch.
+    """
+    nums: list[int] = []
+    for p in rows:
+        for pr in p.get("prs") or []:
+            nums.append(pr["pr_number"])
+    return _shared_branch_flags(nums)
+
+
 def _docket_card(
-    p: dict, tallies: dict | None = None, guild_map: dict | None = None
+    p: dict,
+    tallies: dict | None = None,
+    guild_map: dict | None = None,
+    shared_flags: dict[int, bool] | None = None,
 ) -> str:
     """One proposal card on the docket: the kind badge, the verdict chip,
     the locked tag, the title with its lineage badge, the meta line
@@ -89,7 +109,15 @@ def _docket_card(
     pull-request trail, and the vote bar or tally. Escaped everywhere -
     the viewer is read-only. PR vote badges prefer the caller's tallies,
     then the row's embedded pr["votes"] (fetched with the docket), then
-    zeros - no extra query."""
+    zeros - no extra query.
+
+    `shared_flags` is the pre-batched shared-branch read for the whole
+    page (see _docket_shared_flags). It is passed in rather than read here
+    because this function runs once per card: reading per card cost one
+    connection and one SELECT per row on a 20-row docket, which is the
+    per-row cost the batch reader exists to remove. None means "not
+    supplied" and falls back to reading this card's own PRs, so a direct
+    caller still renders correctly."""
     verdict, color = _cached_verdict(p)
     kind = (
         '<span class="kind-badge kind-smallfix">small fix</span>'
@@ -260,13 +288,20 @@ def _docket_card(
     )
     prs_raw = p.get("prs") or []
     pr_trail = ""
+    # One batched read, shared by BOTH PR loops below (the evidence chips
+    # and the main trail) so the same card can never show two different
+    # answers for the same PR. Normally handed in pre-batched for the whole
+    # page; the local read is the standalone-call fallback.
+    if shared_flags is None:
+        shared_flags = _shared_branch_flags([pr["pr_number"] for pr in prs_raw])
     # Evidence chips per PR (237:4387) - PR #423 pattern, display-only
     if prs_raw and len(prs_raw) > 1:
         try:
             ev_bits = []
             for pr in prs_raw:
                 ev_bits.append(
-                    f'<span class="pr-chip pr-evidence" title="evidence PR #{pr["pr_number"]}">#{pr["pr_number"]} \u00b7 {esc(pr.get("status") or "")}</span>'
+                    f'<span class="pr-chip pr-evidence" title="evidence PR #{pr["pr_number"]}">#{pr["pr_number"]} · {esc(pr.get("status") or "")}</span>'
+                    + _shared_branch_chip(pr["pr_number"], shared_flags)
                 )
             pr_trail += (
                 '<div class="pr-trail" style="margin-top:4px"><span class="pr-label">Evidence:</span> '
@@ -301,7 +336,9 @@ def _docket_card(
                 f'<a href="{repo_url}/pull/{pr["pr_number"]}" style="color:var(--accent)">'
                 f"#{pr['pr_number']}</a>"
                 f'<span class="pr-chip {pr_cls}">{esc(pr["status"])}</span>'
-                f"{vote_badge}"
+                f"{vote_badge}" + _shared_branch_chip(pr["pr_number"], shared_flags)
+                # Rides inside `bits`, so it survives the >5 collapse below
+                # attached to the same PR as its status chip.
             )
         if len(bits) > 5:
             # collapse huge trails (e.g. 237:170) — 5 latest + counts
@@ -618,7 +655,10 @@ def _docket_rows(view: str, sort: str, page: int = 1) -> str:
     if not rows:
         return f'<p style="color:var(--muted)">{_DOCKET_EMPTIES.get(view, _DOCKET_EMPTIES["all"])}</p>'
     guild_map = _guild_map_for([p.get("id") for p in rows])
-    return "".join(_docket_card(p, guild_map=guild_map) for p in rows)
+    shared = _docket_shared_flags(rows)
+    return "".join(
+        _docket_card(p, guild_map=guild_map, shared_flags=shared) for p in rows
+    )
 
 
 _DOCKET_TITLES = {
@@ -808,7 +848,10 @@ def proposals_page(request: Request) -> HTMLResponse:
         )
     elif page_rows:
         guild_map = _guild_map_for([p.get("id") for p in page_rows])
-        docket_html = "".join(_docket_card(p, guild_map=guild_map) for p in page_rows)
+        shared = _docket_shared_flags(page_rows)
+        docket_html = "".join(
+            _docket_card(p, guild_map=guild_map, shared_flags=shared) for p in page_rows
+        )
     else:
         docket_html = f'<p style="color:var(--muted)">{_DOCKET_EMPTIES.get(view, _DOCKET_EMPTIES["all"])}</p>'
     body = (

@@ -125,15 +125,27 @@ def _notice_html(request) -> str:
 
 
 def _switch_banner() -> str:
+    # Two directions, two switches (proposal #849). The panel exists to
+    # say WHY nothing is happening, and "the master is on, so why did the
+    # re-review poke never arrive" is unanswerable unless the second
+    # switch's state is on the page - the failure mode a ratchet nobody
+    # can query reproduces exactly.
+    directions = (
+        f"re-review wake "
+        f"<code>AGENT_WAKE_REREVIEW_ENABLED</code> is "
+        f"<b>{'on' if int(config.AGENT_WAKE_REREVIEW_ENABLED) else 'OFF'}</b>"
+    )
     if int(config.AGENT_WAKE_ENABLED):
         return (
             '<p style="color:var(--muted)">Master switch '
             "<code>AGENT_WAKE_ENABLED</code> is <b>on</b>: the sweep runs every "
-            f"{esc(str(int(config.AGENT_WAKE_POLL_SECONDS)))}s.</p>"
+            f"{esc(str(int(config.AGENT_WAKE_POLL_SECONDS)))}s. "
+            f"Directions - {directions}.</p>"
         )
     return (
         '<p style="color:#dc2626"><b>The poller is OFF.</b> '
-        "<code>AGENT_WAKE_ENABLED</code> is 0, so the sweep never ticks. Set it "
+        "<code>AGENT_WAKE_ENABLED</code> is 0, so the sweep never ticks and "
+        "neither direction runs. Set it "
         "to 1 in the server environment and restart. Registering a row below "
         "arms nothing on its own.</p>"
     )

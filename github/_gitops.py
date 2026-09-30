@@ -3,7 +3,8 @@
 Everything that shells out to the git binary lives here: the workspace
 pool (warm clones under AGENTLAND_DATA_DIR with a normalize-on-acquire
 contract), the conflict-marker parser, detect_merge_conflicts /
-apply_merge_resolutions / rebase_pr_onto_main, and the push-auth
+apply_merge_resolutions / merge_base_clean / rebase_pr_onto_main, and the
+push-auth
 contextmanager that scopes the PAT to the push itself.
 """
 
@@ -922,4 +923,103 @@ def apply_merge_resolutions(
             "message": (
                 f"Merged {base} into {head} with {len(provided)} file(s) resolved."
             ),
+        }
+
+
+def merge_base_clean(
+    number: int,
+    citizen: str,
+    *,
+    _pr: dict | None = None,
+) -> dict:
+    """Land the base branch's changes on a PR head when the merge is clean.
+
+    The missing write half of the merge family: ``detect_merge_conflicts``
+    proves the merge applies and then throws the proof away, and
+    ``apply_merge_resolutions`` refuses to run with nothing to resolve, so
+    a PR whose head is merely behind base has no way home (#1480). This
+    runs the same fetch / checkout / merge as detect, then — when there
+    are no conflicts — commits the merge under *citizen*'s identity and
+    pushes it, exactly as ``apply_merge_resolutions`` does on the
+    conflict path.
+
+    Returns ``{"status": "merged", "commit_sha": ...}`` when a merge
+    commit was created and pushed, ``{"status": "up_to_date", ...}``
+    when the head already contains base (no commit, no push), and raises
+    ``RepoError`` naming ``repo_resolve_conflicts`` when the merge
+    conflicts — the structured conflict data lives there.
+    """
+    _core._ensure_token()
+    pr = _pr or _core._request("GET", f"pulls/{number}")
+    if pr.get("state") != "open":
+        raise RepoError(f"pull request #{number} is not open.")
+    head = pr["head"]["ref"]
+    base = pr["base"]["ref"]
+    with _workspace() as repo_dir:
+        _git(repo_dir, "fetch", "origin", base, head)
+        _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
+        # Already-current fast path (same seam as rebase_pr_onto_main):
+        # base is an ancestor of the head, so there is no merge to make.
+        # Checked BEFORE merging so a no-op never stages a MERGE_HEAD, and
+        # so the caller can tell "done" from "nothing to do".
+        current = _git(
+            repo_dir,
+            "merge-base",
+            "--is-ancestor",
+            f"origin/{base}",
+            "HEAD",
+            check=False,
+        )
+        if current.returncode == 0:
+            return {
+                "status": "up_to_date",
+                "pr_number": number,
+                "head": head,
+                "base": base,
+                "message": f"{head} already contains {base} — nothing to merge.",
+            }
+        result = _git(
+            repo_dir,
+            "merge",
+            "--no-commit",
+            "--no-ff",
+            f"origin/{base}",
+            check=False,
+        )
+        conflicted = _detect_conflict_files(repo_dir)
+        if conflicted:
+            _abort_merge(repo_dir)
+            raise RepoError(
+                f"merge of {base} into {head} conflicts on "
+                f"{', '.join(sorted(conflicted))} — resolve it with "
+                "repo_resolve_conflicts, which returns the structured "
+                "conflict data, then merge again."
+            )
+        if result.returncode != 0:
+            raise RepoError(
+                _redact_token(f"merge failed (not a conflict): {result.stderr.strip()}")
+            )
+        commit_msg = f"Merge {base} into {head}\n\nCitizen: {citizen}"
+        _git(
+            repo_dir,
+            "-c",
+            f"user.name={citizen}",
+            "-c",
+            f"user.email={citizen}@agentland.dev",
+            "commit",
+            "-m",
+            commit_msg,
+        )
+        with _push_auth(repo_dir):
+            _git(repo_dir, "push", "origin", _push_ref(head))
+        sha_result = _git(repo_dir, "rev-parse", "HEAD")
+        commit_sha = sha_result.stdout.strip()
+        _core._invalidate_pr(number)
+        return {
+            "status": "merged",
+            "pr_number": number,
+            "head": head,
+            "base": base,
+            "commit_sha": commit_sha,
+            "message": f"Merged {base} into {head} (clean merge).",
         }

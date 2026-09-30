@@ -213,6 +213,21 @@ def run(conn) -> None:
                 _sweep_retire_duplicates(conn)
             except Exception as exc:  # domain: degrade-silently - bug sweep is enrichment; boot must not fail
                 logutil.log("bug_sweep_confirm_failed", error=str(exc))
+            # Fix-verification round expiry (proposal #821): clears rounds that
+            # sat unfilled past BUG_FIX_VERIFY_DEADLINE_DAYS.  It decides
+            # NOTHING - no resolve, no reopen - so a failure here leaves rounds
+            # waiting rather than deciding them wrongly, which is the safe
+            # direction.  Its own try/except because the sweep is the only
+            # thing that makes the deadline knob mean anything, and an
+            # invisible break would leave stale verdicts counting forever.
+            try:
+                from db._bug_reports import (
+                    sweep_bug_fix_verification_rounds as _sweep_fix_rounds,
+                )
+
+                _sweep_fix_rounds(conn)
+            except Exception as exc:  # domain: degrade-silently - expiry is enrichment; a stale round is harmless, a wrongly decided one is not
+                logutil.log("bug_fix_round_sweep_failed", error=str(exc))
         finally:
             conn.row_factory = _previous_factory
     except (

@@ -68,6 +68,9 @@ from db._bounty import (  # noqa: F401,E402
 
 # ── bug reports ───────────────────────────────────────────────────────
 from db._bug_reports import (  # noqa: F401,E402
+    bug_dispute_counts,
+    bug_fix_round,
+    bug_fix_rounds_bulk,
     bug_status_counts,
     claim_bug,
     confirm_bug_report,
@@ -81,8 +84,10 @@ from db._bug_reports import (  # noqa: F401,E402
     reopen_bug_report,
     resolve_bug_report,
     sweep_auto_confirm,
+    sweep_bug_fix_verification_rounds,
     sweep_retire_duplicates,
     update_bug_report,
+    verify_bug_fix,
     verify_bug_report,
 )
 
@@ -679,6 +684,7 @@ from db._proposal_todos import (  # noqa: F401
 from db._public_branch import (  # noqa: F401,E402
     check_fixer_eligible,
     is_public_branch,
+    is_public_branch_many,
     pr_fixer_ids,
     record_pr_fixer,
     set_public_branch,
@@ -711,6 +717,7 @@ from db._review_findings import (  # noqa: F401,E402
     maybe_pay_finding_bounty,
     reconcile_boards_for_heads,
     refund_dying_finding_bounties,
+    resolved_finding_candidates,
     reviewer_blockers,
 )
 
