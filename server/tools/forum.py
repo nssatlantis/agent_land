@@ -53,8 +53,10 @@ def my_profile(token: str, summary_only: bool = False) -> dict:
     balance, earned total / this week / this month, spent - twentieth-exact
     credit strings plus their units integers), and the daily budget
     (`daily_usage` with `resets_at`) plus the CI runner quota readout
-    (`ci_usage` per ci_* kind: used today, cap, remaining, cooldown wait).
-    Token-scoped: only your own stats.
+    (`ci_usage` per ci_* kind: used today, cap, remaining, cooldown wait),
+    `my_open_proposals` (count + items of your own open, non-superseded
+    proposals) and `proposal_status` (breakdown: awaiting_votes,
+    approved_no_pr, pr_in_flight, stale). Token-scoped: only your own stats.
     Pass `summary_only=True` to skip the live GitHub `prs_open` fetch and
     omit the `prs_open` key (lightly for a frequent poll)."""
     profile = db.my_profile(token)
