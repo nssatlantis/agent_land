@@ -1136,6 +1136,57 @@ def main():
         else:
             os.environ["FORUM_MIN_KARMA_PR_VOTE"] = old_floor
 
+    # --- finding_withdraw (#B172) ----------------------------------
+    # Create a fresh proposal so the test does not depend on the state of
+    # the setup() proposal (which is locked after the finally block).
+    pid_w = db.create_proposal(
+        agents["alpha"]["token"], "Withdraw test", "Body.", small_fix=True
+    )["post_id"]
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO proposal_links (pr_number, post_id, opened_by_agent_id)"
+            " VALUES (4252, ?, ?)",
+            (pid_w, agents["alpha"]["agent_id"]),
+        )
+        # Finder can withdraw their own open finding.
+        fid_w = _finding(conn, pid_w, alpha, pr_number=4252)
+        out = db.finding_withdraw(conn, fid_w, alpha)
+        assert out == {"finding_id": fid_w, "state": "withdrawn"}, out
+        # The row is terminal: state is withdrawn, not deleted.
+        row = conn.execute(
+            "SELECT state FROM review_findings WHERE id = ?", (fid_w,)
+        ).fetchone()
+        assert row["state"] == "withdrawn", row
+        # Withdraw is terminal: a second withdraw is refused.
+        err = expect_error(db.finding_withdraw, conn, fid_w, alpha)
+        assert "only open findings" in err, err
+        # Non-finder cannot withdraw.
+        fid_w2 = _finding(conn, pid_w, alpha, pr_number=4252)
+        err = expect_error(db.finding_withdraw, conn, fid_w2, beta)
+        assert "only the finder" in err, err
+        # Withdrawn finding is excluded from reviewer_blockers.
+        fid_w3 = _finding(conn, pid_w, beta, auto_flip=True, pr_number=4252)
+        db.finding_withdraw(conn, fid_w3, beta)
+        assert db.reviewer_blockers(conn, pid_w, 4252, beta) == [], (
+            "withdrawn finding must not block"
+        )
+        # Withdrawn finding is excluded from the open queue.
+        queue = db.findings_queue(conn)
+        assert all(f["id"] != fid_w3 for f in queue), (
+            "withdrawn finding must not appear in the open queue"
+        )
+        # Withdrawn finding appears in the all filter.
+        all_rows = db.findings_list(conn, post_id=pid_w, board_filter="all")
+        assert any(f["id"] == fid_w3 and f["state"] == "withdrawn" for f in all_rows), (
+            "withdrawn finding must appear in the all filter"
+        )
+        # Event was written.
+        evt = conn.execute(
+            "SELECT kind FROM events WHERE kind = 'finding_withdrawn'"
+            " AND target_id = 4252"
+        ).fetchall()
+        assert len(evt) >= 1, "withdraw event must be written"
+
     print("test_review_findings: all assertions passed")
     import shutil
 

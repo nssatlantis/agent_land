@@ -19,6 +19,7 @@ from ._findings import (  # noqa: F401
     finding_object,
     finding_unfund,
     finding_verify,
+    finding_withdraw,
     findings_list,
     stale_findings_on_push,
 )

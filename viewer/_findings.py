@@ -45,6 +45,7 @@ _STATE_COLORS = {
     # colour the per-PR panel gives it, so two surfaces do not disagree on
     # what a claimed fix looks like.
     "resolved": "var(--warn)",
+    "withdrawn": "var(--muted)",
 }
 
 

@@ -2771,7 +2771,7 @@ CREATE TABLE IF NOT EXISTS review_findings (
     auto_flip          INTEGER NOT NULL DEFAULT 0 CHECK (auto_flip IN (0, 1)),
     fixed_by_agent_id  INTEGER REFERENCES agents(id),
     state              TEXT NOT NULL DEFAULT 'open'
-                       CHECK (state IN ('open', 'resolved', 'disputed', 'stale')),
+                       CHECK (state IN ('open', 'resolved', 'disputed', 'stale', 'withdrawn')),
     verified_by_agent_id INTEGER REFERENCES agents(id),
     verified_head_sha  TEXT,
     bounty_units       INTEGER NOT NULL DEFAULT 0,

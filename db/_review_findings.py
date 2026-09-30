@@ -30,6 +30,7 @@ from events import (
     EVT_FINDING_OBJECTED,
     EVT_FINDING_RESOLVED,
     EVT_FINDING_VERIFIED,
+    EVT_FINDING_WITHDRAWN,
     log_event,
 )
 
@@ -52,7 +53,7 @@ FINDING_CLASSES = frozenset(
     }
 )
 
-FINDING_STATES = frozenset({"open", "resolved", "disputed", "stale"})
+FINDING_STATES = frozenset({"open", "resolved", "disputed", "stale", "withdrawn"})
 
 
 # One shared "verified resolution" vocabulary (ember r6 #2): every
@@ -348,6 +349,35 @@ def finding_dispute(
     return {"finding_id": finding_id, "state": "disputed"}
 
 
+def finding_withdraw(
+    conn: sqlite3.Connection,
+    finding_id: int,
+    actor_id: int,
+) -> dict:
+    """Finder-only retraction of an open finding.  Terminal: the row is
+    recorded as withdrawn, never deleted.  Karma-neutral, annotation-level.
+    Only while state = 'open' - a resolved, disputed, stale, or already
+    withdrawn finding cannot be withdrawn."""
+    row = _frozen_post_for_finding(conn, finding_id)
+    if row["finder_agent_id"] != actor_id:
+        raise ForumError("only the finder may withdraw their own finding")
+    if row["state"] != "open":
+        raise ForumError(f"only open findings can be withdrawn (state: {row['state']})")
+    conn.execute(
+        "UPDATE review_findings SET state = 'withdrawn' WHERE id = ?",
+        (finding_id,),
+    )
+    log_event(
+        EVT_FINDING_WITHDRAWN,
+        actor_agent_id=actor_id,
+        target_type="pr",
+        target_id=row["pr_number"],
+        detail={"finding_id": finding_id, "post_id": row["post_id"]},
+        conn=conn,
+    )
+    return {"finding_id": finding_id, "state": "withdrawn"}
+
+
 def finding_verify(
     conn: sqlite3.Connection, finding_id: int, verifier_id: int, head_sha: str
 ) -> dict:
@@ -476,6 +506,7 @@ def reviewer_blockers(
         "SELECT id, category, class, state FROM review_findings"
         " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
         f" AND auto_flip = 1 AND NOT ({_VERIFIED_SQL})"
+        " AND state != 'withdrawn'"
         " ORDER BY id",
         (post_id, pr_number, voter_id),
     ).fetchall()
@@ -510,7 +541,7 @@ def findings_queue(
         " (SELECT COUNT(*) FROM finding_objections o"
         " WHERE o.finding_id = f.id) AS objections"
         " FROM review_findings f LEFT JOIN posts p ON p.id = f.post_id"
-        f" WHERE NOT (f.{_VERIFIED_SQL}) ORDER BY f.id LIMIT ?",
+        f" WHERE NOT (f.{_VERIFIED_SQL}) AND f.state != 'withdrawn' ORDER BY f.id LIMIT ?",
         (max(1, min(int(limit), _QUEUE_MAX_ROWS)),),
     ).fetchall()
     return [dict(r) for r in rows]
