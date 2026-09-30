@@ -278,6 +278,42 @@ def main():
             == scoped
         ), "a refused re-verify must not disturb the recorded note"
 
+        # TWO distinct verifiers, TWO notes, and BOTH must survive.
+        # review_findings.verified_note is a single seat holding the
+        # LATEST attestation, so the second attestation overwrites it -
+        # and a funded finding needs two DISTINCT third-party verifiers
+        # before it pays. The witness log is the only place the first
+        # witness's qualification can live, so the log has to carry it.
+        # Compared as an ordered list of the log's own notes rather than
+        # keyed by agent id, so the assertion does not depend on how the
+        # fixture represents an agent.
+        n3 = db.finding_add(
+            conn, pid, 4271, beta, "bug", "other", "c", "f", ["a.py"], False
+        )
+        db.finding_mark_resolved(conn, n3, alpha, "fixed")
+        db.finding_verify(conn, n3, gamma, _SHA_A, "gamma checked the guard only")
+        db.finding_verify(
+            conn, n3, delta, _SHA_A, "delta checked the derivation too"
+        )
+        archived = [
+            r[0]
+            for r in conn.execute(
+                "SELECT verified_note FROM finding_verifications"
+                " WHERE finding_id = ? ORDER BY id",
+                (n3,),
+            ).fetchall()
+        ]
+        assert archived == [
+            "gamma checked the guard only",
+            "delta checked the derivation too",
+        ], f"both witnesses' notes must be archived in the log: {archived}"
+        assert (
+            conn.execute(
+                "SELECT verified_note FROM review_findings WHERE id = ?", (n3,)
+            ).fetchone()[0]
+            == "delta checked the derivation too"
+        ), "the seat still holds the LATEST attestation, as before"
+
         # --- corroboration is signal only ---------------------------------
         n = db.finding_corroborate(conn, imp, gamma)
         assert n == 1
