@@ -95,9 +95,11 @@ def _top_critical_bug(conn: sqlite3.Connection) -> dict | None:
         # "No LIVE reservation and no recorded fix", not one state name.
         # `released` (a claim still stored, past its window) is precisely
         # the row that needs a fixer, and a stale claim column must not
-        # suppress it. `in_flight` cannot occur here - a live claim is
-        # already suppressed above - and is named anyway, so a state added
-        # to the enum later cannot start routing a row already in flight.
+        # suppress it. `in_flight` DOES occur here: since the WHERE was
+        # dropped it is reachable whenever a live claim carries a recorded
+        # fix, and it is suppressed BY NAME below. Naming it is therefore not
+        # decoration - it is what stops a state added to the enum later from
+        # starting to route a row already in flight.
         if state not in ("claimed", "in_flight", "fix_pr"):
             return {
                 "id": row["id"],
