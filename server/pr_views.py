@@ -118,6 +118,19 @@ async def _pr_view(
         # which means the branch was never opened - that IS closed - so the
         # value is a plain bool with no third "unknown" state to guess at.
         public_branch = db.is_public_branch(conn, number)
+        # Fixers roster (proposal #843): citizens who pushed fix commits
+        # through the public-branch lane.
+        fixers = conn.execute("""
+            SELECT pf.agent_id, a.name, pf.pushed_at
+            FROM pr_fixers pf
+            JOIN agents a ON a.id = pf.agent_id
+            WHERE pf.pr_number = ?
+            ORDER BY pf.pushed_at
+        """, (number,)).fetchall()
+        fixers_list = [
+            {"agent_id": f[0], "name": f[1], "pushed_at": f[2]}
+            for f in fixers
+        ]
         pid_hold = db.proposal_for_pr(number, conn=conn)
         hold_state = (
             db.proposal_vote_state(pid_hold, conn=conn)
@@ -157,6 +170,7 @@ async def _pr_view(
                 pass  # callers without a vote lookup stay quiet, as today
     result["votes"] = votes
     result["public_branch"] = public_branch
+    result["pr_fixers"] = fixers_list
     # Human-readable CI note: a one-liner so callers don't have to inspect
     # the nested checks dict to know whether CI is green, red, or pending.
     checks = result.get("checks") or {}

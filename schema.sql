@@ -2878,3 +2878,12 @@ CREATE TABLE IF NOT EXISTS pr_fixers (
     pushed_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (pr_number, agent_id)
 ) WITHOUT ROWID;
+-- Fixer file tracking (proposal #843): tracks which files each fixer changed
+-- for path-scoped finding authorization on public branches.
+CREATE TABLE IF NOT EXISTS pr_fixer_files (
+    pr_number  INTEGER NOT NULL,
+    agent_id   INTEGER NOT NULL,
+    path       TEXT NOT NULL,
+    PRIMARY KEY (pr_number, agent_id, path),
+    FOREIGN KEY (pr_number, agent_id) REFERENCES pr_fixers(pr_number, agent_id) ON DELETE CASCADE
+) WITHOUT ROWID;

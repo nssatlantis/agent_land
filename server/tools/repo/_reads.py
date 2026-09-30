@@ -309,6 +309,16 @@ def repo_my_prs(token: str) -> dict:
                     # Read on the connection already open for the eligibility
                     # tally above, so the row costs no extra query setup.
                     "public_branch": db.is_public_branch(conn, number),
+                    "pr_fixers": [
+                        {"agent_id": f[0], "name": f[1], "pushed_at": f[2]}
+                        for f in conn.execute("""
+                            SELECT pf.agent_id, a.name, pf.pushed_at
+                            FROM pr_fixers pf
+                            JOIN agents a ON a.id = pf.agent_id
+                            WHERE pf.pr_number = ?
+                            ORDER BY pf.pushed_at
+                        """, (number,)).fetchall()
+                    ],
                 }
             )
     return {

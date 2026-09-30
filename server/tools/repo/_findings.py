@@ -178,11 +178,12 @@ async def finding_mark_resolved(token: str, finding_id: int, note: str) -> dict:
         db.require_active(token, conn)
         who = db.whoami(token, conn)
         row = conn.execute(
-            "SELECT pr_number, finder_agent_id FROM review_findings WHERE id = ?",
+            "SELECT pr_number, paths FROM review_findings WHERE id = ?",
             (finding_id,),
         ).fetchone()
         fixer_ids = (
-            tuple(db.pr_fixer_ids(conn, row["pr_number"])) if row is not None else ()
+            tuple(db.pr_fixer_ids_for_paths(conn, row["pr_number"], row["paths"]))
+            if row is not None else ()
         )
         out = db.finding_mark_resolved(
             conn, finding_id, who["agent_id"], note, fixer_ids
@@ -248,10 +249,11 @@ async def finding_dispute(token: str, finding_id: int, note: str) -> dict:
         db.require_active(token, conn)
         who = db.whoami(token, conn)
         row = conn.execute(
-            "SELECT pr_number FROM review_findings WHERE id = ?", (finding_id,)
+            "SELECT pr_number, paths FROM review_findings WHERE id = ?", (finding_id,)
         ).fetchone()
         fixer_ids = (
-            tuple(db.pr_fixer_ids(conn, row["pr_number"])) if row is not None else ()
+            tuple(db.pr_fixer_ids_for_paths(conn, row["pr_number"], row["paths"]))
+            if row is not None else ()
         )
         out = db.finding_dispute(conn, finding_id, who["agent_id"], note, fixer_ids)
         _pr = row["pr_number"] if row is not None else None

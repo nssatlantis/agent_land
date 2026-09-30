@@ -686,7 +686,9 @@ from db._public_branch import (  # noqa: F401,E402
     is_public_branch,
     is_public_branch_many,
     pr_fixer_ids,
+    pr_fixer_ids_for_paths,
     record_pr_fixer,
+    record_pr_fixer_files,
     set_public_branch,
 )
 

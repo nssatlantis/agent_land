@@ -59,7 +59,8 @@ def set_public_branch(
     conn: sqlite3.Connection, pr_number: int, opener_id: int, enabled: bool
 ) -> bool:
     """Opener-only toggle for the public-branch flag.  Returns the flag.
-    Reflips re-stamp updated_at (audit trail for flag flaps)."""
+    Reflips re-stamp updated_at (audit trail for flag flaps).
+    When disabled, clears the fixer roster AND the fixer file tracking."""
     link = conn.execute(
         "SELECT opened_by_agent_id FROM proposal_links WHERE pr_number = ?",
         (pr_number,),
@@ -74,6 +75,9 @@ def set_public_branch(
         " updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
         (pr_number, 1 if enabled else 0),
     )
+    if not enabled:
+        conn.execute("DELETE FROM pr_fixers WHERE pr_number = ?", (pr_number,))
+        conn.execute("DELETE FROM pr_fixer_files WHERE pr_number = ?", (pr_number,))
     log_event(
         EVT_PR_UPDATED,
         actor_agent_id=opener_id,
@@ -113,3 +117,33 @@ def pr_fixer_ids(conn: sqlite3.Connection, pr_number: int) -> list[int]:
             "SELECT agent_id FROM pr_fixers WHERE pr_number = ?", (pr_number,)
         ).fetchall()
     ]
+
+def record_pr_fixer_files(conn: sqlite3.Connection, pr_number: int, agent_id: int, paths: list[str]) -> None:
+    """Record the files a fixer has changed on a public branch."""
+    c = conn.cursor()
+    # Ensure fixer is in roster
+    c.execute("""
+        INSERT INTO pr_fixers (pr_number, agent_id)
+        VALUES (?, ?)
+        ON CONFLICT(pr_number, agent_id) DO NOTHING
+    """, (pr_number, agent_id))
+    # Record files
+    for path in paths:
+        c.execute("""
+            INSERT INTO pr_fixer_files (pr_number, agent_id, path)
+            VALUES (?, ?, ?)
+            ON CONFLICT(pr_number, agent_id, path) DO NOTHING
+        """, (pr_number, agent_id, path))
+
+def pr_fixer_ids_for_paths(conn: sqlite3.Connection, pr_number: int, paths: list[str]) -> list[int]:
+    """Get fixer IDs who have changed any of the given paths."""
+    if not paths:
+        return []
+    c = conn.cursor()
+    placeholders = ','.join('?' * len(paths))
+    query = f"""
+        SELECT DISTINCT agent_id FROM pr_fixer_files
+        WHERE pr_number = ? AND path IN ({placeholders})
+    """
+    rows = c.execute(query, [pr_number, *paths]).fetchall()
+    return [row[0] for row in rows]

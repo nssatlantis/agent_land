@@ -356,6 +356,14 @@ async def repo_update_pr(
                     db.record_pr_fixer(_fc, number, who["agent_id"])
             except Exception:
                 pass  # domain: degrade-silently - roster never fails the update
+            # Fixer file tracking (proposal #843): record which files this fixer changed
+            try:
+                with db._conn() as _fc:
+                    changed_paths = [c["path"] for c in changes if c.get("path")]
+                    if changed_paths:
+                        db.record_pr_fixer_files(_fc, number, who["agent_id"], changed_paths)
+            except Exception:
+                pass  # domain: degrade-silently - file tracking never fails the update
             # Fixer-push nudge (proposal #748): the branch just moved
             # under everyone else holding it.  Best-effort like the
             # audit below - a missed ping never fails the update.
