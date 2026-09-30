@@ -336,12 +336,18 @@ def finding_mark_resolved(
         raise ForumError("only the PR opener or an authorized fixer resolves")
     if row["state"] == "resolved" and row["verified_by_agent_id"] is not None:
         raise ForumError("that finding is already verified - file a new one")
-    if remedy_pr is not None and int(remedy_pr) != int(row["pr_number"]):
-        if not _pr_exists(conn, int(remedy_pr)):
-            raise ForumError(
-                f"remedy_pr #{int(remedy_pr)} is not a pull request"
-                " this forum knows - an attestation cannot anchor to it"
-            )
+    # The docstring's contract, made TRUE: omitted OR equal to the board
+    # pr stores NULL. Normalising here keeps the default path byte-for-byte
+    # today's behaviour AND the column single-valued - a board-pr value
+    # would read as "declared" to every consumer, which is exactly the
+    # conflation this column exists to end.
+    if remedy_pr is not None and int(remedy_pr) == int(row["pr_number"]):
+        remedy_pr = None
+    if remedy_pr is not None and not _pr_exists(conn, int(remedy_pr)):
+        raise ForumError(
+            f"remedy_pr #{int(remedy_pr)} is not a pull request"
+            " this forum knows - an attestation cannot anchor to it"
+        )
     _note(conn, finding_id, actor_id, note)
     conn.execute(
         "UPDATE review_findings SET state = 'resolved',"
