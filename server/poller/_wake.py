@@ -707,6 +707,17 @@ def _mark_seen(
 
 # --- free gates (1-7) -----------------------------------------------------
 
+# Free-gate reasons that DEFER instead of rejecting: the condition expires
+# on its own clock, so the finding must stay a candidate (`notified_at`
+# NULL) and be retried on a later tick. Discarding one stamps a delivery
+# receipt for a wake that never happened, and `_delivered` then excludes
+# the finding forever (#B171). Named rather than positional on purpose:
+# the deferral set used to be defined by WHERE a gate is decided (the
+# sweep's comment listed only the `_wake_one` deferrals), so any gate
+# added to `gate_free` would have rejoined the terminal set with no code
+# change at all.
+_FREE_GATE_DEFERRABLE = frozenset({"debounce"})
+
 
 def gate_free(
     candidate: dict,
@@ -1461,11 +1472,14 @@ def wake_sweep() -> list[dict]:
                 if reason is not None:
                     # A rejection is TERMINAL for this finding (it is not
                     # wake-worthy, or it is no longer blocking), so stamp
-                    # it delivered-or-not and move on. Only the gates that
-                    # DEFER (busy / quiet hours / budget / no-session /
-                    # send-failed) must stay retryable, and those are all
-                    # decided inside _wake_one below.
-                    _discard(conn, finding_id)
+                    # it delivered-or-not and move on. The gates that DEFER
+                    # must stay retryable: those decided inside _wake_one
+                    # below (they clear notified_at on a non-sent result),
+                    # and the free-gate deferrals in _FREE_GATE_DEFERRABLE
+                    # above - a debounce expires with the window, so its
+                    # row keeps notified_at NULL and re-enters this scan.
+                    if reason not in _FREE_GATE_DEFERRABLE:
+                        _discard(conn, finding_id)
                     outcomes.append(
                         {
                             "agent_id": agent_id,
