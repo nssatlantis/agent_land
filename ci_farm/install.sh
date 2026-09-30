@@ -92,6 +92,20 @@ if [ -d "$LEGACY_DATA_DIR" ] && [ "$LEGACY_DATA_DIR" != "$DATA_DIR" ]; then
 fi
 mkdir -p "$DATA_DIR"
 
+# Stamp the requirements digest through the runner's own function, AFTER
+# pip succeeded and AFTER the data dir exists. Writing it here rather than
+# reimplementing the digest in shell is the point: the stamp and the check
+# that reads it (runner.py::_deps_fresh) stay one implementation in one
+# language, so they cannot drift into disagreeing - and a disagreement
+# would read as 'stale venv' on a venv that is current, refusing every
+# dispatch on a healthy node. `set -e` makes a failure here abort the
+# install rather than leave a node whose guard will refuse it forever.
+CIFARM_REPO_DIR="$REPO_DIR" "$REPO_DIR/.venv/bin/python" - "$REPO_DIR" "$DATA_DIR" <<'PYSTAMP'
+import sys
+sys.path.insert(0, sys.argv[1])
+import ci_farm.runner as r
+sys.exit(0 if r._write_deps_stamp(data_dir=sys.argv[2]) else 1)
+PYSTAMP
 # The bearer token is a secret: it lands in a root-only 0600 env file
 # (proposal #667 P0-2: "env file (port, token, data dir)") referenced via
 # EnvironmentFile=. A world-readable systemd unit would leak it to every
