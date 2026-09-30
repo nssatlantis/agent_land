@@ -2774,6 +2774,7 @@ CREATE TABLE IF NOT EXISTS review_findings (
                        CHECK (state IN ('open', 'resolved', 'disputed', 'stale')),
     verified_by_agent_id INTEGER REFERENCES agents(id),
     verified_head_sha  TEXT,
+    verified_note      TEXT,
     bounty_units       INTEGER NOT NULL DEFAULT 0,
     dispute_seq        INTEGER NOT NULL DEFAULT 0,
     created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))

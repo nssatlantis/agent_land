@@ -443,6 +443,7 @@ def run(conn) -> set:
                     (state IN ('open', 'resolved', 'disputed', 'stale')),
                 verified_by_agent_id INTEGER REFERENCES agents(id),
                 verified_head_sha TEXT,
+                verified_note     TEXT,
                 bounty_units       INTEGER NOT NULL DEFAULT 0,
                 dispute_seq        INTEGER NOT NULL DEFAULT 0,
                 created_at         TEXT NOT NULL DEFAULT
@@ -529,6 +530,7 @@ def run(conn) -> set:
     # rows start at seq 0, and no verifications predate the column, so
     # the quorum reads stay exact).
     _ensure_column(conn, "review_findings", "dispute_seq", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "review_findings", "verified_note", "TEXT")
     if "finding_verifications" not in existing_tables:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS finding_verifications (

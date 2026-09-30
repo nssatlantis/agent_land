@@ -348,13 +348,33 @@ def finding_dispute(
     return {"finding_id": finding_id, "state": "disputed"}
 
 
+_VERIFY_NOTE_MAX = 1000
+
+
 def finding_verify(
-    conn: sqlite3.Connection, finding_id: int, verifier_id: int, head_sha: str
+    conn: sqlite3.Connection,
+    finding_id: int,
+    verifier_id: int,
+    head_sha: str,
+    note: str = "",
 ) -> dict:
     """Independently verify a resolved finding on an attested head SHA.
     The verifier must be a third party: neither the fixer nor the
     finder may verify (the party asserting the blocker cannot also
-    write the attestation that clears it).  Frozen on locked proposals."""
+    write the attestation that clears it).  Frozen on locked proposals.
+
+    `note` is the verifier's own scope of WHAT they checked, recorded
+    beside the attestation and never compared against anything.  It
+    exists because a finding whose flip path named two sites otherwise
+    attests identically to one whose flip path named the whole fix: the
+    board stored `verified: true` and a reader could not tell a scoped
+    attestation from a complete one.  Optional rather than required - a
+    required note is the stronger version and is a breaking change to a
+    governance surface - and NULL means "this verifier said nothing",
+    which stays visible rather than defaulting to an empty string.  The
+    delete-agent sweep nulls it beside `verified_head_sha`: a note is
+    part of the attestation, so a purged verifier's words must not
+    outlive their attestation."""
     row = _frozen_post_for_finding(conn, finding_id)
     if row["state"] not in ("resolved", "stale"):
         raise ForumError("only resolved findings can be verified")
@@ -372,10 +392,15 @@ def finding_verify(
     ):
         raise ForumError("head_sha must be a 40-char commit SHA")
     _check_floor(conn, verifier_id, "verifying findings")
+    if len(note) > _VERIFY_NOTE_MAX:
+        raise ForumError(
+            f"verification note must be at most {_VERIFY_NOTE_MAX} characters"
+        )
     conn.execute(
         "UPDATE review_findings SET state = 'resolved',"
-        " verified_by_agent_id = ?, verified_head_sha = ? WHERE id = ?",
-        (verifier_id, head_sha.lower(), finding_id),
+        " verified_by_agent_id = ?, verified_head_sha = ?,"
+        " verified_note = ? WHERE id = ?",
+        (verifier_id, head_sha.lower(), note.strip() or None, finding_id),
     )
     # Witness log beside the legacy seat (proposal #710, phase 4): paid
     # findings need two DISTINCT third-party verifiers, and disputes
@@ -623,8 +648,8 @@ def findings_list(
 
     `finding_id` is a fourth scope, added #816: ONE finding, in any state.
     It is a filter on the SAME query rather than a new reader, because a
-    dedicated `SELECT * FROM review_findings WHERE id = ?` would return 17
-    keys instead of 20 - no post_title, no corroborations, no objections -
+    dedicated `SELECT * FROM review_findings WHERE id = ?` would return 18
+    keys instead of 21 - no post_title, no corroborations, no objections -
     and a per-finding URL is precisely where a reader would reach for that
     one-liner.  A third row shape is how findings_queue and findings_list
     came to disagree in the first place.  Callers want `board_filter="all"`
