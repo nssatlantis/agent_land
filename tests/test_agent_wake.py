@@ -343,6 +343,7 @@ def test_correction_selection_skips_subagent_children():
                 "id": "ses_root",
                 "parentID": None,
                 "agent": "plan",
+                "title": "[AL]",
                 "location": {"directory": "dir"},
                 "time": {"updated": now - 5_000_000},
             },
@@ -357,6 +358,7 @@ def test_correction_selection_skips_subagent_children():
                 "id": "ses_sub",
                 "parentID": None,
                 "agent": "general",
+                "title": "[AL]",
                 "location": {"directory": "dir"},
                 "time": {"updated": now},
             },
@@ -364,6 +366,7 @@ def test_correction_selection_skips_subagent_children():
                 "id": "ses_build",
                 "parentID": None,
                 "agent": "build",
+                "title": "[AL]",
                 "location": {"directory": "dir"},
                 "time": {"updated": now - 1_000},
             },
@@ -388,6 +391,7 @@ def test_selection_honours_session_max_age():
                             "id": "ses_old",
                             "parentID": None,
                             "agent": "plan",
+                            "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": stale},
                         }
@@ -577,6 +581,7 @@ def test_sweep_burst_collapses_to_one_wake():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
@@ -671,6 +676,7 @@ def test_sweep_skips_resolved_during_debounce():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
@@ -1007,6 +1013,7 @@ def test_deferred_wake_is_retried_on_the_next_tick():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
@@ -1054,6 +1061,105 @@ def test_deferred_wake_is_retried_on_the_next_tick():
         restore()
     assert any(o["outcome"] == "busy" for o in first), first
     assert len(sent) == 1, f"the deferred wake must be retried: {second}"
+    assert any(o["outcome"] == "sent" for o in second), second
+
+
+def test_a_nameless_chat_defers_the_wake_rather_than_burning_it():
+    """A title miss must be a DEFER that names itself, not a silent drop.
+
+    Refusing to deliver into a chat with nothing to do with AgentLand is
+    only half the fix. The other half is what happens to the FINDING
+    afterwards: a refusal that also recorded the wake as delivered would
+    drop the notification permanently - the same failure shape as the
+    row-existence seen-set this file already pins a regression for, and it
+    would be invisible, because the citizen sees no prompt and no error.
+
+    And a refusal that logs the same tag as "OpenCode is unreachable"
+    leaves the citizen with no way to know the difference between a server
+    they cannot fix and a chat they can rename in one keystroke. So this
+    drives the REAL sweep twice against the same finding: once with the
+    newest row unnamed - so nothing but the title gate can reject it - and
+    once after the chat is named, which is the action the log tag tells
+    them to take.
+
+    The first sweep must send nothing and stay retryable; the second must
+    deliver. A single-sweep assertion would not distinguish "deferred" from
+    "dropped", which is the whole claim.
+    """
+    agents = AGENTS
+    alpha = agents["alpha"]["agent_id"]
+    restore = _wake_cfg()
+    pid = _proposal(agents, "alpha", "nameless")
+    with db._conn(immediate=True) as conn:
+        _link(conn, pid, 6090, alpha)
+        _register(conn, alpha, "dir")
+        _finding(conn, pid, agents["beta"]["agent_id"], 6090)
+
+    def _sessions(title):
+        return json.dumps(
+            {
+                "data": [
+                    {
+                        "id": "ses_root",
+                        "parentID": None,
+                        "agent": "plan",
+                        "title": title,
+                        "location": {"directory": "dir"},
+                        "time": {"updated": int(time.time() * 1000)},
+                        "model": {"id": "m", "providerID": "opencode"},
+                    }
+                ]
+            }
+        )
+
+    payloads = {
+        "/api/session": _sessions(None),
+        "/api/model": json.dumps(
+            {
+                "data": [
+                    {
+                        "id": "m",
+                        "providerID": "opencode",
+                        "limit": {"context": 262144},
+                    }
+                ]
+            }
+        ),
+        "/session/status": json.dumps({"data": {}}),
+        "/message": json.dumps(
+            [{"info": {"role": "assistant", "tokens": {"total": 1000}}}]
+        ),
+    }
+    sent = []
+    logged = []
+    real, _ = _stub(payloads)
+    real_send = wake.send_wake
+    real_log = wake.logutil.log
+    wake.send_wake = lambda e, s, t: (sent.append(t), True)[1]
+    wake.logutil.log = lambda tag, **kw: logged.append(tag)
+    try:
+        first = wake.wake_sweep()
+        after_first = len(sent)
+        # The citizen does the one thing the log tag tells them to do.
+        payloads["/api/session"] = _sessions("[AL] build")
+        second = wake.wake_sweep()
+    finally:
+        wake.logutil.log = real_log
+        wake.send_wake = real_send
+        _restore(real)
+        restore()
+
+    assert after_first == 0, (
+        f"a chat with no AgentLand name must not receive the prompt: {first}"
+    )
+    assert any(o["outcome"] == "no-session" for o in first), first
+    assert "agent_wake_no_al_session" in logged, (
+        "rows were present and none was named, so the miss has to name "
+        f"itself - otherwise it is the same silence as a down OpenCode: {logged}"
+    )
+    assert len(sent) == 1, (
+        f"a title miss must stay retryable, not record a delivery: {second}"
+    )
     assert any(o["outcome"] == "sent" for o in second), second
 
 
@@ -1107,6 +1213,7 @@ def test_quiet_hours_does_not_consume_the_burst():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
@@ -1179,6 +1286,7 @@ def test_self_filed_finding_does_not_arm_the_debounce():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
@@ -1629,6 +1737,7 @@ def test_compaction_failure_does_not_brick_the_wake():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
@@ -1692,6 +1801,7 @@ def test_wake_defers_when_context_is_genuinely_full():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
@@ -2789,6 +2899,7 @@ def main():
         test_the_gate_can_be_switched_off_and_then_recency_is_whole,
         test_no_named_chat_is_its_own_answer_not_a_silent_miss,
         test_an_empty_workspace_does_not_claim_the_named_answer,
+        test_a_nameless_chat_defers_the_wake_rather_than_burning_it,
         test_selection_honours_session_max_age,
         test_gate_free_rejections,
         test_gate_debounce_window_edge,
