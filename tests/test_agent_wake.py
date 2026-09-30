@@ -709,6 +709,24 @@ def test_sweep_skips_resolved_during_debounce():
     assert any(o["outcome"] == "resolved-during-debounce" for o in out), out
 
 
+def test_the_deferral_set_is_one_value_both_arms_read():
+    """#B171's shape pin: retryability is ONE module value, not a fact
+    about where a gate is decided. Both consumer arms must read
+    _FREE_GATE_DEFERRABLE - a revert of either to a positional literal
+    reds here even though today's semantics are identical, because the
+    set holds exactly one reason and `in {"debounce"}` == `== "debounce"`
+    until somebody adds a gate to gate_free and forgets the second site.
+    """
+    import inspect
+
+    n = inspect.getsource(wake).count("_FREE_GATE_DEFERRABLE")
+    assert n >= 3, (
+        "a consumer arm reads a positional literal instead of the shared"
+        f" deferral set (#B171): only {n} reference(s) to"
+        " _FREE_GATE_DEFERRABLE in server/poller/_wake.py"
+    )
+
+
 def test_debounce_keeps_the_finding_a_candidate():
     """A finding debounced on the inbound path must stay a candidate (#B171).
 
@@ -2472,8 +2490,10 @@ def test_rereview_debounce_defers_without_stamping_the_pair():
     """A debounce is a TEMPORARY gate, so it must not write `notified_at`.
 
     MiMo's finding #51, and the mutation is the whole receipt: changing
-    `if reason == "debounce":` to `if False and reason == "debounce":`
-    lets a debounce fall through to `_mark_rereview_seen(notified=False)`
+    the branch condition to a False-arm - `if False and reason ==
+    "debounce":` on the literal of the day, `if False and reason in
+    _FREE_GATE_DEFERRABLE:` now - lets a debounce fall through to
+    `_mark_rereview_seen(notified=False)`
     plus `_discard_rereview` - and 268/268 files still passed,
     `test_agent_wake.py` included. Every debounce assertion in the suite
     proved the branch did NOT fire (`assert not any(outcome ==
@@ -2690,6 +2710,7 @@ def main():
         test_disabled_switch_is_a_no_op,
         test_sweep_burst_collapses_to_one_wake,
         test_sweep_skips_resolved_during_debounce,
+        test_the_deferral_set_is_one_value_both_arms_read,
         test_debounce_keeps_the_finding_a_candidate,
         test_daily_budget_is_a_hard_ceiling,
         test_budget_rolls_over_on_a_new_utc_day,
