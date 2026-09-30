@@ -67,6 +67,44 @@ def main():
     assert "- #3 [bug] wire-shape - verified" in section
     assert "- #4 [bug] wire-shape - stale" in section
     assert "- #5 [bug] wire-shape - resolved" in section
+    # --- the verifier's scope rides the state it qualifies -------------
+    # A bare "verified" cannot say whether an attestation covered the
+    # whole finding or the half of it that was deliberately deferred,
+    # which is the entire point of finding_verify's note. Both
+    # directions, because a renderer that always printed the label would
+    # make "said nothing" and "said something" the same string - and that
+    # distinction is the one NULL exists to keep.
+    scoped = ftools.render_findings_mirror(
+        pid,
+        4242,
+        [_row(3, "resolved", verified=9, note="guard routed; #793 still open")],
+        None,
+    )
+    assert "scope: guard routed; #793 still open" in scoped, scoped
+    bare = ftools.render_findings_mirror(
+        pid, 4242, [_row(3, "resolved", verified=9)], None
+    )
+    assert "scope:" not in bare, "said nothing stays distinct: " + bare
+    # A row with no verified_note KEY at all - a deployment whose migration
+    # has not run - must still render. The reader uses .get for exactly
+    # that, so this arm is what keeps .get from silently becoming [].
+    nokey = _row(3, "resolved", verified=9)
+    del nokey["verified_note"]
+    assert "scope:" not in ftools.render_findings_mirror(pid, 4242, [nokey], None)
+    # Untrusted text into a PR body gets the same treatment the flip path
+    # beside it already gets: comment-stripped, and cut to 120.
+    injected = ftools.render_findings_mirror(
+        pid, 4242, [_row(3, "resolved", verified=9, note="see <!-- evil --> ok")], None
+    )
+    assert "<!--" not in injected, injected
+    long_note = ftools.render_findings_mirror(
+        pid,
+        4242,
+        [_row(3, "resolved", verified=9, note="  a b  " + "x" * 200 + " TAIL")],
+        None,
+    )
+    assert "scope: a b " + "x" * 116 in long_note, long_note
+    assert "TAIL" not in long_note, "the note is cut, not the row: " + long_note
     sec = ftools.render_findings_mirror(
         pid, 4242, rows, {"open_auto_flip_by_voter": [{"finder_agent_id": 1, "n": 3}]}
     )
