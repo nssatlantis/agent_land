@@ -258,7 +258,7 @@ def test_closed_widen_rebuild_keeps_fix_pr_index():
                 "SELECT sql FROM sqlite_master WHERE type='table'"
                 " AND name='bug_reports'"
             ).fetchone()["sql"]
-            assert "'closed'" in check, "init_db widens CHECK to 'closed'"
+            assert "'closed'" in checkX, "init_db widens CHECK to 'closed'"
             present = {
                 r[0]
                 for r in conn.execute(
