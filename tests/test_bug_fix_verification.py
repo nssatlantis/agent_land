@@ -560,7 +560,15 @@ def test_both_renderers_agree_on_the_denominators():
     the admin process.  That makes drift possible, so the invariant is PINNED
     instead: for the same input, both render the same 'n/q' pairs.  This is
     the #B17 shape (one fact, two renderers, one silently wrong) closed with a
-    test rather than with an architectural promise."""
+    test rather than with an architectural promise.
+
+    One limit of a parity pin, learned here: it can only catch the two
+    renderers DISAGREEING, never agreeing wrongly.  Both copies once gated
+    the second bar on `confirmed or disputed`, so a merged-but-unverified
+    0/3 round rendered no bar on either surface while this test stayed
+    green - the fixture only ever carried verdicts.  So the fixture carries
+    the unfilled round too and both renderers are asserted to SHOW it, not
+    merely to match."""
     from server.admin._bugs import _bug_confidence_bar as admin_bar
     from viewer._bugs import _two_bars
 
@@ -572,8 +580,18 @@ def test_both_renderers_agree_on_the_denominators():
         "pending": 2,
         "state": "pending",
     }
+    # A merged fix nobody has judged yet: the state both renderers used to
+    # drop entirely, and the one this fixture did not carry.
+    unfilled = {
+        "quorum": 3,
+        "reopen_quorum": 2,
+        "confirmed": 0,
+        "disputed": 0,
+        "pending": 3,
+        "state": "pending",
+    }
     for conf in (0, 2, 3, 5):
-        for round_ in (None, rnd):
+        for round_ in (None, rnd, unfilled):
             viewer_html = _two_bars(conf, 3, round_)
             admin_html = admin_bar(conf, 3, round_)
             assert viewer_html == admin_html, (
@@ -584,6 +602,19 @@ def test_both_renderers_agree_on_the_denominators():
     # real numbers - a bar that renders nothing is a silent regression.
     assert "fix verified: 1/3" in _two_bars(3, 3, rnd)
     assert "1 of 2 said not fixed" in _two_bars(3, 3, rnd)
+    # An open round with no verdicts yet is an OBLIGATION, not an absence, so
+    # both surfaces must render it.  Asserted on each renderer separately
+    # because parity is exactly what hid this in the first place.
+    for render, name in ((_two_bars, "viewer"), (admin_bar, "admin")):
+        empty_html = render(3, 3, unfilled)
+        assert "awaiting verdicts: 0/3" in empty_html, (
+            f"{name} drops the fix bar on a merged-but-unverified round: {empty_html}"
+        )
+    # ...and it must not borrow the started round's label, or 0/3 reads as
+    # "zero of three found the fix works" instead of "nobody has checked yet".
+    assert "fix verified: 0/3" not in _two_bars(3, 3, unfilled), (
+        "an unfilled round is a missing result, not a negative one"
+    )
     assert "fix verified" not in _two_bars(3, 3, None), (
         "an unopened second bar must not render a misleading empty one"
     )

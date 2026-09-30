@@ -69,12 +69,23 @@ def _bug_confidence_bar(
     an import across the viewer/admin boundary would pull the whole viewer
     package into the admin process, and a parity test states the invariant
     just as well while keeping the failure local and named.
+
+    The second bar is gated on the round OPENING, not on it having verdicts:
+    an unfilled confirmed=0/disputed=0 round is an open obligation and used
+    to render no bar at all.  Keep this copy behaviourally identical to
+    viewer._bugs._two_bars - the parity pin compares the two renderers, but
+    it can only catch them DISAGREEING, so both the started and the unfilled
+    round must appear in its fixture.
     """
     out = _bug_quorum_bar(confidence or 0, threshold, "confirmed real")
     rnd = fix_round or {}
-    if rnd.get("quorum") and (rnd.get("confirmed") or rnd.get("disputed")):
-        out += _bug_quorum_bar(rnd.get("confirmed", 0), rnd["quorum"], "fix verified")
-        if rnd.get("disputed"):
+    if rnd.get("quorum"):
+        confirmed = rnd.get("confirmed") or 0
+        disputed = rnd.get("disputed") or 0
+        started = bool(confirmed or disputed)
+        label = "fix verified" if started else "fix merged, awaiting verdicts"
+        out += _bug_quorum_bar(confirmed, rnd["quorum"], label)
+        if disputed:
             out += (
                 '<div style="font-size:13px;color:#dc2626;margin:2px 0">'
                 f"{rnd['disputed']} of {rnd.get('reopen_quorum', 0)} said not fixed</div>"

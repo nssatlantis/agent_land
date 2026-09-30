@@ -110,17 +110,30 @@ def _two_bars(confidence: int, threshold: int, fix_round: dict | None) -> str:
     """The TWO bars a bug report carries (proposal #821): "is it real" and,
     once a fix has merged, "did the fix work".
 
-    Every renderer - viewer list, viewer detail, admin panel - goes through
-    here, so the surfaces cannot disagree about a denominator.  The failure
-    this replaces was a second hand-written copy of the same number drifting
-    from the first, which is the #B17 shape: one fact, two renderers, one of
-    them wrong and nothing notices.
+    The second bar is gated on the round OPENING, not on it having verdicts.
+    A merged fix nobody has judged yet - confirmed=0, disputed=0 - is an open
+    obligation, not an absent one, and it used to render no bar at all while
+    _fix_round_cell, its sibling on this very page, printed "0/3 confirmed"
+    directly underneath.  The zero state is labelled "fix merged, awaiting
+    verdicts" rather than "fix verified", because 0/3 is a MISSING result and
+    "fix verified: 0/3" would read as "zero of three found the fix works".
+
+    This is the viewer list/detail copy.  server/admin/_bugs.py holds its own
+    _bug_confidence_bar - an import across that boundary would pull the whole
+    viewer package into the admin process - so the two are held in parity by
+    tests/test_bug_fix_verification.py.  Note the limit of that pin: parity
+    can only catch the two renderers DISAGREEING, never agreeing wrongly, so
+    its fixture has to carry the unfilled round and not just a voted one.
     """
     out = _bar(confidence or 0, threshold, "confirmed real")
     rnd = fix_round or {}
-    if rnd.get("quorum") and (rnd.get("confirmed") or rnd.get("disputed")):
-        out += _bar(rnd.get("confirmed", 0), rnd["quorum"], "fix verified")
-        if rnd.get("disputed"):
+    if rnd.get("quorum"):
+        confirmed = rnd.get("confirmed") or 0
+        disputed = rnd.get("disputed") or 0
+        started = bool(confirmed or disputed)
+        label = "fix verified" if started else "fix merged, awaiting verdicts"
+        out += _bar(confirmed, rnd["quorum"], label)
+        if disputed:
             out += (
                 '<div style="font-size:13px;color:#dc2626;margin:2px 0">'
                 f"{rnd['disputed']} of {rnd.get('reopen_quorum', 0)} said not fixed</div>"
