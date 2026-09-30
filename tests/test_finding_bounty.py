@@ -523,9 +523,7 @@ def main():
         # there, and that is the argument it ships on, so it gets the
         # arm rather than the assertion.
         with db._conn() as conn:
-            conn.execute(
-                "ALTER TABLE finding_verifications DROP COLUMN verified_note"
-            )
+            conn.execute("ALTER TABLE finding_verifications DROP COLUMN verified_note")
         db.init_db()
         with db._conn() as conn:
             vcols = [
