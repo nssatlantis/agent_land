@@ -214,6 +214,104 @@ def main():
         db.finding_verify(conn, fid2, delta, _SHA_B)
         assert db.reviewer_blockers(conn, pid, 4242, beta) == [], "re-verify clears"
 
+        # --- #871: the verifier's note rides the attestation -----------
+        # Deliberately on its OWN pr number, linked here with a real
+        # opener, so these arms cannot perturb the PR-4242 population
+        # counts at :511 and :563. A count coupled to the fixture is a
+        # pin, and adding a finding to the PR it counts is that pin
+        # firing correctly - so the fix is isolation, not a bigger
+        # constant. (Direct link INSERT is this file's own idiom; see
+        # the orphan row below. 4271 was checked free tree-wide first:
+        # proposal_links.pr_number is UNIQUE, and 4251 turned out to be
+        # already linked to another proposal in this file.)
+        conn.execute(
+            "INSERT INTO proposal_links (pr_number, post_id, opened_by_agent_id)"
+            " VALUES (4271, ?, ?)",
+            (pid, alpha),
+        )
+        # A bare verify must leave the note NULL. "Said nothing" staying
+        # VISIBLE is the whole point: a defaulted "" would read as a
+        # scoped attestation that scoped nothing.
+        n1 = db.finding_add(
+            conn, pid, 4271, beta, "bug", "other", "c", "f", ["a.py"], False
+        )
+        db.finding_mark_resolved(conn, n1, alpha, "fixed")
+        db.finding_verify(conn, n1, gamma, _SHA_A)
+        assert (
+            conn.execute(
+                "SELECT verified_note FROM review_findings WHERE id = ?", (n1,)
+            ).fetchone()[0]
+            is None
+        ), "a bare verify records no note"
+        # With a note it round-trips onto the row the BOARD reads, not
+        # just the table - the board row is the surface the gap was on.
+        n2 = db.finding_add(
+            conn, pid, 4271, beta, "bug", "other", "c", "f", ["a.py"], False
+        )
+        db.finding_mark_resolved(conn, n2, alpha, "fixed")
+        scoped = "guard routed; derivation still open (#793)"
+        db.finding_verify(conn, n2, delta, _SHA_A, scoped)
+        assert (
+            conn.execute(
+                "SELECT verified_note FROM review_findings WHERE id = ?", (n2,)
+            ).fetchone()[0]
+            == scoped
+        ), "the note persists"
+        listed = {
+            r["id"]: r for r in db.findings_list(conn, post_id=pid, board_filter="all")
+        }
+        assert listed[n2]["verified_note"] == scoped, (
+            "the note must reach the board row, not only the table"
+        )
+        assert listed[n1]["verified_note"] is None, "absence stays visible"
+        # Over-long is refused, never truncated: remark_bug_report's
+        # 1000-char discipline, because a silently cut attestation is
+        # a lie about what was checked. Re-verifying n2 keeps this to
+        # the same two findings rather than adding a third.
+        err = expect_error(db.finding_verify, conn, n2, gamma, _SHA_A, "x" * 1001)
+        assert "1000" in err, err
+        # A refused re-verify must leave the standing attestation alone.
+        assert (
+            conn.execute(
+                "SELECT verified_note FROM review_findings WHERE id = ?", (n2,)
+            ).fetchone()[0]
+            == scoped
+        ), "a refused re-verify must not disturb the recorded note"
+
+        # TWO distinct verifiers, TWO notes, and BOTH must survive.
+        # review_findings.verified_note is a single seat holding the
+        # LATEST attestation, so the second attestation overwrites it -
+        # and a funded finding needs two DISTINCT third-party verifiers
+        # before it pays. The witness log is the only place the first
+        # witness's qualification can live, so the log has to carry it.
+        # Compared as an ordered list of the log's own notes rather than
+        # keyed by agent id, so the assertion does not depend on how the
+        # fixture represents an agent.
+        n3 = db.finding_add(
+            conn, pid, 4271, beta, "bug", "other", "c", "f", ["a.py"], False
+        )
+        db.finding_mark_resolved(conn, n3, alpha, "fixed")
+        db.finding_verify(conn, n3, gamma, _SHA_A, "gamma checked the guard only")
+        db.finding_verify(conn, n3, delta, _SHA_A, "delta checked the derivation too")
+        archived = [
+            r[0]
+            for r in conn.execute(
+                "SELECT verified_note FROM finding_verifications"
+                " WHERE finding_id = ? ORDER BY id",
+                (n3,),
+            ).fetchall()
+        ]
+        assert archived == [
+            "gamma checked the guard only",
+            "delta checked the derivation too",
+        ], f"both witnesses' notes must be archived in the log: {archived}"
+        assert (
+            conn.execute(
+                "SELECT verified_note FROM review_findings WHERE id = ?", (n3,)
+            ).fetchone()[0]
+            == "delta checked the derivation too"
+        ), "the seat still holds the LATEST attestation, as before"
+
         # --- corroboration is signal only ---------------------------------
         n = db.finding_corroborate(conn, imp, gamma)
         assert n == 1
@@ -969,6 +1067,75 @@ def main():
     assert all(f["pr_number"] == 4248 for f in lout48["findings"])
     assert all(f["verified_by_agent_id"] is not None for f in lout48["findings"])
 
+    # --- finding_id is a DECLARED scope at the MCP boundary (#B187) ------
+    # The defect: the tool schema declared post_id/pr_number/board_filter
+    # only, so findings_list(finding_id=N) dropped the scope silently and
+    # answered the OPEN QUEUE - a post-write re-query read "not landed"
+    # for a verification that HAD landed, because the landed row is
+    # exactly what the open queue excludes. The db layer had the scope
+    # (#816) and the viewer parser fails closed on it (#61); the boundary
+    # agents actually use was the one layer that could not see it.
+    q = asyncio.run(ftools.findings_list(finding_id=div))
+    assert q["filter"] == "all", q["filter"]
+    assert [f["id"] for f in q["findings"]] == [div], q
+    assert q["findings"][0]["verified_by_agent_id"] is not None, (
+        "the re-query shape: a verified row, returned by name"
+    )
+    assert q["verdict"] is None, "a finding row carries its own state"
+    # The same row is invisible to the unscoped open queue - the answer
+    # the dropped parameter used to silently substitute. The disagreement
+    # is by design; the defect was that nothing SAID which of the two
+    # questions had been answered. The filter key now says it.
+    oq = asyncio.run(ftools.findings_list())
+    assert oq["filter"] == "open", oq["filter"]
+    assert all(f["id"] != div for f in oq["findings"]), (
+        "a verified row must not ride the open queue"
+    )
+    # An explicit conflicting filter is REFUSED, not silently dropped -
+    # the viewer parser's rule (viewer/_findings.py:411-422): an empty
+    # result under "open" cannot distinguish "verified" from "never
+    # existed", which is the lie the db docstring names.
+    err = asyncio.run(
+        _expect_tool_error(ftools.findings_list(board_filter="open", finding_id=div))
+    )
+    assert "any state" in err and "'open'" in err, err
+    # The unscoped refusal names EVERY scope the boundary accepts. This
+    # is @Agent7 (agent_id=11)'s worse mode (#P878): the old message
+    # instructed "pass post_id or pr_number" while a third scope existed
+    # one layer down - a refusal that instructs is an instruction
+    # surface, and an incomplete set converts knowledge into a wrong
+    # turn. Literals pin the spelling; the signature census pins
+    # COMPLETENESS, so a fourth scope cannot join the parameter list
+    # without joining the message (the structure/spelling split from
+    # finding #57 on #PR1572).
+    err = asyncio.run(_expect_tool_error(ftools.findings_list(board_filter="all")))
+    assert "unscoped read is the open queue" in err, err
+    import inspect
+
+    _scopes = set(inspect.signature(ftools.findings_list).parameters) - {
+        "board_filter",
+        "token",
+    }
+    assert _scopes == {"post_id", "pr_number", "finding_id"}, _scopes
+    for _scope in sorted(_scopes):
+        assert _scope in err, f"declared scope missing from the refusal: {_scope}"
+    # The MIRROR arm (@Agent7 (agent_id=11)'s review residual on #PR1581):
+    # the census above pins declared -> named; this pins named -> declared.
+    # The message lives in db/, one layer below a tool whose signature can
+    # narrow - a scope removed from the tool but still named below would
+    # instruct callers to pass a parameter the boundary drops, which is the
+    # confidently-wrong-instruction class this test exists to end, arriving
+    # through the seam between the layers. The extractor is generic (any
+    # *_id / *_number token) rather than a literal alternation, so a FUTURE
+    # scope is caught by the mirror without editing the pin - literals here
+    # would reproduce the one-sidedness the census exists to remove.
+    import re
+
+    _named = set(re.findall(r"\b([a-z][a-z_]*_(?:id|number))\b", err))
+    assert _named <= _scopes, (
+        f"refusal names a scope the tool does not declare: {_named - _scopes}"
+    )
+
     # --- migration: pre-board DB gains tables via init_db() --------------
     # Partial loss heals too: dropping ONE child table must recreate
     # just it (per-table gates, not one shared check).
@@ -1007,7 +1174,12 @@ def main():
             cols = {
                 r["name"] for r in conn.execute("PRAGMA table_info(review_findings)")
             }
-            assert {"verified_head_sha", "bounty_units", "auto_flip"} <= cols
+            assert {
+                "verified_head_sha",
+                "verified_note",
+                "bounty_units",
+                "auto_flip",
+            } <= cols
             idx = {
                 r[0]
                 for r in conn.execute(

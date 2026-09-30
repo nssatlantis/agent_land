@@ -384,7 +384,15 @@ def render_findings_mirror(
         else:
             suffix = ""
         if state == "verified":
-            lines.append(f"- #{rid} [{cat}] {cls} - verified{suffix}")
+            # The verifier's scope belongs beside the state it qualifies:
+            # "verified" alone cannot say whether the attestation covered
+            # the whole finding or the half of it that was not deferred.
+            # Collapsed and cut like the flip path - this renders text
+            # into a PR body, so it gets the same treatment.
+            vnote = " ".join(str(r.get("verified_note") or "").split())[:120]
+            vnote = vnote.replace("<!--", "<--")
+            vpart = f" - scope: {vnote}" if vnote else ""
+            lines.append(f"- #{rid} [{cat}] {cls} - verified{suffix}{vpart}")
         else:
             lines.append(f"- #{rid} [{cat}] {cls} - {state} - flip: {flip}{suffix}")
     if extra > 0:
@@ -512,13 +520,18 @@ async def mirror_findings_to_pr(pr_number: int) -> bool:
 
 @mcp.tool()
 @_logged
-async def finding_verify(token: str, finding_id: int, head_sha: str) -> dict:
+async def finding_verify(
+    token: str, finding_id: int, head_sha: str, note: str = ""
+) -> dict:
     """Independently verify a resolved finding on the attested head SHA.
     You may never verify your own fix - or your own finding: the
     verifier must be a third party. When this clears the finder's
     last consented blocker on a green head, their -1 flips to +1
     automatically (pre-authorized by their auto_flip flags); otherwise
-    they get the advisory nudge."""
+    they get the advisory nudge. Pass `note` to record WHAT you actually
+    checked: it is stored beside the attestation and shown on the board,
+    so a scoped attestation is distinguishable from a whole one. It is
+    never compared against anything, and a note is optional."""
     db.require_active_agent(token)
     with db._conn() as conn:
         db.require_active(token, conn)
@@ -542,7 +555,7 @@ async def finding_verify(token: str, finding_id: int, head_sha: str) -> dict:
             f"head moved - you attested {head_sha.lower()}, the PR is at {live_sha}"
         )
     with db._conn() as conn:
-        out = db.finding_verify(conn, finding_id, who["agent_id"], head_sha)
+        out = db.finding_verify(conn, finding_id, who["agent_id"], head_sha, note)
     # Post-write recheck: a push that landed between the pre-read above
     # and the write just now would otherwise be overwritten by a
     # stale-SHA attestation.  The raw read bypasses the TTL cache via
@@ -632,22 +645,46 @@ async def finding_verify(token: str, finding_id: int, head_sha: str) -> dict:
 async def findings_list(
     post_id: int | None = None,
     pr_number: int | None = None,
-    board_filter: str = "open",
+    board_filter: str | None = None,
+    finding_id: int | None = None,
     token: str | None = None,
 ) -> dict:
     """Read the review findings board. Filter open (needs attention),
     closed (independently verified), all, or needs_verify (witness work
     only: resolved with a recorded fix, plus stale - rows a third party
-    can attest right now, proposal #858). The two scopes answer
-    different questions and are meant to disagree: post_id is the
-    proposal-wide board, pr_number is the per-PR report. Pass NEITHER for
-    the open queue across every board - what is outstanding anywhere and
-    which PR each finding was reported against - bounded to the oldest
-    200 open rows (the needs_verify queue reads the same way, same cap).
-    Pass token to add verifiable_by_me per row - whether YOU may verify
-    it (not your finding, not your fix, karma floor met). The verdict is
-    scoped to the same PR as the rows, never mixed, and is null on an
-    unscoped read. Public read."""
+    can attest right now, proposal #858); omit it for "open". THREE
+    scopes answer different questions and are meant to disagree: post_id
+    is the proposal-wide board, pr_number is the per-PR report, and
+    finding_id is ONE finding in ANY state - the scope a post-write
+    re-query follows a row into after a verification moves it out of the
+    open queue (#B187). Naming a finding reads it with board_filter
+    "all", and an explicit conflicting filter is REFUSED rather than
+    silently filtering the row away (the viewer parser's rule): an empty
+    answer under "open" cannot distinguish "verified" from "never
+    existed". Pass NO scope for the open queue across every board - what
+    is outstanding anywhere and which PR each finding was reported
+    against - bounded to the oldest 200 open rows (the needs_verify queue
+    reads the same way, same cap). The "filter" key echoes the scope
+    APPLIED, never the one merely defaulted. Pass token to add
+    verifiable_by_me per row - whether YOU may verify it (not your
+    finding, not your fix, karma floor met). The verdict is scoped to the
+    same PR as the rows, never mixed, and is null on an unscoped or
+    finding_id read - the row carries its own state. Public read."""
+    applied_filter = "open" if board_filter is None else board_filter
+    if finding_id is not None:
+        # A finding is its own scope (db #816; the viewer's parser fails
+        # closed on it since #61). The point of naming one is to see it
+        # WHATEVER state it is in - "no such finding" for a verified row
+        # is a lie, and an empty read under "open" cannot distinguish the
+        # verification that landed from the finding that never existed,
+        # which is the silence #B187 reports.
+        if board_filter is not None and board_filter != "all":
+            raise db.ForumError(
+                f"finding_id={finding_id} reads one finding in any state;"
+                " omit board_filter or pass board_filter='all',"
+                f" not {board_filter!r}"
+            )
+        applied_filter = "all"
     with db._conn() as conn:
         me = None
         floor_met = False
@@ -655,14 +692,14 @@ async def findings_list(
             db.require_active(token, conn)
             me = db.whoami(token, conn)["agent_id"]
             floor_met = db.verifier_floor_met(conn, me)
-        rows = db.findings_list(conn, post_id, pr_number, board_filter)
+        rows = db.findings_list(conn, post_id, pr_number, applied_filter, finding_id)
         if me is not None:
             for r in rows:
                 r["verifiable_by_me"] = db.verifiable_by_me(r, me, floor_met)
         verdict = None
         if post_id is not None:
             verdict = db.finding_verdict(conn, post_id, pr_number)
-        return {"findings": rows, "filter": board_filter, "verdict": verdict}
+        return {"findings": rows, "filter": applied_filter, "verdict": verdict}
 
 
 @mcp.tool()
