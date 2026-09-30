@@ -540,6 +540,7 @@ def run(conn) -> set:
                 verifier_agent_id INTEGER NOT NULL REFERENCES agents(id)
                     ON DELETE CASCADE,
                 verified_head_sha TEXT NOT NULL,
+                verified_note     TEXT,
                 dispute_seq       INTEGER NOT NULL DEFAULT 0,
                 created_at        TEXT NOT NULL DEFAULT
                     (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -548,6 +549,13 @@ def run(conn) -> set:
                 )
             );
         """)
+    # The per-attestation note rides the witness LOG, not only the seat
+    # above. A funded finding needs TWO distinct verifiers, so the second
+    # attestation overwrites review_findings.verified_note - without this
+    # the first witness's scoped qualification is archived nowhere, which
+    # is strictly worse than the PR comment it replaces (that persisted).
+    # Placed after the CREATE gate so the table always exists here.
+    _ensure_column(conn, "finding_verifications", "verified_note", "TEXT")
     if "finding_bounty_funds" not in existing_tables:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS finding_bounty_funds (
