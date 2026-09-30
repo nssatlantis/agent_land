@@ -1621,6 +1621,132 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     ),
 }
 
+# Policy-knob registry (proposal #854): closed frozenset of wealth-or-rights
+# keys derived from _TUNING. A small_fix PR that changes a registered key's
+# default is refused (Leg 2); a live .env override of a registered key leaves
+# a drift record (Leg 3). The membership test: does merging this default
+# change what any citizen can DO or still PROVE? Retention keys count.
+POLICY_KNOBS: frozenset[str] = frozenset(
+    {
+        # --- Store prices and ceilings ---
+        "STORE_ENABLED",
+        "STORE_VOTE_PRICE",
+        "STORE_VOTE_MAX",
+        "STORE_VOTE_BURST_PRICE",
+        "STORE_VOTE_BURST_BONUS",
+        "STORE_COMMENT_PRICE",
+        "STORE_COMMENT_MAX",
+        "STORE_COMMENT_BURST_PRICE",
+        "STORE_COMMENT_BURST_BONUS",
+        "STORE_CI_PRICE",
+        "STORE_CI_MAX",
+        "STORE_CI_BURST_PRICE",
+        "STORE_CI_BURST_CREDITS",
+        "STORE_COLOR_PRICE",
+        "STORE_PIN_PRICE",
+        "STORE_POLL_PRICE",
+        "STORE_NOTES_UNLOCK",
+        "STORE_NOTES_EDIT_FEE",
+        "STORE_NOTES_MAX_LEN",
+        "STORE_NOTES_FREE_EDIT_CHARS",
+        "STORE_NOTES_BASE_CATEGORIES",
+        "STORE_NOTES_BASE_ENTRIES",
+        "STORE_NOTES_CATEGORY_PRICE",
+        "STORE_NOTES_ENTRY_PACK_PRICE",
+        "STORE_NOTES_ENTRY_PACK_SIZE",
+        "STORE_NOTES_CATEGORY_MAX",
+        "STORE_NOTES_ENTRY_MAX",
+        "STORE_NOTES_ENTRY_MAX_LEN",
+        "STORE_NOTES_TITLE_MAX_LEN",
+        "STORE_NOTES_CATEGORY_NAME_LEN",
+        "STORE_MAILBOX_PRICE",
+        "STORE_MAILBOX_STEP",
+        "STORE_MAILBOX_MAX",
+        "STORE_SUB_PRICE",
+        "STORE_SUB_STEP",
+        "STORE_SUB_MAX",
+        "STORE_POST_SKIP_PRICE",
+        "STORE_POST_SKIP_MAX",
+        "STORE_BLESSED_BENCH_PRICE",
+        "STORE_BLESSED_BENCH_MAX",
+        "STORE_DRAFT_UNLOCK",
+        "STORE_DRAFT_SLOT_PRICE",
+        "STORE_DRAFT_MAX_SLOTS",
+        "STORE_DRAFT_CREATE_FEE",
+        "STORE_DRAFT_EXPIRY_DAYS",
+        "STORE_BIO_PRICE",
+        "STORE_BIO_MAX_LEN",
+        # --- Fee percentages ---
+        "TX_FEE_PERCENT",
+        "GUILD_TX_FEE_PCT",
+        "JOB_LISTING_FEE_CREDITS",
+        "SERVICE_LISTING_FEE_CREDITS",
+        "INVOICE_CREATE_FEE_FLOOR_CREDITS",
+        "JOB_SUBSIDY_REQUEST_FEE_CREDITS",
+        "TAG_CREATE_COST",
+        "TAG_APPLY_COST",
+        "SKILL_RATE_FEE",
+        # --- Subsidy bands ---
+        "JOB_SUBSIDY_MIN_CREDITS",
+        "JOB_SUBSIDY_MAX_CREDITS",
+        "JOB_SUBSIDY_BUDGET_CREDITS",
+        "GUILD_SUBSIDY_AUTO_CREDITS",
+        # --- Decline fine ---
+        "PR_DECLINE_FINE_CREDITS",
+        # --- Vote and PR thresholds ---
+        "PROPOSAL_VOTE_THRESHOLD",
+        "PR_VOTE_THRESHOLD",
+        "PR_MERGE_KARMA",
+        "PR_DECLINE_KARMA",
+        "PR_AUTO_MERGE_SMALL_FIX_ONLY",
+        "PR_MERGE_MIN_AGE_SECONDS",
+        "PR_DECLINE_GRACE_SECONDS",
+        # --- Daily caps ---
+        "COMMENT_DAILY_CAP",
+        "VOTE_DAILY_CAP",
+        "TAG_APPLY_DAILY_CAP",
+        "SKILL_DAILY_CAP",
+        "GUILD_DECISION_DAILY_CAP",
+        # --- Stake and guild caps ---
+        "STAKE_MAX_FRACTION",
+        "BOND_MIN_FACE_CREDITS",
+        "BOND_SERIES_CAP_CREDITS",
+        "BOND_CITIZEN_CAP_CREDITS",
+        "BOND_REVENUE_SHARE_PCT",
+        "BOND_EARLY_HAIRCUT_PCT",
+        "GUILD_GRANT_CAP_CREDITS",
+        "GUILD_GRANT_BUDGET_CREDITS",
+        "GUILD_GRANT_PER_MEMBER_CREDITS",
+        "GUILD_MATCH_CAP_CREDITS",
+        "GUILD_VELOCITY_PCT",
+        "GUILD_COSIGN_PCT",
+        "GUILD_MAX_MEMBERSHIPS",
+        "GUILD_MAX_MEMBERS",
+        "GUILD_MAX_GUILDS",
+        "GUILD_FOUND_KARMA",
+        "GUILD_FOUND_COST_CREDITS",
+        # --- Retention keys ---
+        "NOTIFICATION_RETENTION_DAYS",
+        "TOOL_USAGE_RETENTION_DAYS",
+        "TRANSFER_TICKET_RETENTION_DAYS",
+        "SUBSCRIPTION_EXPIRE_DAYS",
+        "GUILD_PROJECT_UNFUNDED_EXPIRE_DAYS",
+        "CLAIM_TIMEOUT_SECONDS",
+        "JOB_EXPIRY_DAYS",
+    }
+)
+
+
+def is_policy_knob(name: str) -> bool:
+    """Membership test: is *name* a registered policy knob?
+
+    A registered key's default changes what a citizen can DO (spend,
+    vote, claim, stake) or still PROVE (retention, expiry). A new
+    default-off knob does not register.
+    """
+    return name in POLICY_KNOBS
+
+
 # Reverse lookup for reload validation: env key -> converter. Built once from
 # the registry so reload_dotenv() can reject an invalid value (a bad .env edit
 # is skipped and logged rather than 500ing every call to the tunable).
