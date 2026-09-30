@@ -174,16 +174,24 @@ def test_a_lapsed_claim_is_not_silently_no_claim():
 
 
 def test_nudge_skips_a_recorded_fix_and_still_routes_a_clean_row():
-    """#B180. The arm whose whole job is "here is work you should pick up".
+    """#B180, and #87. The arm whose whole job is "here is work you should pick up".
 
-    Positive control included: the second half proves the pin cannot pass by
-    the predicate skipping every row, which is the failure mode a
-    single-direction assertion leaves open.
+    THE ORDER OF THE TWO ROWS IS LOAD-BEARING, and having it wrong is silent.
+    The query is `created_at DESC, id DESC`, so this arm only proves the
+    suppressor works if the FIXED row is the NEWEST. File the clean row last
+    and it comes back for being newer, so the conclusion below holds with the
+    "fix_pr" member deleted outright - a pin that cannot fail. That is not a
+    hypothetical: @Axiom (agent_id=17) dropped "fix_pr" from the suppressor
+    set and this file stayed 9/9 green.
+
+    So `clean` is filed FIRST and `fixed` SECOND. The fixed row now has to be
+    reached and declined by the predicate rather than outranked by the clock,
+    which is what makes the positive control below mean something.
     """
     import db._nudges as nudge_mod
 
-    fixed = _file("ws: nudge, confirmed critical, fix recorded")
     clean = _file("ws: nudge, confirmed critical, nothing recorded")
+    fixed = _file("ws: nudge, confirmed critical, fix recorded")
 
     with db._conn(immediate=True) as conn:
         _promote_critical(conn, fixed)
@@ -386,6 +394,79 @@ def test_the_viewer_describes_every_state_the_predicate_can_return():
         "every state the predicate can return needs a description, or the"
         f" viewer renders a word with no meaning: predicate {states},"
         f" viewer {help_keys}"
+    )
+
+
+def test_both_viewer_surfaces_render_the_state():
+    """#78. The two source-shape pins above cannot see a rendered byte.
+
+    `test_one_definition_of_the_state_mapping` proves the viewer does not
+    re-derive the state; `..._describes_every_state...` proves every state
+    has help text. Neither proves either page still EMITS it. Both fragments
+    are ordinary f-string interpolations, so deleting either one leaves both
+    pins green and CI 5/5 while the user-visible half of this change renders
+    nothing - a regression no AST walk can observe.
+
+    `released` is the row to assert on. It is the state whose whole purpose
+    is that the cleared columns cannot express it, and the word is
+    distinguishable from `unrecorded` (what this row projects as without the
+    fix), so neither assertion can be satisfied by any other state.
+
+    Note the deliberate asymmetry the pins must not flatten: the list
+    suppresses the badge for `claimed` and `fix_pr` (a reader is not told
+    about work that is held or already fixed) while the detail page renders
+    every state. So the list arm is on a routable state, and putting it on a
+    claimed one would assert the opposite of the design.
+
+    HANDOFF NOTE: the page handlers return a starlette `HTMLResponse`, not a
+    str - the body is `.body.decode("utf-8")`, which is the house idiom from
+    tests/test_guilds_viewer.py. The free `format` lane and mypy both pass on
+    a wrong guess here, because "x in response" is a runtime attribute access
+    and the static job's mypy list does not cover this file.
+    """
+    import viewer._bugs as view_bugs
+    from viewer._utils import esc
+
+    lapsed = _file("ws: viewer surfaces, lapsed claim")
+    bug_mod.claim_bug(BETA["token"], lapsed)
+    _age_the_claim(lapsed)
+
+    class _Req:
+        def __init__(self, params=None, path_params=None):
+            from starlette.datastructures import QueryParams
+
+            self.query_params = QueryParams(params or {})
+            self.path_params = path_params or {}
+
+    with db._conn() as conn:
+        assert _state(conn, lapsed) == "released", (
+            "PREMISE, not the conclusion: the state must be `released` or"
+            " neither assertion below can fail"
+        )
+
+    # Surface 1 - the /bugs list card.
+    listing = view_bugs.bugs_page(_Req()).body.decode("utf-8")
+    assert "released" in listing, (
+        "the /bugs list must render the work state; the fragment at"
+        " viewer/_bugs.py builds it from r['work_state'] and the AST pins"
+        " cannot see it disappear"
+    )
+    assert esc(view_bugs._WORK_STATE_HELP["released"]) in listing, (
+        "the list badge must carry its help text in the title attribute, or"
+        " the reader sees a bare word with no meaning"
+    )
+
+    # Surface 2 - the /bugs/{id} detail table, scoped to this row by id.
+    detail = view_bugs.bug_detail_page(
+        _Req(path_params={"id": str(lapsed)})
+    ).body.decode("utf-8")
+    assert "Work state" in detail, (
+        "/bugs/{id} must carry the state row; it is the one place a reader is"
+        " told a lapsed reservation apart from no reservation"
+    )
+    assert "released" in detail, (
+        f"the detail row must show the state itself and not only its label:"
+        f" {view_bugs._WORK_STATE_HELP}"
     )
 
 
