@@ -229,7 +229,7 @@ def test_closed_widen_rebuild_keeps_fix_pr_index():
     own extra_after_rename lists, and only the _migrate.py one was pinned.
     This drives the OTHER one - _boot_collab's 'closed'-widen rebuild -
     with a pre-'closed' table, and asserts the full BUG_REPORT_INDEXES set
-    survives it, fix_pr index included."""
+    survives it, fix_pr index included. FIXTUREPROBE"""
     saved = db.DB_PATH
     try:
         db.DB_PATH = str(_TMP / "legacy_closed_migration.db")
