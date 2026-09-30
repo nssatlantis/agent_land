@@ -290,7 +290,7 @@ def test_closed_widen_rebuild_keeps_fix_pr_index():
                 " AND name='bug_reports'"
             ).fetchone()["sql"]
         assert first_ddl == second_ddl, (
-            "a second init_db() rewrote guild_stake_links - no, bug_reports:"
+            "a second init_db() rewrote bug_reports:"
             " the outer guard must be a membership test, or it rebuilds"
             " on every boot instead of only on a legacy one"
         )
