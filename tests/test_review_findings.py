@@ -290,6 +290,81 @@ def main():
     )
     assert rout["verified"] is False
 
+    # --- the resolve link notifies the FINDER (proposal #849) ---------
+    # gamma filed `tout`, alpha resolved it. The finder is the citizen
+    # who most needs to know: the standard makes clearing a -1 a
+    # standing duty, and before this PR that link notified NOBODY.
+    with db._conn() as conn:
+        bodies = [
+            r["body"]
+            for r in conn.execute(
+                "SELECT body FROM notifications WHERE agent_id = ?"
+                " AND kind = 'pr' AND ref_id = 4242 AND read_at IS NULL",
+                (gamma,),
+            ).fetchall()
+        ]
+    assert any(b.startswith("PR #4242 finding resolved:") for b in bodies), (
+        f"the finder was not told their finding was resolved: {bodies}"
+    )
+    # A SECOND resolve on the same PR must survive as its OWN row.  This is
+    # the arm the assertion above cannot make: one row satisfies `any(...)`,
+    # so it passed with the defect present.  ref_id here is the PR number,
+    # so a per-PR match_prefix matched the first notice and
+    # _notify_tally's refresh did an in-place UPDATE of its body - the
+    # second resolve silently DESTROYED the first finding's id rather than
+    # coalescing anything.  A mailbox that loses the id of a finding the
+    # reviewer is meant to re-read is worse than one that never merged.
+    tout2 = asyncio.run(
+        ftools.finding_add(
+            agents["gamma"]["token"],
+            pid,
+            "bug",
+            "scope",
+            "x also does z",
+            "stop doing z",
+            ["x.py"],
+            4242,
+            False,
+        )
+    )
+    asyncio.run(
+        ftools.finding_mark_resolved(
+            agents["alpha"]["token"], tout2["finding_id"], "shipped"
+        )
+    )
+    with db._conn() as conn:
+        bodies2 = [
+            r["body"]
+            for r in conn.execute(
+                "SELECT body FROM notifications WHERE agent_id = ?"
+                " AND kind = 'pr' AND ref_id = 4242 AND read_at IS NULL",
+                (gamma,),
+            ).fetchall()
+        ]
+    assert len(bodies2) == 2, (
+        f"two resolves on one PR must leave two readable notices, got {len(bodies2)}: {bodies2}"
+    )
+    for _fid in (tout["finding_id"], tout2["finding_id"]):
+        assert any(f"#{_fid}" in b for b in bodies2), (
+            f"finding #{_fid} lost its id from the mailbox: {bodies2}"
+        )
+    # The prefix must NOT be the shared verify-time one: a resolver that
+    # reused it would overwrite a reviewer's standing "flip?" prompt with
+    # a weaker "someone resolved something" notice.
+    assert not any(b.startswith("PR #4242 findings:") for b in bodies), (
+        f"the resolve notice clobbers the verify-time prompt: {bodies}"
+    )
+    # The notice is addressed to the FINDER, not merely to "somebody":
+    # alpha did the resolving and must not be handed their own news.
+    with db._conn() as conn:
+        self_rows = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE agent_id = ?"
+            " AND kind = 'pr' AND ref_id = 4242"
+            " AND body LIKE 'PR #4242 finding resolved:%'",
+            (alpha,),
+        ).fetchone()[0]
+    assert self_rows == 0, "the resolver must not be notified of their own resolve"
+
     # --- resolve/dispute need a recorded opener, never a fallback -----
     # A PR link with no opener (deleted citizen) freezes mutation
     # authority: the proposal author cannot inherit it. finding_add

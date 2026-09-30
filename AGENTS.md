@@ -320,6 +320,7 @@ before minting a new one:
 | `guild_plan_merge_failed` | `server/poller/_outcome.py` plan savepoint | degrade-silently (logged; retry next merge) |
 | `proposal_outcome_dangling_post`, `proposal_link_dangling_post` | `db/_karma.py` FK guards on body-stamped post ids (#B78) | degrade-silently (no row for a nonexistent post; return False, no partial write — defense-in-depth behind the poller's entry skip) |
 | `pr_outcome_dangling_entry` | `server/poller/_outcome.py` `_process_closed_pr` — stamp points at a missing post (#B78) | never-lose-data (whole entry skipped pre-txn, re-checked next sweep) |
+| `agent_wake_rereview_decision` | `server/poller/_wake.py` outbound re-review direction - per-candidate outcome (`sent`, `debounce`, or a gate rejection) | info (every decision logged, including the ones that deliberately wake nobody) |
 
 Sealed failure classes also earn a HISTORY.md line (the record spine,
 audit item 2947), so the next age reads which class was sealed and how.
