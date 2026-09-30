@@ -231,11 +231,21 @@ def test_nudge_routes_a_lapsed_claim():
 
 def test_a_live_claim_still_suppresses_the_nudge():
     """The fix may only ADD fix_pr to the suppressor, never replace the claim -
-    the docstring already promised "live claim suppresses fix-routing"."""
+    the docstring already promised "live claim suppresses fix-routing".
+
+    The arm carries its OWN routable control, which is what lets the
+    conclusion be unconditional. Before, the sole assertion sat behind
+    `if top is not None`, so "the nudge returned nothing" read as a pass
+    rather than as a broken fixture. With the control, that is a failure
+    naming the fixture - and it is the same idiom as
+    `test_nudge_skips_a_recorded_fix_and_still_routes_a_clean_row`.
+    """
     import db._nudges as nudge_mod
 
+    control = _file("ws: nudge, confirmed critical, clean control")
     held = _file("ws: nudge, confirmed critical, claimed")
     with db._conn(immediate=True) as conn:
+        _promote_critical(conn, control)
         _promote_critical(conn, held)
     bug_mod.claim_bug(BETA["token"], held)
 
@@ -245,9 +255,14 @@ def test_a_live_claim_still_suppresses_the_nudge():
             " vacuous and would pass whatever the nudge does. If this fails the"
             " fixture is wrong, not the nudge."
         )
+        assert _state(conn, control) == "unrecorded", (
+            "PREMISE: the control must be routable, or the suppression check"
+            " below cannot fail"
+        )
         top = nudge_mod._top_critical_bug(conn)
-        if top is not None:
-            assert top["id"] != held, "a live claim must still suppress fix-routing"
+        assert top is not None, "the control must route or this arm proves nothing"
+        assert top["id"] == control, "a live claim must still suppress fix-routing"
+        assert top["id"] != held, "and the claimed row must not be the one routed"
 
 
 def test_list_projection_carries_the_state():
