@@ -131,11 +131,21 @@ def test_reader_hides_superseded_rows_by_default():
 
 
 def test_reader_orders_active_rows_before_superseded_ones():
-    """Ordering IS the split contract: the panel slices on position, so a
-    row that led with the stale score would render as the live one.
+    """The reader returns both rows when asked, each carrying the flag the
+    panel partitions on, with the active one first.
 
-    Discriminates: flip `superseded ASC` to DESC and the first row
-    becomes the superseded one.
+    On what the ordering is and is not: `_skills_ratings_disclosure`
+    receives `active` and `stale` as two ALREADY-PARTITIONED lists - the
+    panel splits on the `superseded` flag, so no ordering can leak a row
+    into the wrong table. `superseded ASC` is therefore presentational (it
+    keeps the two groups contiguous and each newest-first for a caller
+    reading the flat list), NOT the mechanism the split depends on. An
+    earlier draft of this docstring claimed the panel sliced on position;
+    it does not, and the comment it came from said the same thing.
+
+    Discriminates: the flag assertions red if `superseded` stops being
+    carried or stops distinguishing the rows; the first-row assertion
+    reds if `superseded ASC` is flipped to DESC.
     """
     who, ref = _ratee("r-order")
     _rate("alpha", who, ref, "stale-reason")
@@ -257,8 +267,11 @@ def test_panel_omits_the_disclosure_when_there_are_no_ratings():
     assert "why " not in html
     assert "sec-why-skill-" not in html and "sec-stale-skill-" not in html
     # The aggregate table must still be there: this is about the
-    # disclosure, not about losing the panel.
-    assert "Bayesian" in html
+    # disclosure, not about losing the panel. Asserted on the table's own
+    # `<th>skill</th>` header, NOT on "Bayesian" - that word lives in the
+    # shared rules note appended AFTER the table, so it would stay green
+    # with the whole table deleted.
+    assert "<th>skill</th>" in html
 
 
 def test_panel_splits_superseded_rows_into_their_own_disclosure():
@@ -391,6 +404,13 @@ def test_nav_and_route_are_both_wired_for_skills():
         Path(__file__).resolve().parent.parent / "viewer" / "__init__.py"
     ).read_text(encoding="utf-8")
     assert 'Route("/skills", skills_page)' in init
+    # The Route line above is a SOURCE-SHAPE read: it stays green if the
+    # handler raises on every call, because the body is only evaluated at
+    # request time. So actually CALL it. The handler does `del request`,
+    # so None is a legitimate argument.
+    from viewer import _skills as vskills
+
+    assert vskills.skills_page(None).status_code == 200
 
 
 def test_ledger_sentence_links_the_cited_artifact():

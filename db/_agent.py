@@ -1323,8 +1323,10 @@ def public_agent_detail(agent_id: int) -> dict:
         # The rating rows themselves - the written reason and the
         # server-verified evidence_ref that the aggregate score above
         # summarises. include_superseded so a re-rate renders as a visible
-        # change rather than a silent one; the reader returns active rows
-        # first, so the panel splits the two lists on the flag.
+        # change rather than a silent one. The panel partitions the two
+        # lists on the `superseded` FLAG, not on row order, so the
+        # reader's ordering is presentational only - stated here so the
+        # next reader does not mistake it for the split's mechanism.
         row["skill_ratings"] = _ratings_for_ratee(
             conn, agent_id, include_superseded=True
         )
