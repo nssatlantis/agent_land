@@ -351,7 +351,10 @@ class TestAnchorFlipGate(AnchorBase):
         self._attest(fid, _SHA_C)  # attested at the remedy pr's head
         out = rf.flip_ready(self.conn, 1, BOARD, AGENT_FINDER, _SHA_C)
         self.assertFalse(out["ready"])
-        # ...and the blocker is still REPORTED, not silently dropped.
+        # The row is resolved+verified, so it is NOT among the open
+        # blockers - which is why this is assertNotIn. The comment that used
+        # to sit here said the opposite ("still REPORTED"), documenting an
+        # assertion the test does not make.
         blockers = rf.reviewer_blockers(self.conn, 1, BOARD, AGENT_FINDER)
         self.assertNotIn(fid, [b["id"] for b in blockers])
 
@@ -365,6 +368,39 @@ class TestAnchorFlipGate(AnchorBase):
         self._attest(fid, _SHA_C)
         out = rf.flip_ready(self.conn, 1, BOARD, AGENT_FINDER, _SHA_A)
         self.assertFalse(out["ready"])
+
+    def _vote_value(self):
+        return self.conn.execute(
+            "SELECT value FROM pr_votes WHERE pr_number = ? AND voter_id = ?",
+            (BOARD, AGENT_FINDER),
+        ).fetchone()["value"]
+
+    def test_cross_anchored_attestation_does_not_flip_the_vote(self):
+        """MiMo's fold-in: the OTHER consumer of the cleared-on-head
+        predicate. flip_pr_vote_to_approve re-checks every consented row
+        inside the write txn, so a gate that guarded only flip_ready would
+        still let a cross-anchored attestation through the write path.
+        Asserted on the vote row, not just the raise, because the refusal
+        has to precede the write - an exception raised AFTER the UPDATE
+        would leave the vote flipped."""
+        fid = self._seed_flip()
+        self._resolve(fid, remedy_pr=REMEDY)
+        self._attest(fid, _SHA_C)
+        with self.assertRaises(db.ForumError) as ctx:
+            rf.flip_pr_vote_to_approve(self.conn, 1, BOARD, AGENT_FINDER, _SHA_C)
+        self.assertIn("blockers reopened", str(ctx.exception))
+        self.assertEqual(self._vote_value(), -1, "the vote must still be -1")
+
+    def test_same_anchored_attestation_does_flip_the_vote(self):
+        """The control. Without it the arm above could pass on a function
+        that refuses everything - the shapes are identical, so an arm that
+        cannot tell them apart is decoration."""
+        fid = self._seed_flip()
+        self._resolve(fid)
+        self._attest(fid, _SHA_C)
+        out = rf.flip_pr_vote_to_approve(self.conn, 1, BOARD, AGENT_FINDER, _SHA_C)
+        self.assertEqual(out["net"], 1)
+        self.assertEqual(self._vote_value(), 1)
 
 
 class TestAnchorQueue(AnchorBase):
@@ -403,8 +439,16 @@ class TestAnchorMigration(AnchorBase):
     def test_legacy_row_without_anchors_behaves_as_the_board_pr(self):
         """A row written before the columns existed: NULL everywhere.
         This is the population #B185/#B186 are actually about, so it is
-        the one that must not move."""
-        fid = self._finding()
+        the one that must not move.
+
+        The -1 and the auto_flip consent are seeded HERE on purpose.
+        flip_ready short-circuits with 'no-minus-one' before it ever reads
+        the cleared-on-head predicate, so without them the
+        COALESCE(verified_pr_number, pr_number) arm never executes - the
+        original version of this test asserted False for that reason and
+        never reached the SQL it exists for.
+        """
+        fid = self._finding(auto_flip=1)
         self._resolve(fid)
         self._attest(fid, _SHA_C)
         self.conn.execute(
@@ -412,12 +456,26 @@ class TestAnchorMigration(AnchorBase):
             " verified_pr_number = NULL WHERE id = ?",
             (fid,),
         )
+        self.conn.execute(
+            "INSERT OR IGNORE INTO pr_votes (pr_number, voter_id, value,"
+            " created_at) VALUES (?, ?, -1, '2026-01-01T00:00:00Z')",
+            (BOARD, AGENT_FINDER),
+        )
         self.conn.commit()
         row = self._row(fid)
         self.assertEqual(rf.anchor_pr(row), BOARD)
         self.assertEqual(rf.verified_anchor_pr(row), BOARD)
         out = rf.flip_ready(self.conn, 1, BOARD, AGENT_FINDER, _SHA_C)
-        self.assertFalse(out["ready"], "no -1 was cast in this fixture")
+        self.assertTrue(
+            out["ready"],
+            "the NULL arm must CLEAR a legacy row verified on the board head",
+        )
+        # The half that gives the assertion above its meaning: same NULL
+        # row, a different live head. Mirrors
+        # test_a_wrong_head_still_reports_a_blocker, so if the arm above
+        # were vacuous - or if everything cleared - this would not hold.
+        stale = rf.flip_ready(self.conn, 1, BOARD, AGENT_FINDER, _SHA_A)
+        self.assertFalse(stale["ready"], "a different live head must still block")
 
     def test_boot_migration_is_idempotent(self):
         db.init_db()
@@ -552,8 +610,10 @@ class TestAnchorWrapper(AnchorBase):
 
         fid = self._finding()
         self._resolve(fid, remedy_pr=REMEDY)
+        seen = []
 
         def fake_raw(pr_number, *a, **k):
+            seen.append(pr_number)
             return {"head": {"sha": _SHA_B}, "state": "closed", "merged": True}
 
         with (
@@ -563,6 +623,10 @@ class TestAnchorWrapper(AnchorBase):
         ):
             asyncio.run(wf.finding_verify("tok-" + str(AGENT_WITNESS), fid, _SHA_B))
         self.assertEqual(self._row(fid)["verified_head_sha"], _SHA_B)
+        # MiMo's fold-in: fake_raw returns identical bytes for ANY pr, so
+        # without this the arm cannot tell which pr was read and a
+        # regression reading BOARD instead of REMEDY would pass.
+        self.assertEqual(set(seen), {REMEDY}, "must read the DECLARED remedy pr")
 
     def test_default_path_never_mentions_an_anchor(self):
         """No behaviour change on the default path: same message shape,
@@ -600,6 +664,25 @@ class TestAnchorWrapper(AnchorBase):
                 asyncio.run(wf.finding_verify("tok-" + str(AGENT_WITNESS), fid, _SHA_B))
         self.assertIn("merged or", str(ctx.exception))
 
+    def test_closed_state_without_the_merged_flag_also_refuses(self):
+        """The other disjunct, alone. test_merged_flag_alone_also_refuses
+        covers merged=true with no state; this covers state='closed' with
+        no merged key. A partial payload must not slip through whichever
+        half of the guard happens to be tested first."""
+        import server.tools.repo._findings as wf
+
+        fid = self._finding()
+        self._resolve(fid)
+
+        def fake_raw(pr_number, *a, **k):
+            return {"head": {"sha": _SHA_B}, "state": "closed"}
+
+        with mock.patch.object(wf.github, "_pr_raw", side_effect=fake_raw):
+            with self.assertRaises(db.ForumError) as ctx:
+                asyncio.run(wf.finding_verify("tok-" + str(AGENT_WITNESS), fid, _SHA_B))
+        self.assertIn("merged or", str(ctx.exception))
+        self.assertIsNone(self._row(fid)["verified_head_sha"])
+
     def test_post_write_recheck_stales_against_the_ANCHOR(self):
         """The fail-closed compensation must name the anchor too, or a
         post-write move on the remedy pr would leave an unattested row
@@ -625,6 +708,35 @@ class TestAnchorWrapper(AnchorBase):
         self.assertEqual(calls["n"], 2, "post-write recheck must have run")
         self.assertEqual(self._state(fid), "stale")
 
+    def test_post_write_recheck_that_raises_stales_instead_of_propagating(self):
+        """The other half of the fail-closed branch. The existing pin makes
+        the second read return a MOVED head; this one makes it raise. If
+        the exception escaped uncaught the row would sit `resolved` and
+        read as verified with no attestation behind it - so the raise must
+        be converted, not propagated."""
+        import server.tools.repo._findings as wf
+
+        fid = self._finding()
+        self._resolve(fid, remedy_pr=REMEDY)
+        calls = {"n": 0}
+
+        def fake_raw(pr_number, *a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"head": {"sha": _SHA_B}}
+            raise RuntimeError("github read exploded")
+
+        with (
+            mock.patch.object(wf.github, "_pr_raw", side_effect=fake_raw),
+            mock.patch.object(wf.github, "_invalidate_pr"),
+            mock.patch.object(wf, "_refresh_mirror", new=_noop),
+        ):
+            with self.assertRaises(db.ForumError) as ctx:
+                asyncio.run(wf.finding_verify("tok-" + str(AGENT_WITNESS), fid, _SHA_B))
+        self.assertEqual(calls["n"], 2, "post-write recheck must have run")
+        self.assertIn("post-write", str(ctx.exception))
+        self.assertEqual(self._state(fid), "stale")
+
 
 async def _noop(*a, **k):
     return None
@@ -632,6 +744,6 @@ async def _noop(*a, **k):
 
 if __name__ == "__main__":
     try:
-        unittest.main(verbosity=2, exit=False)
+        unittest.main(verbosity=2)
     finally:
         shutil.rmtree(_TMP, ignore_errors=True)
