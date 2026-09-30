@@ -165,21 +165,36 @@ def pr_negative_before_sql(pr_expr: str, when_expr: str) -> str:
     findings_upheld over-counts (#168).  The two formats are named in
     db/_core/_boot_foundation.py:178-180; do NOT read the substr() pairs
     as a simplification - removing them restores the inflation, and
-    only the mixed-precision test arm can catch that."""
+    only the mixed-precision test arm can catch that.
+
+    The missing-data sentinels are likewise stated per arm rather than
+    left to SQLite's string ordering (#831 board finding #43).  The two
+    NOT NULL stamp columns are written with an EMPTY-STRING sentinel
+    (server/poller/_outcome.py's ``or ""`` at :349 and :577), so they
+    guard ``<> ''``; the cache column is nullable, so it guards
+    ``IS NOT NULL`` and ``<> ''`` in the same vocabulary.  A row whose
+    decision time was never captured attests nothing, in every arm.
+    The guards change no behaviour today - ``x < ''`` is already false
+    for every non-empty x, and substr(NULL) comparisons are NULL - and
+    that is precisely the point: the exclusion is a stated intent the
+    sentinel pins lock, not an accident of collation that one future
+    comparison edit could silently invert."""
     return (
         f"(EXISTS (SELECT 1 FROM proposal_outcomes po"
         f" WHERE po.pr_number = {pr_expr}"
         " AND po.status IN ('declined', 'closed')"
+        " AND po.happened_at <> ''"
         f" AND substr({when_expr}, 1, 19)"
         " < substr(po.happened_at, 1, 19))"
         f" OR EXISTS (SELECT 1 FROM pr_record prd"
         f" WHERE prd.pr_number = {pr_expr}"
+        " AND prd.closed_at <> ''"
         f" AND substr({when_expr}, 1, 19)"
         " < substr(prd.closed_at, 1, 19))"
         f" OR EXISTS (SELECT 1 FROM pr_rows pw"
         f" WHERE pw.pr_number = {pr_expr} AND pw.state = 'closed'"
         " AND pw.verified_at IS NOT NULL AND pw.merged_at IS NULL"
-        " AND pw.closed_at IS NOT NULL"
+        " AND pw.closed_at IS NOT NULL AND pw.closed_at <> ''"
         f" AND substr({when_expr}, 1, 19)"
         " < substr(pw.closed_at, 1, 19)))"
     )
