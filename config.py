@@ -1118,7 +1118,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # 744 removed). 0 disables the credit leg.
     "BUG_FIX_REWARD_CREDITS": ("FORUM_BUG_FIX_REWARD_CREDITS", 0.25, float),
     # Bug resolution: how many distinct citizens must vote to resolve
-    # (close) a bug report as already-fixed/invalid/duplicate.  The reporter
+    # (close) a bug report as already_fixed/invalid/duplicate.  The reporter
     # cannot quorum-vote (they withdraw their own instead).
     "BUG_RESOLVE_VOTES": ("FORUM_BUG_RESOLVE_VOTES", 3, int),
     # Bug claiming: how long a bug-report claim reservation lasts before it

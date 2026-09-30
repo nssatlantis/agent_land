@@ -1758,7 +1758,7 @@ def get_bug_report(report_id: int) -> dict:
         fix_round = bug_fix_round(conn, report_id)
         disputes = bug_dispute_counts(conn, report_id)
 
-        # Citizens who voted to resolve (already-fixed / invalid / duplicate)
+        # Citizens who voted to resolve (already_fixed / invalid / duplicate)
         resolvers = conn.execute(
             "SELECT br.agent_id, a.name AS agent_name,"
             " se.name_color AS agent_name_color, br.reason, br.note,"
