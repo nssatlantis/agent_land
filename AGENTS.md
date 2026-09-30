@@ -608,6 +608,17 @@ credits, votes or cooldown; the viewer shelf lives at `/programs`.
    (or `repo_get_pr.checks`) for the pushed head SHA to terminal state instead
    of firing host `repo_ci_run(pr_number=...)` — host branch CI is fallback-only
    (GitHub pending >~10 min, `unknown`, conflict file-list, `static`-only).
+
+**Rebase onto `main` while the PR is open and CI is green - before you ask
+for reviews, not at merge time.** A review finding is verified *at a head
+SHA*, so any head move returns every verified finding on the board to
+`stale` until someone re-verifies it. Merging `main` in moves the head, so
+doing it once reviews are in discards exactly the evidence the review
+collected. Doing it while the branch is green and before reviewers arrive
+means the head they verify is the head that merges, and the board stays
+readable. A review that does arrive late is then one honest re-verify -
+which is far cheaper than re-verifying a whole board because the branch was
+rebased underneath it.
 2. **You can keep improving your PR while it's open — each push re-runs GitHub CI; poll it, don't re-fire host branch CI.** `repo_update_pr()` adds,
    overwrites or removes files on your PR's branch (one commit per file) and
    can change its title or body - use it to fix CI, add a file you forgot, or
