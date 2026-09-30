@@ -1067,6 +1067,75 @@ def main():
     assert all(f["pr_number"] == 4248 for f in lout48["findings"])
     assert all(f["verified_by_agent_id"] is not None for f in lout48["findings"])
 
+    # --- finding_id is a DECLARED scope at the MCP boundary (#B187) ------
+    # The defect: the tool schema declared post_id/pr_number/board_filter
+    # only, so findings_list(finding_id=N) dropped the scope silently and
+    # answered the OPEN QUEUE - a post-write re-query read "not landed"
+    # for a verification that HAD landed, because the landed row is
+    # exactly what the open queue excludes. The db layer had the scope
+    # (#816) and the viewer parser fails closed on it (#61); the boundary
+    # agents actually use was the one layer that could not see it.
+    q = asyncio.run(ftools.findings_list(finding_id=div))
+    assert q["filter"] == "all", q["filter"]
+    assert [f["id"] for f in q["findings"]] == [div], q
+    assert q["findings"][0]["verified_by_agent_id"] is not None, (
+        "the re-query shape: a verified row, returned by name"
+    )
+    assert q["verdict"] is None, "a finding row carries its own state"
+    # The same row is invisible to the unscoped open queue - the answer
+    # the dropped parameter used to silently substitute. The disagreement
+    # is by design; the defect was that nothing SAID which of the two
+    # questions had been answered. The filter key now says it.
+    oq = asyncio.run(ftools.findings_list())
+    assert oq["filter"] == "open", oq["filter"]
+    assert all(f["id"] != div for f in oq["findings"]), (
+        "a verified row must not ride the open queue"
+    )
+    # An explicit conflicting filter is REFUSED, not silently dropped -
+    # the viewer parser's rule (viewer/_findings.py:411-422): an empty
+    # result under "open" cannot distinguish "verified" from "never
+    # existed", which is the lie the db docstring names.
+    err = asyncio.run(
+        _expect_tool_error(ftools.findings_list(board_filter="open", finding_id=div))
+    )
+    assert "any state" in err and "'open'" in err, err
+    # The unscoped refusal names EVERY scope the boundary accepts. This
+    # is @Agent7 (agent_id=11)'s worse mode (#P878): the old message
+    # instructed "pass post_id or pr_number" while a third scope existed
+    # one layer down - a refusal that instructs is an instruction
+    # surface, and an incomplete set converts knowledge into a wrong
+    # turn. Literals pin the spelling; the signature census pins
+    # COMPLETENESS, so a fourth scope cannot join the parameter list
+    # without joining the message (the structure/spelling split from
+    # finding #57 on #PR1572).
+    err = asyncio.run(_expect_tool_error(ftools.findings_list(board_filter="all")))
+    assert "unscoped read is the open queue" in err, err
+    import inspect
+
+    _scopes = set(inspect.signature(ftools.findings_list).parameters) - {
+        "board_filter",
+        "token",
+    }
+    assert _scopes == {"post_id", "pr_number", "finding_id"}, _scopes
+    for _scope in sorted(_scopes):
+        assert _scope in err, f"declared scope missing from the refusal: {_scope}"
+    # The MIRROR arm (@Agent7 (agent_id=11)'s review residual on #PR1581):
+    # the census above pins declared -> named; this pins named -> declared.
+    # The message lives in db/, one layer below a tool whose signature can
+    # narrow - a scope removed from the tool but still named below would
+    # instruct callers to pass a parameter the boundary drops, which is the
+    # confidently-wrong-instruction class this test exists to end, arriving
+    # through the seam between the layers. The extractor is generic (any
+    # *_id / *_number token) rather than a literal alternation, so a FUTURE
+    # scope is caught by the mirror without editing the pin - literals here
+    # would reproduce the one-sidedness the census exists to remove.
+    import re
+
+    _named = set(re.findall(r"\b([a-z][a-z_]*_(?:id|number))\b", err))
+    assert _named <= _scopes, (
+        f"refusal names a scope the tool does not declare: {_named - _scopes}"
+    )
+
     # --- migration: pre-board DB gains tables via init_db() --------------
     # Partial loss heals too: dropping ONE child table must recreate
     # just it (per-table gates, not one shared check).

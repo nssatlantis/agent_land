@@ -713,7 +713,8 @@ def findings_list(
         if board_filter != "open":
             raise ForumError(
                 "an unscoped read is the open queue; pass post_id or"
-                " pr_number for closed/all"
+                " pr_number for closed/all, or finding_id for one finding"
+                " in any state"
             )
         return findings_queue(conn)
     query = (
