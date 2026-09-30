@@ -16,6 +16,7 @@ Two things live here and the split matters:
 """
 
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -63,8 +64,8 @@ LEGACY_DDL = """
         VALUES (1, 'legacy fixed bug', 'b', 'fixed', 3, '2026-01-01T00:00:00.000Z');
 """
 
-# Every index the rebuild's extra_after_rename must re-create.  Three of
-# them (severity, bounty_job_id, claimed_by) live on ALTER-added columns,
+# Every index the rebuild's extra_after_rename must re-create.  Four of
+# them (severity, bounty_job_id, claimed_by, fix_pr) live on ALTER-added columns,
 # so they exist only because boot_collab creates them - a rebuild that
 # dropped them would be SILENT, which is exactly why they are enumerated
 # here rather than left to whoever reads the migration next.
@@ -76,6 +77,7 @@ BUG_REPORT_INDEXES = (
     "idx_bug_reports_severity",
     "idx_bug_reports_bounty_job",
     "idx_bug_reports_claimed_by",
+    "idx_bug_reports_fix_pr",
 )
 
 
@@ -109,7 +111,7 @@ def test_legacy_rebuild_widens_check_preserves_rows_and_indexes():
 
     Builds a pre-#821 bug_reports whose CHECK admits only
     open/confirmed/fixed, then boots.  init_db must widen the CHECK to
-    admit 'resolved', add verified_at, keep every row, re-create all seven
+    admit 'resolved', add verified_at, keep every row, re-create all eight
     indexes, and actually accept a 'resolved' write afterwards.
     """
     saved = db.DB_PATH
@@ -220,6 +222,80 @@ def test_legacy_rebuild_widens_check_preserves_rows_and_indexes():
     finally:
         db.DB_PATH = saved
     print("  legacy 'resolved' rebuild + FK restore + idempotency: ok")
+
+
+def test_closed_widen_rebuild_keeps_fix_pr_index():
+    """Finding #60 on #852: bug_reports has TWO rebuild paths with their
+    own extra_after_rename lists, and only the _migrate.py one was pinned.
+    This drives the OTHER one - _boot_collab's 'closed'-widen rebuild -
+    with a pre-'closed' table, and asserts the full BUG_REPORT_INDEXES set
+    survives it, fix_pr index included."""
+    saved = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "legacy_closed_migration.db")
+        db.init_db()
+        with db._conn() as conn:
+            live = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table'"
+                " AND name='bug_reports'"
+            ).fetchone()["sql"]
+        assert "'closed'" in live, "live DDL must carry 'closed'"
+        narrowed = re.sub(r",\s*'closed'", "", live)
+        assert "'closed'" not in narrowed, "surgery must drop 'closed'"
+        with db._conn() as conn:
+            conn.execute("DROP TABLE bug_reports")
+            conn.execute(narrowed)
+            conn.execute(
+                "INSERT INTO agents (name, token) VALUES ('legacy-holder', 'x')"
+            )
+            holder = conn.execute(
+                "SELECT id FROM agents WHERE name = 'legacy-holder'"
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO bug_reports (agent_id, title, body)"
+                " VALUES (?, 'legacy row', 'b')",
+                (holder,),
+            )
+            pre = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table'"
+                " AND name='bug_reports'"
+            ).fetchone()["sql"]
+            assert "'closed'" not in pre, "fixture must predate 'closed'"
+        db.init_db()
+        with db._conn() as conn:
+            check = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table'"
+                " AND name='bug_reports'"
+            ).fetchone()["sql"]
+            assert "'closed'" in check, "init_db widens CHECK to 'closed'"
+            row = conn.execute(
+                "SELECT id, title FROM bug_reports WHERE title = 'legacy row'"
+            ).fetchone()
+            assert row is not None, "rebuild dropped the legacy row"
+            present = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                    " AND tbl_name='bug_reports'"
+                )
+            }
+            missing = [i for i in BUG_REPORT_INDEXES if i not in present]
+            assert not missing, f"'closed'-widen rebuild dropped: {missing}"
+            first_ddl = check
+        db.init_db()
+        with db._conn() as conn:
+            second_ddl = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table'"
+                " AND name='bug_reports'"
+            ).fetchone()["sql"]
+        assert first_ddl == second_ddl, (
+            "a second init_db() rewrote bug_reports:"
+            " the outer guard must be a membership test, or it rebuilds"
+            " on every boot instead of only on a legacy one"
+        )
+    finally:
+        db.DB_PATH = saved
+    print("  closed-widen rebuild keeps the fix_pr index: ok")
 
 
 def test_three_confirmations_resolve_the_report():
