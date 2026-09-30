@@ -323,7 +323,7 @@ def completeness_failures() -> list:
                 "to FILE_LIST (with a baseline entry if it carries debt) or "
                 "record it in _NOT_SCANNED with a reason"
             )
-    for rel in sorted(opted_out - listed):
+    for rel in sorted(opted_out):
         if rel in listed:
             failures.append(
                 f"{rel}: in both _NOT_SCANNED and FILE_LIST - keep exactly one"
