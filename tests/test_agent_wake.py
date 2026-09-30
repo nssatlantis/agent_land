@@ -828,7 +828,7 @@ def test_debounce_keeps_the_finding_a_candidate():
                             # to copy onto this parent row: a child's title is
                             # inert, because select_session tests parentID first
                             # and unconditionally, so a child exits before the
-                            # title gate is ever read (#PR1572 finding #64).
+                            # title gate is ever read (#PR1571 finding #64).
                             "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
