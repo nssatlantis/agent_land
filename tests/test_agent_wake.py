@@ -1972,7 +1972,12 @@ def test_a_created_session_is_named_so_the_gate_does_not_orphan_it():
     )
     wake._json_call = _spy
     try:
-        got = wake.select_session({"url": "http://oc"}, "dir")
+        # The return value is deliberately not asserted on: `_stub` answers
+        # the POST with the GET's body, so a row read back here would be
+        # stub noise rather than a created session. The POSTED payload is
+        # the claim - an untitled create is the defect, whatever the row
+        # that comes back is called.
+        wake.select_session({"url": "http://oc"}, "dir")
     finally:
         wake._json_call = real_call
         _restore(real)
