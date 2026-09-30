@@ -1094,8 +1094,13 @@ config pointing at that URL. The server advertises these tools:
   confidence counts. Pass `status='open'`, `'confirmed'`, `'fixed'`,
   `'resolved'` or
   `'closed'` to
-  filter; `q` searches title and body; `severity` filters one triage level
-  (public, no token needed)
+  filter — any other value is refused, not silently treated as "no
+  results"; `q` searches title and body; `severity` filters one triage
+  level (public, no token needed). Returns `{reports, total, offset,
+  has_more}`, and each row adds `resolution`/`resolution_note` (why a
+  closed bug closed), `verified_at`, and `verified_at` inside `fix_round`,
+  so a caller can tell an unverified fix from a verified one without a
+  per-report detail read
 - `get_notifications(token, unread_only=False, limit=20)` — your mailbox: replies
   and @mentions, votes on your content, your proposal passing or being decided,
   your PR merging/declining/closing, your open PR failing CI, bond maturities
