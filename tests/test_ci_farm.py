@@ -676,6 +676,141 @@ def test_last_error_tracks_runner_refusals():
     assert runner._result_error({"ok": False, "summary": {}}) is None
 
 
+class _FakeFarmConn:
+    """Minimal db._conn stand-in so pick_runner can be driven without a DB.
+
+    This file sets FORUM_DB_PATH but never calls tests/_setup.setup(), so the
+    real registry is not available here. Seeding a fixture larger than the fix
+    would be the wrong trade; the seam is still driven through the REAL
+    pick_runner, _runner_head_sha and _map_and_log.
+    """
+
+    ROW = {"id": 7, "name": "node-1", "url": "http://node", "token": ""}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, _sql, _params=()):
+        return self
+
+    def fetchall(self):
+        return [dict(self.ROW)]
+
+    def fetchone(self):
+        return dict(self.ROW)
+
+
+def test_runner_head_sha_validation():
+    """A runner that will not name its tree must not get a plausible one.
+
+    Uppercase hex is REJECTED, deliberately. _farm's own _COMMIT_RE is
+    lowercase-anchored, so an uppercase sha is dropped rather than written to
+    the ledger. Dropping is the safe direction: absence reads as "unknown",
+    never as "current". The runner emits lowercase anyway (git rev-parse), and
+    loosening _COMMIT_RE would widen a check try_dispatch also applies to
+    executed_base_sha - not this fix's business.
+    """
+    import server.ci_runner._farm as farm
+
+    good = "b" * 40
+    assert farm._runner_head_sha({"head_sha": good}) == good
+    for bad in (
+        "A" * 40,
+        "deadbeef",
+        "b" * 39,
+        "b" * 41,
+        "Z" * 40,
+        7,
+        None,
+        [],
+        {"a": 1},
+        True,
+    ):
+        assert farm._runner_head_sha({"head_sha": bad}) is None, bad
+    assert farm._runner_head_sha({}) is None
+
+
+def test_runner_head_sha_reaches_ledger():
+    """#B190's payload key must reach the ledger, and must NOT be conflated
+    with the ledger's existing `head_sha` - that one is the freshly-fetched
+    TESTED TREE, this one is the runner's pinned ORCHESTRATION checkout. Two
+    different facts; an empty run must write neither as the other.
+    """
+    import server.ci_runner._farm as farm
+
+    captured: dict = {}
+
+    def _capture(*_a, **k):
+        captured.clear()
+        captured.update(k.get("detail") or {})
+
+    remote = {
+        "ok": True,
+        "checks": "tests",
+        "mode": "main",
+        "local": False,
+        "head_sha": "a" * 40,
+    }
+    with mock.patch.object(farm.events, "log_event", side_effect=_capture):
+        farm._map_and_log(
+            remote,
+            "tests",
+            1,
+            "tester",
+            "ci_run",
+            None,
+            {"name": "node-1", "_runner_head_sha": "b" * 40},
+        )
+    assert captured.get("runner_head_sha") == "b" * 40
+    assert captured.get("head_sha") == "a" * 40, "tree sha must survive unchanged"
+    assert captured["runner_head_sha"] != captured["head_sha"]
+
+    # Nothing is written when the runner would not say - absence must not read
+    # as "current".
+    with mock.patch.object(farm.events, "log_event", side_effect=_capture):
+        farm._map_and_log(
+            remote,
+            "tests",
+            1,
+            "tester",
+            "ci_run",
+            None,
+            {"name": "node-1"},
+        )
+    assert "runner_head_sha" not in captured
+    assert captured.get("head_sha") == "a" * 40
+
+
+def test_pick_runner_carries_checkout_sha():
+    """The seam #B190 names: pick_runner holds the ping and must carry the
+    runner's own checkout sha onto the row it returns, so it reaches both the
+    success ledger and the dropped-dispatch audit.
+    """
+    import server.ci_runner._farm as farm
+
+    sha = "c" * 40
+    picked = None
+    try:
+        with (
+            mock.patch.object(farm.config, "CI_FARM_RUNNER_MAX_ACTIVE", 4),
+            mock.patch.object(farm.db, "_conn", return_value=_FakeFarmConn()),
+            mock.patch.object(
+                farm,
+                "_ping",
+                return_value={"ok": True, "busy": False, "head_sha": sha},
+            ),
+        ):
+            picked = farm.pick_runner()
+        assert picked is not None, "a healthy runner must still be picked"
+        assert picked.get("_runner_head_sha") == sha
+    finally:
+        if picked is not None and picked.get("id") is not None:
+            farm._release(picked["id"])
+
+
 def _run_all_tests() -> int:
     """Run all test functions, print PASS/FAIL per test, return exit code."""
     tests = [
@@ -712,6 +847,12 @@ def _run_all_tests() -> int:
         (
             "test_deps_guard_survives_a_fresh_import",
             test_deps_guard_survives_a_fresh_import,
+        ),
+        ("test_runner_head_sha_validation", test_runner_head_sha_validation),
+        ("test_runner_head_sha_reaches_ledger", test_runner_head_sha_reaches_ledger),
+        (
+            "test_pick_runner_carries_checkout_sha",
+            test_pick_runner_carries_checkout_sha,
         ),
         ("test_repo_moved_predicate", test_repo_moved_predicate),
         ("test_stale_gates_release_lock", test_stale_gates_release_lock),
