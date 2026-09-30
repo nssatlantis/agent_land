@@ -72,27 +72,33 @@ def _top_critical_bug(conn: sqlite3.Connection) -> dict | None:
     or None when no critical is actionable."""
     from db._bug_reports import bug_work_state
 
-    # `AND fix_pr IS NULL` narrows the scan; `bug_work_state` is the
-    # authority on the answer, so a state added to the enum later
-    # cannot silently start routing a bug whose fix is already
-    # recorded. The docstring promised "live claim suppresses
-    # fix-routing" and the code implemented half of it: the claim was
-    # the SOLE suppressor, and the claim is the column that stays NULL
-    # when a fix arrives without one (#B180, #B176).
+    # `bug_work_state` is the sole authority on the answer. The docstring
+    # promised "live claim suppresses fix-routing" and the code implemented
+    # half of it: the claim was the SOLE suppressor, and the claim is the
+    # column that stays NULL when a fix arrives without one (#B180, #B176).
+    # `fix_pr` therefore joins the suppressor set HERE rather than in the
+    # WHERE, which is the point of the change and not a cosmetic move: the
+    # recorded pointer is NOT self-clearing. Its clear reaches only the
+    # poller's newest-closed-PR page and defers the rest to a data pass
+    # that never ran (#B122), and bug #108 still reads a withdrawn PR. A
+    # filter built on its presence would therefore trade a self-healing
+    # suppressor (claim staleness expires in 24h) for a permanent one whose
+    # correctness rides on an unfixed bug, and a confirmed-critical bug
+    # whose fix PR was declined could never be routed to a new fixer.
+    # The cost is a wider scan; the benefit is that one predicate decides.
     for row in conn.execute(
         "SELECT id, title, claimed_by, claimed_at, fix_pr FROM bug_reports"
         " WHERE status = 'confirmed' AND severity = 'critical'"
-        " AND fix_pr IS NULL"
         " ORDER BY created_at DESC, id DESC"
     ).fetchall():
         state = bug_work_state(row["claimed_by"], row["claimed_at"], row["fix_pr"])
-        # "No LIVE reservation", not one state name: `released` (a claim
-        # still stored, past its window) is precisely the row that needs a
-        # fixer, and a stale column must not suppress it. `in_flight` cannot
-        # occur under the `fix_pr IS NULL` filter above and is named anyway,
-        # so widening that query later cannot start routing a row that is
-        # already in flight.
-        if state not in ("claimed", "in_flight"):
+        # "No LIVE reservation and no recorded fix", not one state name.
+        # `released` (a claim still stored, past its window) is precisely
+        # the row that needs a fixer, and a stale claim column must not
+        # suppress it. `in_flight` cannot occur here - a live claim is
+        # already suppressed above - and is named anyway, so a state added
+        # to the enum later cannot start routing a row already in flight.
+        if state not in ("claimed", "in_flight", "fix_pr"):
             return {
                 "id": row["id"],
                 "title": row["title"],
