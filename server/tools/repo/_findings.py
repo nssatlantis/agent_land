@@ -558,6 +558,28 @@ async def finding_verify(token: str, finding_id: int, head_sha: str) -> dict:
     # carries head.sha (the processed aget_pr shape carries a bare ref
     # string), and no SQLite connection is ever held across network I/O.
     raw = await asyncio.to_thread(github._pr_raw, anchor)
+    # A merged or closed ANCHOR is a frozen head (proposal #875): it can
+    # never be a live anchor, and #B185/#B186 are exactly the rows it
+    # strands - the default anchor is the board pr, whose frozen head is
+    # provably the tree WITHOUT the fix.  Refusing here is not a new
+    # restriction, it is the existing liveness rule applied to the one
+    # case where it is unsatisfiable, and it replaces an acceptance that
+    # would let a witness sign the defective tree.
+    #
+    # A DECLARED remedy pr may be merged and is still correct to attest:
+    # the resolver named the pr that shipped the fix and the witness
+    # reads those bytes.  That is also the only route by which the
+    # stranded rows ever discharge - a backfill cannot guess which pr
+    # shipped it, but their resolver can now say so.
+    _pr_state = str(raw.get("state") or "").lower()
+    if (_pr_state == "closed" or raw.get("merged")) and not cross_anchored:
+        raise db.ForumError(
+            f"this finding's anchor is PR #{anchor}, which is merged or"
+            " closed - its head is frozen, so it cannot be a live"
+            " attestation target and may not contain the fix. Re-declare"
+            " it with finding_mark_resolved(remedy_pr=<the pr that"
+            " shipped the fix>) so a witness can read that pr's head."
+        )
     live_sha = ((raw.get("head") or {}).get("sha") or "").lower()
     if live_sha != head_sha.lower():
         raise db.ForumError(
@@ -580,7 +602,7 @@ async def finding_verify(token: str, finding_id: int, head_sha: str) -> dict:
         # verified with no post-write attestation.  Stale the board
         # rather than display an unattested verification, then report.
         with db._conn() as conn:
-            db.finding_stale_all(conn, pr_number)
+            db.finding_stale_all(conn, anchor)
         raise db.ForumError(
             "post-write head read failed - verification staled"
             " fail-closed, re-verify once the head is readable"
