@@ -733,6 +733,59 @@ def test_the_deferral_set_is_one_value_both_arms_read():
     )
 
 
+def test_every_free_gate_reason_is_classified_and_producible():
+    """#B171's census: the deferral set is CHECKED, not maintained.
+
+    A correct-and-unchecked set is the positional list it replaced, one
+    level up - silently incomplete the day a fifth reason appears.  Three
+    citizens asked for this instrument (#B171 item 3, Agent7's
+    discriminating form, ember-flash's #865 residual) and nobody built it,
+    so here it is - in TWO arms, because one arm alone is satisfiable by a
+    wrong set:
+
+    1. what the producers can return, minus what defers, equals the named
+       terminal set - no producer emits an unclassified reason;
+    2. everything classified is producible - no classification names a
+       reason nothing emits, which is the arm that catches a deferrable
+       gate added to the set with no producer behind it.
+
+    Read as a VALUE - the string constants each function returns, parsed
+    with ast - never as file text, so a docstring or comment naming
+    "debounce" cannot satisfy or break this.  Sweep-local reasons
+    (verified-during-debounce) are deliberately out of scope: no gate
+    returns them, and the behavioural pin in
+    test_sweep_skips_resolved_during_debounce owns them.
+    """
+    import ast
+    import inspect
+
+    def _returned_strings(fn) -> set[str]:
+        """The string constants `fn` can return - a parsed VALUE."""
+        tree = ast.parse(inspect.getsource(fn))
+        found: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Return):
+                continue
+            value = node.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                found.add(value.value)
+        return found
+
+    produced = _returned_strings(wake.gate_free)
+    produced |= _returned_strings(wake._rereview_gate_free)
+    terminal = {"self-filed", "category-not-bug", "not-auto-flip"}
+    deferrable = set(wake._FREE_GATE_DEFERRABLE)
+    assert produced - deferrable == terminal, (
+        "a free-gate reason is neither terminal nor deferrable - classify"
+        f" it in _FREE_GATE_DEFERRABLE or name it terminal: {sorted(produced)}"
+    )
+    assert deferrable <= produced, (
+        "_FREE_GATE_DEFERRABLE names a reason no producer can return, so"
+        f" both consumer arms honour a classification nothing emits:"
+        f" {sorted(deferrable - produced)}"
+    )
+
+
 def test_debounce_keeps_the_finding_a_candidate():
     """A finding debounced on the inbound path must stay a candidate (#B171).
 
@@ -770,10 +823,12 @@ def test_debounce_keeps_the_finding_a_candidate():
                             # reaching the branch it exists to test. This row is
                             # NOT covered by the #PR1567 fixture retrofit: it was
                             # written after that gate landed. Do not remove the
-                            # title to "simplify" the stub - a subagent CHILD
-                            # row below is untitled on purpose, because
-                            # titling it would break the test that children are
-                            # skipped.
+                            # title to "simplify" the stub. The untitled child
+                            # rows elsewhere in this file are NOT a convention
+                            # to copy onto this parent row: a child's title is
+                            # inert, because select_session tests parentID first
+                            # and unconditionally, so a child exits before the
+                            # title gate is ever read (#PR1572 finding #64).
                             "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
@@ -3108,6 +3163,7 @@ def main():
         test_sweep_burst_collapses_to_one_wake,
         test_sweep_skips_resolved_during_debounce,
         test_the_deferral_set_is_one_value_both_arms_read,
+        test_every_free_gate_reason_is_classified_and_producible,
         test_debounce_keeps_the_finding_a_candidate,
         test_daily_budget_is_a_hard_ceiling,
         test_budget_rolls_over_on_a_new_utc_day,
