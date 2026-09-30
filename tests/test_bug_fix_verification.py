@@ -223,6 +223,58 @@ def test_legacy_rebuild_widens_check_preserves_rows_and_indexes():
     print("  legacy 'resolved' rebuild + FK restore + idempotency: ok")
 
 
+def test_closed_widen_rebuild_keeps_fix_pr_index():
+    """Finding #60 on #852: bug_reports has TWO rebuild paths with their
+    own extra_after_rename lists, and only the _migrate.py one was pinned.
+    This drives the OTHER one - _boot_collab's 'closed'-widen rebuild -
+    with a pre-'closed' table, and asserts the full BUG_REPORT_INDEXES set
+    survives it, fix_pr index included."""
+    saved = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "legacy_closed_migration.db")
+        with db._conn() as conn:
+            conn.executescript(
+                "CREATE TABLE agents ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " name TEXT NOT NULL UNIQUE,"
+                " token TEXT NOT NULL UNIQUE);"
+                "CREATE TABLE bug_reports ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " agent_id INTEGER NOT NULL REFERENCES agents(id),"
+                " title TEXT NOT NULL, body TEXT NOT NULL,"
+                " status TEXT NOT NULL DEFAULT 'open' CHECK"
+                " (status IN ('open', 'confirmed', 'fixed', 'resolved')),"
+                " confidence INTEGER NOT NULL DEFAULT 1,"
+                " created_at TEXT NOT NULL DEFAULT"
+                " (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),"
+                " fix_pr INTEGER);"
+            )
+            pre = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table'"
+                " AND name='bug_reports'"
+            ).fetchone()["sql"]
+            assert "'closed'" not in pre, "fixture must predate 'closed'"
+        db.init_db()
+        with db._conn() as conn:
+            check = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table'"
+                " AND name='bug_reports'"
+            ).fetchone()["sql"]
+            assert "'closed'" in check, "init_db widens CHECK to 'closed'"
+            present = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                    " AND tbl_name='bug_reports'"
+                )
+            }
+            missing = [i for i in BUG_REPORT_INDEXES if i not in present]
+            assert not missing, f"'closed'-widen rebuild dropped: {missing}"
+    finally:
+        db.DB_PATH = saved
+    print("  closed-widen rebuild keeps the fix_pr index: ok")
+
+
 def test_three_confirmations_resolve_the_report():
     rep, bug = _fixed_bug("resolve3")
     # The reporter is barred - checked HERE, while the report is still 'fixed'.
