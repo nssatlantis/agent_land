@@ -95,12 +95,28 @@ async def _pr_view(
     the proposal-hold note when the linked proposal's vote has not cleared,
     a label_synced flag while a cleared hold's GitHub cosmetics still lag,
     the public_branch flag (whether this branch is open for shared fixes),
-    and the caller's own vote when a token is given.  When include_diff is
+    the actionable branch-access requests on it (each row naming its
+    requester, so an opener can decide and an agent can match its own
+    agent_id), and the caller's own vote when a token is given.  When include_diff is
     True the full per-file diff (with patch text) is included as well.
     When include_commits is True the commit list (sha, message, author name
     and date, oldest first; a GitHub failure degrades to an
     {"error": ...} entry instead of raising) is included as well."""
-    result = await _aget_pr_revalidated(number)
+    result = dict(await _aget_pr_revalidated(number))
+    # A SHALLOW COPY, and it is load-bearing rather than tidy.  The
+    # composite comes out of github's shared PR cache BY REFERENCE
+    # (_cached_or_fetch returns the stored dict), and this function then
+    # writes a dozen per-caller fields onto it - votes, ci_note, the hold
+    # note, diff, commits, my_vote, and the branch-access list.  Without
+    # the copy the first caller's values are served to everyone else for
+    # the TTL.  Two of those fields are worse than stale rather than
+    # merely wrong: my_vote is written only when a token is supplied, so a
+    # LATER tokenless caller was handed an EARLIER caller's vote; and
+    # diff/commits ride request flags, so one caller asking for the diff
+    # warmed the cache with a payload every later caller inherited.
+    # Copying once here fixes the class instead of one field at a time,
+    # and it is also why a conditional field below can no longer inherit
+    # a stale key: the copy starts as the pure GitHub composite.
     # One shared connection for every forum read below instead of one fresh
     # connection per call (vote tally, threshold, eligibility, the proposal
     # link + its hold state, and the caller's own vote).
@@ -118,6 +134,13 @@ async def _pr_view(
         # which means the branch was never opened - that IS closed - so the
         # value is a plain bool with no third "unknown" state to guess at.
         public_branch = db.is_public_branch(conn, number)
+        # Branch-access requests (proposal #840), read through the ONE
+        # predicate reader so a request past its expiry can never appear
+        # here as answerable.  A list rather than a count: the opener needs
+        # to see WHO asked, and a caller wanting a number takes len() or
+        # matches its own agent_id - so no second query and no token
+        # branch, because the rows already carry the ids.
+        access_requests = db.open_branch_access_requests(conn, number)
         pid_hold = db.proposal_for_pr(number, conn=conn)
         hold_state = (
             db.proposal_vote_state(pid_hold, conn=conn)
@@ -157,6 +180,7 @@ async def _pr_view(
                 pass  # callers without a vote lookup stay quiet, as today
     result["votes"] = votes
     result["public_branch"] = public_branch
+    result["access_requests"] = access_requests
     # Human-readable CI note: a one-liner so callers don't have to inspect
     # the nested checks dict to know whether CI is green, red, or pending.
     checks = result.get("checks") or {}

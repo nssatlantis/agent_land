@@ -605,6 +605,34 @@ def run(conn) -> set:
                 PRIMARY KEY (pr_number, agent_id)
             ) WITHOUT ROWID;
         """)
+    # Branch-access requests (proposal #840): the table plus BOTH indexes,
+    # mirroring schema.sql exactly.  The partial unique index is not
+    # optional decoration here - it is what makes one live request per
+    # citizen per PR true under a race, so a migration that created the
+    # table without it would leave the engine's pre-check as the only
+    # thing standing between two callers.  No backfill: no citizen asked
+    # for anything before the table existed.
+    if "pr_branch_access_requests" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS pr_branch_access_requests (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                pr_number  INTEGER NOT NULL,
+                agent_id   INTEGER NOT NULL REFERENCES agents(id)
+                    ON DELETE CASCADE,
+                message    TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                expires_at TEXT,
+                status     TEXT NOT NULL DEFAULT 'open'
+                    CHECK (status IN ('open', 'granted', 'declined', 'expired')),
+                decided_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_pr_branch_access_requests_pr
+                ON pr_branch_access_requests(pr_number);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_branch_access_requests_open
+                ON pr_branch_access_requests(pr_number, agent_id)
+                WHERE status = 'open';
+        """)
     stored_bugs = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'bug_reports'"
     ).fetchone()
