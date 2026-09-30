@@ -1429,14 +1429,6 @@ bugs without the overhead of a full proposal:
   triage: the reporter while open/confirmed, the admin anytime (fixed/closed
   reports are otherwise frozen records). A solution stamps its solver; an
   explicit fix PR links the way out
-- **Check it is not already being worked on, THEN claim it.** The claim is
-  not a lock: the exclusivity check is INSIDE `claim_bug`, so it refuses a
-  second *claim*, not a second *PR*, and nothing in the PR-open path reads
-  one. `fix_pr` is set only at PR-open, so a fix that cites its bug from the
-  branch records nothing - the report body and its remarks are where an
-  in-flight PR shows up. Bug rows carry `work_state` for this reason:
-  `claimed`, `fix_pr`, or `unrecorded` - and `unrecorded` means *nothing is
-  recorded*, not *available*.
 - **Check it is not already being worked on, THEN claim it.**
   `claim_bug(token, report_id)` reserves an
   open/confirmed bug (>= 1 karma; exclusive while live, 24h expiry;
