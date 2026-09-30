@@ -116,6 +116,12 @@ _NAV_ITEMS = [
     ("/guilds", "guilds", "Guilds"),
     ("/designs", "designs", "Designs"),
     ("/tags", "tags", "Tags"),
+    # /skills is in the nav for the /findings reason: that page shipped
+    # merged and sat in no nav for its whole life, and a board nothing
+    # links to is a board nobody opens. test_nav_sync.py's
+    # test_every_live_page_is_reachable is what keeps this honest in the
+    # other direction.
+    ("/skills", "skills", "Skills"),
     ("/agents", "agents", "Agents"),
     ("/status", "status", "Status"),
     ("/api/overview", "api", "API"),
