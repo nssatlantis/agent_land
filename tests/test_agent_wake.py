@@ -1928,43 +1928,104 @@ def test_the_title_gate_beats_recency():
     )
 
 
-def test_the_title_gate_accepts_both_named_forms():
-    """`[AL7]` and a bare `[AL ...` both qualify - the id is not checked.
+def test_a_created_session_is_named_so_the_gate_does_not_orphan_it():
+    """A created session must not be born already rejected by the gate.
 
-    Pinned as a POSITIVE pair rather than one assertion, because a single
-    `startswith` test would pass just as happily against a stricter id
-    check, and the strictness here is a decision rather than an oversight.
+    `AGENT_WAKE_CREATE_SESSION` defaults OFF, so the pre-existing pins all
+    stub the GET as an empty list and reach the create arm through the
+    EMPTY path - `unnamed` is 0 and the gate is never consulted. That left
+    the interaction this change creates completely uncovered.
+
+    With the gate ON (the default) and a directory whose rows are all
+    untitled, the create fallback used to POST `{"location": ...}` and hand
+    the untitled result straight to `_wake_one`, which delivers the prompt
+    into it. Worse, the NEXT tick found the same untitled rows, refused them
+    again, and created again - one orphan chat per finding per tick,
+    forever, delivering nothing. That is precisely the fan-out that knob's
+    own comment exists to prevent, so a change that quietly reintroduced it
+    would be a regression wearing a new feature's clothes.
+
+    So this asserts the POSTED payload carries the name, not merely that a
+    session came back: a create that returns an untitled row is the defect,
+    whatever the row happens to be called.
     """
     now = int(time.time() * 1000)
+    restore = _wake_cfg(AGENT_WAKE_CREATE_SESSION=1)
+    posted = []
+    real_call = wake._json_call
+
+    def _spy(endpoint, path, method="GET", payload=None):
+        if method == "POST":
+            posted.append(payload)
+        return real_call(endpoint, path, method=method, payload=payload)
+
     real, _ = _stub(
         {
             "/api/session": json.dumps(
                 {
                     "data": [
-                        _srow(
-                            "ses_generic",
-                            "dir",
-                            updated=now - 600_000,
-                            title="[AL scratch notes",
-                        ),
-                        _srow(
-                            "ses_ided",
-                            "dir",
-                            updated=now,
-                            title="[AL13] another citizen",
-                        ),
+                        _srow("ses_untitled", "dir", updated=now, title=None),
                     ]
                 }
             )
         }
     )
+    wake._json_call = _spy
     try:
         got = wake.select_session({"url": "http://oc"}, "dir")
     finally:
+        wake._json_call = real_call
         _restore(real)
-    assert got is not None and got.get("id") == "ses_ided", (
-        "the newest NAMED row must win, including one whose bracket names a"
-        f" different citizen - the id is deliberately not verified: {got}"
+        restore()
+
+    assert posted, "the create path must actually POST"
+    assert str(posted[0].get("title") or "").startswith("[AL"), (
+        f"a created session is born rejected unless it is NAMED: {posted[0]}"
+    )
+
+
+def test_the_title_gate_accepts_both_named_forms():
+    """`[AL7]` and a bare `[AL ...` both qualify - the id is not checked.
+
+    TWO independent drives, and the first version of this pin was VACUOUS:
+    it listed the bare form 600s OLDER than the id-bearing form and
+    asserted the id-bearing one won. A gate deleted entirely, and a strict
+    `^\\[AL\\d+\\]` id check, both pass that - the row carrying the bare form
+    was never the answer, so nothing about it was actually pinned. Verified
+    by running the pin with the gate off, where it still passed.
+
+    So the row under test must always be the one the gate has to ACCEPT,
+    never merely the one that happens to be newest:
+
+      drive A - the BARE form is the newest, so a strict id check rejects it
+                and returns the older id-bearing row instead. Reds.
+      drive B - the bare form ALONE. Nothing else can be returned, so this
+                holds against any id check, and against a prefix that
+                demands something after `[AL`.
+    """
+    now = int(time.time() * 1000)
+
+    def _pick(rows):
+        real, _ = _stub({"/api/session": json.dumps({"data": rows})})
+        try:
+            return wake.select_session({"url": "http://oc"}, "dir")
+        finally:
+            _restore(real)
+
+    a = _pick(
+        [
+            _srow("ses_ided", "dir", updated=now - 600_000, title="[AL13] other"),
+            _srow("ses_generic", "dir", updated=now, title="[AL scratch notes"),
+        ]
+    )
+    assert a is not None and a.get("id") == "ses_generic", (
+        "the bare `[AL ` form must beat an OLDER id-bearing row, or an id"
+        f" check could be tightened without this test noticing: {a}"
+    )
+
+    b = _pick([_srow("ses_bare", "dir", updated=now, title="[AL")])
+    assert b is not None and b.get("id") == "ses_bare", (
+        f"a bare `[AL` prefix alone must qualify: {b}"
     )
 
 
@@ -2895,6 +2956,7 @@ def main():
         test_limit_prefers_api_model_when_present,
         test_correction_selection_skips_subagent_children,
         test_the_title_gate_beats_recency,
+        test_a_created_session_is_named_so_the_gate_does_not_orphan_it,
         test_the_title_gate_accepts_both_named_forms,
         test_the_gate_can_be_switched_off_and_then_recency_is_whole,
         test_no_named_chat_is_its_own_answer_not_a_silent_miss,

@@ -184,6 +184,14 @@ PRIMARY_AGENTS = frozenset({"build", "plan"})
 # while the former costs context.
 _FALLBACK_CONTEXT_LIMIT = 200000
 
+# A chat must be NAMED for AgentLand to be a wake target, or the "most
+# recently updated" tiebreak hands the prompt to whichever unrelated
+# conversation the citizen happened to touch last.  The literal is named
+# once and used in three places - the selector, the log payload, and the
+# title a created session is given - because a gate whose required prefix
+# is written out separately at each site is three sites that can disagree.
+_AL_TITLE_PREFIX = "[AL"
+
 
 # --- HTTP -----------------------------------------------------------------
 
@@ -323,13 +331,27 @@ def _session_rows(endpoint: dict) -> list[dict]:
 
 
 def _created_session(endpoint: dict, directory: str) -> dict | None:
-    """Create a fresh session in *directory*. Used when none qualifies."""
+    """Create a fresh session in *directory*. Used when none qualifies.
+
+    The payload carries a title ON PURPOSE. The title gate
+    (`AGENT_WAKE_REQUIRE_AL_TITLE`) refuses any row whose title does not
+    start with `[AL`, and this function's return value goes straight to
+    `_wake_one`, which delivers the prompt into it. So a session created
+    untitled is born already rejected: this knob would POST once per tick
+    per finding, forever, minting an orphan chat each time and delivering
+    nothing - the exact failure this knob's own comment exists to prevent.
+    Naming the session is what keeps the opt-in path meaningful instead of
+    a silent no-op, and it is why a create is not exempt from the gate.
+    """
     body = _data(
         _json_call(
             endpoint,
             "/api/session",
             method="POST",
-            payload={"location": {"directory": directory}},
+            payload={
+                "location": {"directory": directory},
+                "title": f"{_AL_TITLE_PREFIX} AgentLand (created by AgentLand)",
+            },
         )
     )
     return body if isinstance(body, dict) and body.get("id") else None
@@ -379,7 +401,7 @@ def select_session(endpoint: dict, directory: str) -> dict | None:
         # below is "most recently updated", and a citizen with any other
         # conversation open in the same directory loses their wake to it -
         # the message arrives, in the wrong thread, where it is read as
-        # noise.  Placed HERE rather than after the `best` comparison on
+        # noise.  Evaluated HERE rather than after the `best` comparison on
         # purpose: a rejected row that reached `best` first and was filtered
         # afterwards would read like the gate worked while the loop had
         # already preferred it.
@@ -389,11 +411,20 @@ def select_session(endpoint: dict, directory: str) -> dict | None:
         # second citizen's `[AL...]` chat is a legal target on a shared
         # server.  Declined, not overlooked - see the knob's comment in
         # config.py before changing it.
-        if require_al and not str(row.get("title") or "").startswith("[AL"):
-            unnamed += 1
-            continue
+        title_ok = not require_al or str(row.get("title") or "").startswith(
+            _AL_TITLE_PREFIX
+        )
         updated = (row.get("time") or {}).get("updated") or 0
         if max_age_ms and now_ms - int(updated) > max_age_ms:
+            continue
+        # Counted AFTER the age gate, not before.  `unnamed` exists to say
+        # "you have not named your chat" and to keep that distinct from
+        # "your OpenCode is down", so counting a row that the age gate was
+        # going to reject anyway would make the tag name the wrong cause -
+        # a named-but-stale chat plus any untitled row would prompt the
+        # operator to tell a citizen to rename a chat they already named.
+        if not title_ok:
+            unnamed += 1
             continue
         if best is None or int(updated) > int(
             (best.get("time") or {}).get("updated") or 0
@@ -412,6 +443,7 @@ def select_session(endpoint: dict, directory: str) -> dict | None:
             directory=directory,
             unnamed=unnamed,
             endpoint=endpoint.get("id"),
+            required_prefix=_AL_TITLE_PREFIX,
         )
     if best is not None and best.get("id"):
         return best
