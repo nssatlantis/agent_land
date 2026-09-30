@@ -332,6 +332,13 @@ def run(conn) -> set:
         "CREATE INDEX IF NOT EXISTS idx_bug_reports_claimed_by"
         " ON bug_reports(claimed_by)"
     )
+    # Bug #B167: the hoisted fix_pr clear runs per-closed-PR-per-sweep, so
+    # its WHERE needs an index. Unconditional ensure like its neighbours;
+    # fix_pr is ALTER-added above, so (per the severity precedent) this lives
+    # here, not in schema.sql, where it would fail legacy boots.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bug_reports_fix_pr ON bug_reports(fix_pr)"
+    )
     # Second bar + the 'resolved' status (proposal #821).  verified_at is an
     # ordinary added column and goes in by ALTER like every other one here.
     _ensure_column(conn, "bug_reports", "verified_at", "TEXT")
@@ -622,7 +629,9 @@ def run(conn) -> set:
             "CREATE INDEX IF NOT EXISTS idx_bug_reports_claimed_by"
             " ON bug_reports(claimed_by);\n"
             "CREATE INDEX IF NOT EXISTS idx_bug_reports_bounty_job"
-            " ON bug_reports(bounty_job_id);\n",
+            " ON bug_reports(bounty_job_id);\n"
+            "CREATE INDEX IF NOT EXISTS idx_bug_reports_fix_pr"
+            " ON bug_reports(fix_pr);\n",
         )
     # Post subscriptions (proposal #141): citizens follow posts for
     # inbox notifications.  Fresh databases already have the table
@@ -734,6 +743,47 @@ def run(conn) -> set:
         )
     if "guild_job_links" in _guild_tables:
         _ensure_column(conn, "guild_job_links", "grace_until", "TEXT")
+    # guild_stake_links: drop opener_bonus_pct (proposal #839). The opener
+    # of a merged PR is now paid the whole per_pr bounty, so the split the
+    # column recorded is neither written nor read. SQLite has no portable
+    # DROP COLUMN, so this is the standard table rebuild: the new shape
+    # comes from schema.sql and the surviving columns are copied across.
+    #
+    # The OUTER guard is a PRAGMA table_info membership test rather than
+    # _rebuild_table's usual DDL-substring guard, and that is deliberate.
+    # _rebuild_table no-ops when its guard string is ALREADY present in the
+    # stored DDL, which suits every sibling call here (each guards on a
+    # shape the fresh DDL already has). This call REMOVES a column, so the
+    # inverted string is the one absent from a fresh database - a substring
+    # guard on its own would fire the rebuild on every fresh boot instead
+    # of only on a legacy one. A column-presence test states the real
+    # precondition and is correct in both directions. The INNER guard below
+    # is the new DDL's own shape, so the rebuild is a no-op once it ran.
+    #
+    # The copy list is safe to hardcode: every column in it is present in
+    # every shape this table has ever had. The table was created new in
+    # PR-4 already carrying the split column, so no legacy variant lacks
+    # any of these. (The table_info-derived copy discipline the
+    # notifications rebuild needs is for tables that GAINED a column
+    # mid-life; this one never did.)
+    #
+    # Existing rows keep their stake_id/guild_id/created_at, so a live
+    # guild-backed stake survives untouched except that its opener now
+    # receives the full bounty - the intended behaviour change, lossless
+    # otherwise.
+    if "guild_stake_links" in _guild_tables and "opener_bonus_pct" in {
+        row[1] for row in conn.execute("PRAGMA table_info(guild_stake_links)")
+    }:
+        _rebuild_table(
+            conn,
+            "guild_stake_links",
+            "stake_id, guild_id, created_at",
+            "created_at        TEXT NOT NULL DEFAULT",
+            extra_after_rename=(
+                "CREATE INDEX IF NOT EXISTS idx_guild_stake_links_guild"
+                " ON guild_stake_links(guild_id);\n"
+            ),
+        )
     # Citizen deletion (proposal #525, PR-14, item 5069) NULLs attribution
     # on survivor guild rows: four NOT NULL agent legs relax. Guarded
     # rebuilds: the guard substrings must match schema.sql VERBATIM

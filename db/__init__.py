@@ -717,6 +717,7 @@ from db._review_findings import (  # noqa: F401,E402
     maybe_pay_finding_bounty,
     reconcile_boards_for_heads,
     refund_dying_finding_bounties,
+    resolved_finding_candidates,
     reviewer_blockers,
 )
 

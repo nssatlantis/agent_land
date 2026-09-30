@@ -178,7 +178,8 @@ async def finding_mark_resolved(token: str, finding_id: int, note: str) -> dict:
         db.require_active(token, conn)
         who = db.whoami(token, conn)
         row = conn.execute(
-            "SELECT pr_number FROM review_findings WHERE id = ?", (finding_id,)
+            "SELECT pr_number, finder_agent_id FROM review_findings WHERE id = ?",
+            (finding_id,),
         ).fetchone()
         fixer_ids = (
             tuple(db.pr_fixer_ids(conn, row["pr_number"])) if row is not None else ()
@@ -187,6 +188,48 @@ async def finding_mark_resolved(token: str, finding_id: int, note: str) -> dict:
             conn, finding_id, who["agent_id"], note, fixer_ids
         )
         _pr = row["pr_number"] if row is not None else None
+        # The resolve link of the board notified NOBODY (proposal #849):
+        # the finder - who is probably holding a -1 because of exactly
+        # this finding - had no way to learn the condition they named had
+        # lifted.  This mirrors what finding_add already does to the
+        # opener in the other direction.
+        #
+        # The prefix is deliberately NOT the shared "PR #N findings:" one.
+        # The verify-time flip notice and the advisory nudge both use it,
+        # and a resolver must not overwrite a reviewer's standing "flip?"
+        # prompt with a weaker "someone resolved something" notice.
+        #
+        # And it is keyed PER FINDING, not per PR, which is the half that
+        # was wrong first time.  ref_id here is the PR number, so a
+        # per-PR prefix matched this row on the SECOND resolve of the same
+        # PR and _notify_tally's refresh did an in-place UPDATE of the
+        # body - silently destroying the first finding's id rather than
+        # coalescing it.  The earlier version of this comment claimed
+        # "each stays separately readable instead"; that was true of
+        # resolve-versus-verify and false of resolve-versus-resolve, and
+        # nobody checked the second case because the sentence read like
+        # the first.  One wake still names all of one voter's findings on
+        # a PR in the poller's prompt; this is the mailbox copy, and it
+        # must not lose a finding id.
+        #
+        # A self-resolve (a finder who is also an authorized fixer) is
+        # left to _notify_tally's own `agent_id == actor_agent_id`
+        # no-op, rather than re-deciding it here.
+        if row is not None:
+            from notifications import _notify_tally
+
+            _notify_tally(
+                conn,
+                row["finder_agent_id"],
+                "pr",
+                "pr",
+                _pr,
+                f"PR #{_pr} finding resolved: the owner marked finding"
+                f" #{finding_id} fixed (still unverified) - re-read at the"
+                f" live head and re-cast your vote if you were holding one",
+                actor_agent_id=who["agent_id"],
+                match_prefix=f"PR #{_pr} finding resolved: #{finding_id} ",
+            )
     # State is rendered in the mirror, so a resolve moves the projection
     # (proposal #776).  Outside the txn, for the same reason as above.
     await _refresh_mirror(_pr)

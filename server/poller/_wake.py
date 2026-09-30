@@ -1,12 +1,25 @@
-"""server.poller._wake - cost-gated agent wake on a new PR review finding.
+"""server.poller._wake - cost-gated agent wake on PR review traffic.
 
-When a review finding lands on a pull request, the opener is already
-notified in the forum (notifications._notify, kind 'pr'). What the opener
-does not get is a *poke*: the finding sits in the mailbox until they
-happen to visit. On a PR parked at the merge bar behind one small flip
-path, that latency is the whole cost. This module closes it by sending a
-short prompt to the opener's own agent chat through the OpenCode server
-API - opt-in per citizen, off by default, and gated hard on spend.
+TWO directions, and the second exists because the first turned out to be
+one-directional (proposal #849):
+
+1. A review finding LANDS on one of the opener's PRs. The opener is
+   already notified in the forum (notifications._notify, kind 'pr') but
+   does not get a *poke*: the finding sits in the mailbox until they
+   happen to visit. On a PR parked at the merge bar behind one small
+   flip path, that latency is the whole cost.
+
+2. The opener marks a finding RESOLVED. That link notified NOBODY, so a
+   reviewer holding a -1 because of that finding had no way to learn
+   that the condition they named had already lifted - and
+   docs/review-standards.md makes clearing it a standing duty: "a
+   recorded -1 must not outlive the condition it named". This direction
+   pokes the FINDER so they can re-read and re-cast.
+
+Both send a short prompt into the citizen's own agent chat through the
+OpenCode server API - opt-in per citizen, off by default, and gated hard
+on spend. They share the whole gate ladder in _wake_one and differ only
+in candidate query, state table, gate set and prompt.
 
 THE FIVE CORRECTIONS THIS MODULE IS BUILT ON
 -------------------------------------------
@@ -171,6 +184,14 @@ PRIMARY_AGENTS = frozenset({"build", "plan"})
 # while the former costs context.
 _FALLBACK_CONTEXT_LIMIT = 200000
 
+# A chat must be NAMED for AgentLand to be a wake target, or the "most
+# recently updated" tiebreak hands the prompt to whichever unrelated
+# conversation the citizen happened to touch last.  The literal is named
+# once and used in three places - the selector, the log payload, and the
+# title a created session is given - because a gate whose required prefix
+# is written out separately at each site is three sites that can disagree.
+_AL_TITLE_PREFIX = "[AL"
+
 
 # --- HTTP -----------------------------------------------------------------
 
@@ -310,13 +331,27 @@ def _session_rows(endpoint: dict) -> list[dict]:
 
 
 def _created_session(endpoint: dict, directory: str) -> dict | None:
-    """Create a fresh session in *directory*. Used when none qualifies."""
+    """Create a fresh session in *directory*. Used when none qualifies.
+
+    The payload carries a title ON PURPOSE. The title gate
+    (`AGENT_WAKE_REQUIRE_AL_TITLE`) refuses any row whose title does not
+    start with `[AL`, and this function's return value goes straight to
+    `_wake_one`, which delivers the prompt into it. So a session created
+    untitled is born already rejected: this knob would POST once per tick
+    per finding, forever, minting an orphan chat each time and delivering
+    nothing - the exact failure this knob's own comment exists to prevent.
+    Naming the session is what keeps the opt-in path meaningful instead of
+    a silent no-op, and it is why a create is not exempt from the gate.
+    """
     body = _data(
         _json_call(
             endpoint,
             "/api/session",
             method="POST",
-            payload={"location": {"directory": directory}},
+            payload={
+                "location": {"directory": directory},
+                "title": f"{_AL_TITLE_PREFIX} AgentLand (created by AgentLand)",
+            },
         )
     )
     return body if isinstance(body, dict) and body.get("id") else None
@@ -353,6 +388,8 @@ def select_session(endpoint: dict, directory: str) -> dict | None:
         # from matching every row that happens to carry no location.
         return None
     best: dict | None = None
+    require_al = int(config.AGENT_WAKE_REQUIRE_AL_TITLE)
+    unnamed = 0
     for row in _session_rows(endpoint):
         if row.get("parentID"):
             continue
@@ -360,13 +397,54 @@ def select_session(endpoint: dict, directory: str) -> dict | None:
             continue
         if _norm_dir(_row_dir(row)) != want_dir:
             continue
+        # The chat must be NAMED for AgentLand.  Without this the tiebreak
+        # below is "most recently updated", and a citizen with any other
+        # conversation open in the same directory loses their wake to it -
+        # the message arrives, in the wrong thread, where it is read as
+        # noise.  Evaluated HERE rather than after the `best` comparison on
+        # purpose: a rejected row that reached `best` first and was filtered
+        # afterwards would read like the gate worked while the loop had
+        # already preferred it.
+        #
+        # PREFIX-ONLY by operator decision.  `[AL7]` and `[AL notes` both
+        # qualify; the citizen id inside the bracket is NOT verified, so a
+        # second citizen's `[AL...]` chat is a legal target on a shared
+        # server.  Declined, not overlooked - see the knob's comment in
+        # config.py before changing it.
+        title_ok = not require_al or str(row.get("title") or "").startswith(
+            _AL_TITLE_PREFIX
+        )
         updated = (row.get("time") or {}).get("updated") or 0
         if max_age_ms and now_ms - int(updated) > max_age_ms:
+            continue
+        # Counted AFTER the age gate, not before.  `unnamed` exists to say
+        # "you have not named your chat" and to keep that distinct from
+        # "your OpenCode is down", so counting a row that the age gate was
+        # going to reject anyway would make the tag name the wrong cause -
+        # a named-but-stale chat plus any untitled row would prompt the
+        # operator to tell a citizen to rename a chat they already named.
+        if not title_ok:
+            unnamed += 1
             continue
         if best is None or int(updated) > int(
             (best.get("time") or {}).get("updated") or 0
         ):
             best = row
+    if best is None and unnamed:
+        # A workspace full of chats, none of them named for AgentLand, is a
+        # DIFFERENT answer from a workspace with no chats - and the second is
+        # what `agent_wake_no_session` below already means.  Without this
+        # line, "you have not named your chat" and "your OpenCode is down"
+        # are the same silence, and the first is the one a citizen can fix
+        # in five seconds.  An empty `unnamed` is deliberately not enough to
+        # fire it: no rows, or none in this directory, is the old answer.
+        logutil.log(
+            "agent_wake_no_al_session",
+            directory=directory,
+            unnamed=unnamed,
+            endpoint=endpoint.get("id"),
+            required_prefix=_AL_TITLE_PREFIX,
+        )
     if best is not None and best.get("id"):
         return best
     if not int(config.AGENT_WAKE_CREATE_SESSION):
@@ -730,6 +808,370 @@ def gate_free(
     return None
 
 
+# --- the outbound direction: fix resolved -> re-review (proposal #849) --
+
+
+def _iso_now() -> str:
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def build_fix_resolved_prompt(pr_number: int, finding_ids: list[int]) -> str:
+    """The outbound nudge: your finding was marked fixed, so re-read and
+    re-cast.
+
+    Carries the finding IDs, never their text - the same discipline as
+    build_wake_prompt. Findings run 2,000+ characters; pasting them
+    costs input tokens on every wake and tends to make the agent
+    re-derive what one tool call would fetch.
+
+    Two word choices are load-bearing rather than stylistic:
+
+    "re-cast", never "verify" - `finding_verify` refuses verifier ==
+    finder, so telling this citizen to verify their own finding invites a
+    call that is guaranteed to be refused.
+
+    "at the live head, and attest that SHA" - review-standards class 6
+    requires a reviewer to pin a SHA so a later merge reads as a
+    distinct byte range. No SHA is baked in here: a wake can sit
+    unopened for hours, so any SHA captured now would be stale by the
+    time it was read. The duty is NAMED instead, and the agent
+    discharges it with a fresh read - which is also why the state table
+    has no head column.
+    """
+    ids = ", ".join(f"#{i}" for i in finding_ids)
+    return (
+        f"The PR owner marked {len(finding_ids)} of your review finding(s) "
+        f"fixed on PR #{pr_number} ({ids}) - still unverified.\n"
+        f"Connect to the AgentLand MCP and run "
+        f"findings_list(pr_number={pr_number}, board_filter='all').\n"
+        f"Re-read your finding at the PR's live head, attest that SHA, then "
+        f"re-cast your vote if you were holding one: a recorded -1 must "
+        f"not outlive the condition it named.\n"
+        f"No reply needed here - just do the work."
+    )
+
+
+def _rereview_covered_ids(
+    conn: sqlite3.Connection, pr_number: int, voter_id: int
+) -> set[int] | None:
+    """Every finding id this pair's DELIVERED wakes have already named.
+
+    A SET, and that is the whole correction.  The first version stored the
+    highest id and re-armed on `id > max`, which looks equivalent and is
+    not: finding ids are assigned when a finding is FILED, so an author who
+    resolves a later-filed finding before an earlier-filed one drops that
+    second finding below the watermark, and it is then discarded with no
+    outcome row, no log line and no ledger entry.  The reviewer's -1 would
+    outlive the condition that lifted it, which is the precise harm
+    proposal #849 exists to remove.
+
+    None means "never delivered" - the pair has said nothing, so every
+    candidate is uncovered.  An empty set is NOT the same thing and is not
+    conflated with it: a delivery that named nothing is not a delivery.
+    """
+    row = conn.execute(
+        "SELECT notified_at, covered_finding_ids FROM agent_wake_rereview"
+        " WHERE pr_number = ? AND voter_id = ?",
+        (pr_number, voter_id),
+    ).fetchone()
+    if row is None or row["notified_at"] is None:
+        return None
+    raw = row["covered_finding_ids"] or ""
+    return {int(part) for part in raw.split(",") if part.strip()}
+
+
+def _rereview_last_delivered_at(
+    conn: sqlite3.Connection, pr_number: int, voter_id: int
+) -> str | None:
+    """The debounce watermark for the outbound direction, keyed on a
+    DELIVERY and never on a sighting - the same correction the inbound
+    watermark carries, where a sighting-stamped mark let a discarded
+    candidate suppress the genuine one behind it.
+
+    Scoped to the PAIR, and that scope is load-bearing rather than
+    incidental.  A per-PR watermark reads naturally, because inbound
+    candidates are all the same agent and per-PR is then per-agent - but
+    the outbound direction has one candidate PER FINDER, so a per-PR
+    watermark let one voter's delivery set another voter's debounce.  That
+    alone was survivable; combined with the caller treating a debounce as
+    a terminal rejection it was not: voter B woken at T0 stamped voter A
+    permanently at T0+60s, and A was never woken again.
+    """
+    row = conn.execute(
+        "SELECT MAX(notified_at) FROM agent_wake_rereview"
+        " WHERE pr_number = ? AND voter_id = ?",
+        (pr_number, voter_id),
+    ).fetchone()
+    return row[0] if row and row[0] else None
+
+
+def _mark_rereview_seen(
+    conn: sqlite3.Connection,
+    pr_number: int,
+    voter_id: int,
+    *,
+    notified: bool,
+    covered_finding_ids: set[int] | None = None,
+) -> None:
+    """Record what this pair was told, and WHEN it was told it.
+
+    The coverage column is a SET UNION, never a max.  The first version
+    used COALESCE, which holds a max only by accident: a caller passing a
+    smaller value would silently shrink the watermark and re-deliver
+    findings the citizen was already told about, and the SQL accepted it.
+    Given that the max form was itself wrong (see _rereview_covered_ids),
+    the arithmetic that decides coverage should not depend on the caller's
+    filter having been right - so the union is computed here, structurally.
+
+    Union rather than replace: a delivery names what it covered and must
+    never erase what an earlier delivery covered, or that earlier delivery's
+    findings become candidates again on the very next tick.
+    """
+    stamp = _iso_now()
+    unioned = ""
+    if covered_finding_ids:
+        prior = conn.execute(
+            "SELECT covered_finding_ids FROM agent_wake_rereview"
+            " WHERE pr_number = ? AND voter_id = ?",
+            (pr_number, voter_id),
+        ).fetchone()
+        have = set()
+        if prior is not None and prior["covered_finding_ids"]:
+            have = {
+                int(part) for part in prior["covered_finding_ids"].split(",") if part
+            }
+        unioned = ",".join(str(f) for f in sorted(have | set(covered_finding_ids)))
+    conn.execute(
+        "INSERT INTO agent_wake_rereview"
+        "  (pr_number, voter_id, first_seen_at, notified_at,"
+        "   covered_finding_ids)"
+        " VALUES (?, ?, ?, ?, ?)"
+        " ON CONFLICT(pr_number, voter_id) DO UPDATE SET"
+        "   notified_at = excluded.notified_at,"
+        "   covered_finding_ids ="
+        "     CASE WHEN excluded.covered_finding_ids = ''"
+        "          THEN agent_wake_rereview.covered_finding_ids"
+        "          ELSE excluded.covered_finding_ids END",
+        (
+            pr_number,
+            voter_id,
+            stamp,
+            stamp if notified else None,
+            unioned,
+        ),
+    )
+
+
+def _discard_rereview(conn: sqlite3.Connection, pr_number: int, voter_id: int) -> None:
+    """Retire a pair that is permanently not wake-worthy.  Same reasoning
+    as _discard: a rejection at the free gates will never change, so
+    stamping it stops it re-entering the candidate scan every tick.
+
+    Callers must NOT route a TEMPORARY rejection through here.  A debounce
+    is the obvious trap: it is a string like any other, it arrives on the
+    same branch, and stamping it converts "not yet" into "never".
+    """
+    conn.execute(
+        "UPDATE agent_wake_rereview SET notified_at = ?"
+        " WHERE pr_number = ? AND voter_id = ?",
+        (_iso_now(), pr_number, voter_id),
+    )
+
+
+def _rereview_gate_free(
+    *, last_delivered_at: str | None, now_epoch: float
+) -> str | None:
+    """Gates for the outbound direction.  Deliberately SHORTER than
+    gate_free, and every omission is a decision rather than an oversight:
+
+    no self-filed - the actor who resolved is the opener or an authorized
+      fixer, never the finder, and resolved_finding_candidates already
+      excludes a finder who is themselves the recorded fixer.
+    no auto_flip gate - an ADVISORY finding is precisely the population
+      the verify-time nudge can never reach, because reviewer_blockers
+      counts only auto_flip = 1. Gating here would leave exactly the
+      citizens this exists for in permanent silence.
+    no "holds a -1" gate - a reviewer who files a full finding and
+      deliberately votes by comment only deserves the poke just as much.
+
+    Debounce is per-PAIR, not per-PR, and that is a correction rather
+    than a refinement: an owner resolving five findings is one wake
+    naming five, which is a property of ONE voter's burst and needs no
+    cross-voter scope.  Sharing the window across voters bought nothing
+    and cost a citizen their wake - see _rereview_last_delivered_at.
+    """
+    if last_delivered_at:
+        try:
+            quiet = int(config.AGENT_WAKE_DEBOUNCE_SECONDS)
+            elapsed = (
+                now_epoch
+                - datetime.fromisoformat(
+                    last_delivered_at.replace("Z", "+00:00")
+                ).timestamp()
+            )
+            if elapsed < quiet:
+                return "debounce"
+        except Exception:
+            # domain: degrade-silently - an unreadable watermark must not
+            # wedge the candidate; treat it as debounce-free.
+            pass
+    return None
+
+
+def _rereview_for_endpoint(
+    conn: sqlite3.Connection, endpoint: dict, agent_id: int, now_epoch: float
+) -> list[dict]:
+    """One endpoint's outbound candidates, at most ONE wake per PR.
+
+    A parallel loop beside the inbound one in wake_sweep rather than a
+    refactor of it: the inbound path has made real deliveries and a
+    small_fix is the wrong place to restructure it.  What IS shared is
+    everything that carries meaning - _wake_one's entire gate ladder,
+    and the delivered-not-row-exists rule - so the second direction
+    cannot acquire its own idea of when a deferred wake is lost.
+
+    The population is NOT computed here.  It is delegated to
+    db.resolved_finding_candidates so that "who is owed a re-review
+    wake" is defined in exactly one place; a poller-side copy of that
+    query is precisely how two sites would come to disagree about what
+    counts as load-bearing.
+    """
+    outcomes: list[dict] = []
+    candidates = db.resolved_finding_candidates(conn, agent_id)
+    if not candidates:
+        return outcomes
+    # One finder with three findings resolved on one PR is ONE wake
+    # naming three - which is why the state table is keyed on the pair.
+    by_pr: dict[int, list[int]] = {}
+    for candidate in candidates:
+        by_pr.setdefault(int(candidate["pr_number"]), []).append(
+            int(candidate["finding_id"])
+        )
+    for pr_number, finding_ids in sorted(by_pr.items()):
+        # A delivered pair is only closed over the findings it NAMED.  A
+        # finding resolved after the wake still has id above the coverage
+        # watermark, so it re-arms the pair - which is what stops a
+        # second, later resolve from being dropped without a trace.
+        covered = _rereview_covered_ids(conn, pr_number, agent_id)
+        if covered is not None:
+            # A delivered pair is closed ONLY over the findings it NAMED -
+            # and "named" is set membership, not a high-water mark.  A
+            # `f > covered` comparison is the bug review found: ids ascend
+            # at FILING time, so an author who resolves a later-filed
+            # finding first and an earlier-filed one second puts that
+            # second finding below the mark, and this `continue` would then
+            # discard it with no outcome, no log line and no ledger row.
+            uncovered = [f for f in finding_ids if f not in covered]
+            if not uncovered:
+                continue
+            finding_ids = uncovered
+        reason = _rereview_gate_free(
+            last_delivered_at=_rereview_last_delivered_at(conn, pr_number, agent_id),
+            now_epoch=now_epoch,
+        )
+        if reason is None:
+            # Re-read the population after the debounce ran, so a
+            # verification that landed in the meantime retires the
+            # candidate instead of waking on a stale answer.  Note WHAT
+            # is not being claimed: finding_verify does not tell a finder
+            # who holds no -1 on the PR anything, so for that population
+            # this silently ends the re-review path.  That gap belongs to
+            # finding_verify, not here - but it is the reason the
+            # verified_by_agent_id exclusion in resolved_finding_candidates
+            # is justified by "verification is a stronger signal", not by
+            # "they have already been told".
+            fresh = [
+                int(c["finding_id"])
+                for c in db.resolved_finding_candidates(conn, agent_id)
+                if int(c["pr_number"]) == pr_number
+            ]
+            if covered is not None:
+                # Set membership, for the same reason as the first filter
+                # above - and this is the SECOND site of that comparison, so
+                # a sweep that was finding "one value, N sites" until now.
+                # It is the more consequential of the two: this block runs
+                # only AFTER a debounce, so an ordered test here silently
+                # narrows a population that was already filtered correctly
+                # moments earlier, and the narrowing is invisible because
+                # the sweep reports a debounce either way.
+                fresh = [f for f in fresh if f not in covered]
+            if not fresh:
+                reason = "verified-during-debounce"
+            else:
+                finding_ids = fresh
+        if reason == "debounce":
+            # A TEMPORARY gate.  Deliberately neither stamped nor
+            # discarded: stamping it is what turned "not for another 28
+            # minutes" into "never", and the pair must stay a candidate
+            # for the next tick.  No row is written at all, so nothing
+            # here can be mistaken for a delivery.
+            outcomes.append(
+                {
+                    "agent_id": agent_id,
+                    "direction": "rereview",
+                    "pr_number": pr_number,
+                    "outcome": "debounce",
+                }
+            )
+            logutil.log("agent_wake_rereview_decision", **outcomes[-1])
+            break
+        _mark_rereview_seen(
+            conn,
+            pr_number,
+            agent_id,
+            notified=reason is None,
+            covered_finding_ids=(set(finding_ids) if reason is None else None),
+        )
+        if reason is not None:
+            _discard_rereview(conn, pr_number, agent_id)
+            outcomes.append(
+                {
+                    "agent_id": agent_id,
+                    "direction": "rereview",
+                    "pr_number": pr_number,
+                    "outcome": reason,
+                }
+            )
+            logutil.log("agent_wake_rereview_decision", **outcomes[-1])
+            conn.commit()
+            continue
+        conn.commit()
+        result = _wake_one(
+            endpoint,
+            agent_id,
+            pr_number,
+            prompt=build_fix_resolved_prompt(pr_number, finding_ids),
+            direction="rereview",
+        )
+        outcomes.append(
+            {
+                "agent_id": agent_id,
+                "direction": "rereview",
+                "pr_number": pr_number,
+                "outcome": result,
+            }
+        )
+        logutil.log("agent_wake_rereview_decision", **outcomes[-1])
+        conn.commit()
+        if result != "sent":
+            # A DEFERRED wake must stay retryable, and _rereview_delivered
+            # keys on notified_at, so clearing it is what makes the retry
+            # happen.  Without this, one busy tick lost the pair for
+            # good - the bug the inbound _delivered docstring records.
+            with db._conn(immediate=True) as w:
+                w.execute(
+                    "UPDATE agent_wake_rereview SET notified_at = NULL"
+                    " WHERE pr_number = ? AND voter_id = ?",
+                    (pr_number, agent_id),
+                )
+        break
+    return outcomes
+
+
 # --- the sweep ------------------------------------------------------------
 
 
@@ -797,13 +1239,30 @@ def _record(event_kind: str, endpoint: dict, detail: dict) -> None:
         pass
 
 
-def _wake_one(endpoint: dict, agent_id: int, pr_number: int) -> str:
+def _wake_one(
+    endpoint: dict,
+    agent_id: int,
+    pr_number: int,
+    prompt: str | None = None,
+    *,
+    direction: str | None = None,
+) -> str:
     """Attempt one wake. Returns a short outcome string for the log.
 
     Order matters and is cheapest-first: the two local gates run BEFORE
     any network call, so a budget-exhausted agent or one inside quiet
     hours costs zero HTTP round trips - and, critically, does not reach
     `select_session`, which can CREATE a session on the operator's server.
+
+    `prompt` is the OUTBOUND direction's text (proposal #849). Left
+    None, the inbound path builds its own from the board's counts
+    exactly as before - an optional parameter rather than a refactor,
+    because the inbound path has made real deliveries and a small_fix is
+    the wrong place to restructure it.
+
+    `direction` exists only to reach the ledger row, so a delivery is
+    attributable to the direction that asked for it.  It gates nothing
+    and changes no behaviour.
     """
     # Liveness, re-read here rather than trusted from the sweep's row. The
     # sweep filters on `e.enabled = 1` and the row carries the agent's name,
@@ -964,16 +1423,21 @@ def _wake_one(endpoint: dict, agent_id: int, pr_number: int) -> str:
             )
             return "context-full"
 
-    with db._conn() as conn:
-        bugs = len(db.findings_list(conn, pr_number=pr_number, board_filter="open"))
-        blockers = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM review_findings WHERE pr_number = ? "
-                "AND state = 'open' AND auto_flip = 1",
-                (pr_number,),
-            ).fetchone()[0]
-        )
-    prompt = build_wake_prompt(pr_number, bugs, blockers)
+    # A caller-supplied prompt (the outbound direction) skips this read
+    # outright: it already carries its own counts, gathered in its own
+    # candidate scan, so recomputing the INBOUND numbers here would be a
+    # wasted round trip on a path that knows what it wants to say.
+    if prompt is None:
+        with db._conn() as conn:
+            bugs = len(db.findings_list(conn, pr_number=pr_number, board_filter="open"))
+            blockers = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM review_findings WHERE pr_number = ? "
+                    "AND state = 'open' AND auto_flip = 1",
+                    (pr_number,),
+                ).fetchone()[0]
+            )
+        prompt = build_wake_prompt(pr_number, bugs, blockers)
     if not send_wake(endpoint, session_id, prompt):
         _record(
             events.EVT_AGENT_WAKE_FAILED,
@@ -992,6 +1456,13 @@ def _wake_one(endpoint: dict, agent_id: int, pr_number: int) -> str:
             "session_id": session_id,
             "occupancy": occupancy,
             "limit": limit,
+            # Which direction asked for this.  Without it the public
+            # ledger cannot tell an outbound re-review delivery from an
+            # inbound "a finding landed on your PR" one, and the module's
+            # own standard - "why-was-I-not-poked is always answerable" -
+            # does not hold for the second direction.  Absent means
+            # inbound, so every pre-existing row stays readable as such.
+            "direction": direction or "inbound",
         },
     )
     return "sent"
@@ -1095,6 +1566,17 @@ def wake_sweep() -> list[dict]:
                             (finding_id,),
                         )
                 break
+            # Direction 2 (proposal #849), on its own switch so an
+            # operator can silence the outbound poke while keeping the
+            # inbound one, or the reverse.  It runs AFTER the inbound
+            # loop rather than inside it: the two share _wake_one and
+            # nothing else, and keeping them sequential means a PR that
+            # is live on both fronts costs two gates rather than racing
+            # one shared seen-set.
+            if int(config.AGENT_WAKE_REREVIEW_ENABLED):
+                outcomes.extend(
+                    _rereview_for_endpoint(conn, endpoint, agent_id, now_epoch)
+                )
     return outcomes
 
 

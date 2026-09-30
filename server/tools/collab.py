@@ -494,10 +494,11 @@ def list_proposals(
     not carried - `decision` plus machine `status` cover it.
     Passing a token with any other view is silently ignored.
     Like list_reports() for the community's open business."""
-    if view in ("mine", "assigned"):
+    if view in ("mine", "assigned", "my_open"):
         if not token:
             raise db.ForumError(
-                "view 'mine'/'assigned' needs token - whose proposals to show."
+                "view 'mine'/'assigned'/'my_open' needs token - whose proposals"
+                " to show."
             )
         who = db.whoami(token)
         rows = db.list_proposals(
@@ -507,11 +508,21 @@ def list_proposals(
             sort=sort,
             collaborative=collaborative,
         )
-        key = "agent_id" if view == "mine" else "delegate_id"
         out = []
         for r in rows:
-            if r.get(key) != who["agent_id"]:
-                continue
+            if view == "mine":
+                if r.get("agent_id") != who["agent_id"]:
+                    continue
+            elif view == "assigned":
+                if r.get("delegate_id") != who["agent_id"]:
+                    continue
+            else:  # my_open
+                if (
+                    r.get("agent_id") != who["agent_id"]
+                    or r.get("status") != "open"
+                    or r.get("locked")
+                ):
+                    continue
             summary = r.get("todos_summary") or {}
             r["todo_open_items"] = sum(
                 lst.get("remaining", 0) for lst in summary.get("lists", [])

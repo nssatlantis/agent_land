@@ -834,6 +834,18 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
             " WHERE agent_id = ? AND account = 'agent'",
             (agent_id,),
         )
+        # Agent-wake families, both swept.  agent_wake_rereview is new in
+        # proposal #849; agent_wake_endpoints is PRE-EXISTING and was
+        # already unpurged, which means delete_agent has been raising
+        # FOREIGN KEY constraint failed for any citizen who ever
+        # registered a wake endpoint.  Both go in together on purpose:
+        # purging only the new one would leave the deletion still broken,
+        # and the obvious minimal fix is the one that hides the bug.
+        # tests/test_delete_agent_fk_sweep.py SEEDS one row per family
+        # rather than enumerating them, so it could not see either - the
+        # blindness is the same shape as the one it was written to close.
+        conn.execute("DELETE FROM agent_wake_endpoints WHERE agent_id = ?", (agent_id,))
+        conn.execute("DELETE FROM agent_wake_rereview WHERE voter_id = ?", (agent_id,))
         conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
         # The sweep must be total: a fresh PRAGMA foreign_key_check after
         # the agent row goes is the pin that catches any NO-ACTION family
