@@ -764,6 +764,17 @@ def test_debounce_keeps_the_finding_a_candidate():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            # AGENT_WAKE_REQUIRE_AL_TITLE (default on) refuses an
+                            # untitled chat, so an untitled stub here makes the
+                            # sweep return `no-session` and this pin stops
+                            # reaching the branch it exists to test. This row is
+                            # NOT covered by the #PR1567 fixture retrofit: it was
+                            # written after that gate landed. Do not remove the
+                            # title to "simplify" the stub - a subagent CHILD
+                            # row below is untitled on purpose, because
+                            # titling it would break the test that children are
+                            # skipped.
+                            "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
