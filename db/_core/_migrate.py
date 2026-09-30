@@ -107,7 +107,7 @@ def _widen_bug_status_check(conn: sqlite3.Connection) -> None:
     created by _boot_collab (severity, bounty_job_id, claimed_by, fix_pr) because
     their columns were added by ALTER and so could not be indexed from
     schema.sql.  Missing one is silent - the table keeps working, the index
-    just stops existing - so all seven are listed explicitly here.
+    just stops existing - so all eight are listed explicitly here.
     """
     cols = [row[1] for row in conn.execute("PRAGMA table_info(bug_reports)")]
     if not cols:
