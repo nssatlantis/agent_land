@@ -1736,7 +1736,16 @@ def test_wake_defers_when_context_is_genuinely_full():
 # --- correction 5: the directory match is OURS, not the server's -----------
 
 
-def _srow(session_id, directory, *, agent="build", parent=None, updated=None, loc=True):
+def _srow(
+    session_id,
+    directory,
+    *,
+    agent="build",
+    parent=None,
+    updated=None,
+    loc=True,
+    title="[AL]",
+):
     """One session row shaped like the live server's - `location` included.
 
     The location is not decoration. Correction 5 moved the directory match
@@ -1745,6 +1754,14 @@ def _srow(session_id, directory, *, agent="build", parent=None, updated=None, lo
     response this server does not send. A test that asserts a session IS
     selected has to carry one now. That is a fixture telling the truth
     about the wire, not a test being relaxed to fit new code.
+
+    `title` defaults to `[AL]`, the GENERIC named form, because after the
+    title gate a session the selector may legitimately pick for an AgentLand
+    wake carries that name - so the default is the wire-truthful shape for
+    the world this file now tests, not a relaxation. Pass `title=None` for
+    the unrelated-chat case and a literal for a named one. No row is left
+    untitled by accident, which is the point: the four untitled roots on
+    the measured host are the unrelated chats the gate exists to skip.
     """
     row = {
         "id": session_id,
@@ -1756,7 +1773,192 @@ def _srow(session_id, directory, *, agent="build", parent=None, updated=None, lo
     }
     if loc:
         row["location"] = {"directory": directory}
+    if title is not None:
+        row["title"] = title
     return row
+
+
+def test_the_title_gate_beats_recency():
+    """The actual bug: a named chat LOSES to a newer unrelated one without
+    this gate, and wins with it.
+
+    Recency is the tiebreak and it is correct - among the citizen's own
+    AgentLand chats, the one being worked in is the one to poke. It is only
+    wrong when the newest row is not one of theirs, which is what an open
+    second conversation looks like.
+    """
+    now = int(time.time() * 1000)
+    real, _ = _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        # The named chat is OLDER, and used to lose.
+                        _srow(
+                            "ses_named",
+                            "dir",
+                            updated=now - 600_000,
+                            title="[AL7] work",
+                        ),
+                        # The unrelated chat is NEWER, and used to win.
+                        _srow("ses_other", "dir", updated=now, title=None),
+                    ]
+                }
+            )
+        }
+    )
+    try:
+        got = wake.select_session({"url": "http://oc"}, "dir")
+    finally:
+        _restore(real)
+    assert got is not None and got.get("id") == "ses_named", (
+        "the wake would land in a conversation that is not the citizen's"
+        f" AgentLand chat, chosen only because it was touched most recently:"
+        f" {got}"
+    )
+
+
+def test_the_title_gate_accepts_both_named_forms():
+    """`[AL7]` and a bare `[AL ...` both qualify - the id is not checked.
+
+    Pinned as a POSITIVE pair rather than one assertion, because a single
+    `startswith` test would pass just as happily against a stricter id
+    check, and the strictness here is a decision rather than an oversight.
+    """
+    now = int(time.time() * 1000)
+    real, _ = _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        _srow(
+                            "ses_generic",
+                            "dir",
+                            updated=now - 600_000,
+                            title="[AL scratch notes",
+                        ),
+                        _srow(
+                            "ses_ided",
+                            "dir",
+                            updated=now,
+                            title="[AL13] another citizen",
+                        ),
+                    ]
+                }
+            )
+        }
+    )
+    try:
+        got = wake.select_session({"url": "http://oc"}, "dir")
+    finally:
+        _restore(real)
+    assert got is not None and got.get("id") == "ses_ided", (
+        "the newest NAMED row must win, including one whose bracket names a"
+        f" different citizen - the id is deliberately not verified: {got}"
+    )
+
+
+def test_the_gate_can_be_switched_off_and_then_recency_is_whole():
+    """The escape hatch reproduces today's behaviour exactly.
+
+    Without this the knob is untested in the OFF direction, which is the
+    direction an operator reaches for when the gate is wrong for them - and
+    an OFF that silently still filtered would strand them.
+    """
+    now = int(time.time() * 1000)
+    restore = _wake_cfg(AGENT_WAKE_REQUIRE_AL_TITLE=0)
+    real, _ = _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        _srow(
+                            "ses_named",
+                            "dir",
+                            updated=now - 600_000,
+                            title="[AL7] work",
+                        ),
+                        _srow("ses_other", "dir", updated=now, title=None),
+                    ]
+                }
+            )
+        }
+    )
+    try:
+        got = wake.select_session({"url": "http://oc"}, "dir")
+    finally:
+        _restore(real)
+        restore()
+    assert got is not None and got.get("id") == "ses_other", (
+        "with the gate off the newest row wins again, untitled or not -"
+        f" which is the behaviour being preserved: {got}"
+    )
+
+
+def test_no_named_chat_is_its_own_answer_not_a_silent_miss():
+    """Chats exist and none is named is a DIFFERENT answer from no chats.
+
+    Both end in the caller's `no-session`, so without a distinct tag the
+    only way to tell "renamed your chat" from "OpenCode is down" is to read
+    the container logs - and the first is the one a citizen can fix.
+    """
+    now = int(time.time() * 1000)
+    real_tag = wake.logutil.log
+    tags = []
+    wake.logutil.log = lambda tag, **kw: tags.append((tag, kw))
+    real, _ = _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        _srow("ses_a", "dir", updated=now, title=None),
+                        _srow("ses_b", "dir", updated=now - 1, title=None),
+                    ]
+                }
+            )
+        }
+    )
+    try:
+        got = wake.select_session({"url": "http://oc"}, "dir")
+    finally:
+        _restore(real)
+        wake.logutil.log = real_tag
+    assert got is None, f"an unnamed chat must not be selected: {got}"
+    fired = [t for t in tags if t[0] == "agent_wake_no_al_session"]
+    assert len(fired) == 1, (
+        "the named-but-absent case did not log its own tag, so it is"
+        f" indistinguishable from a dead server: {tags}"
+    )
+    assert fired[0][1].get("unnamed") == 2, (
+        f"the tag must count what it skipped, or it cannot be read: {fired[0][1]}"
+    )
+
+
+def test_an_empty_workspace_does_not_claim_the_named_answer():
+    """The negative control for the tag above.
+
+    An EMPTY result is not a pass: with no rows at all there is nothing to
+    have been unnamed, so firing the named tag there would make the one
+    true signal indistinguishable from the default state - the exact shape
+    that makes a ratchet cry wolf and get deleted.
+    """
+    real_tag = wake.logutil.log
+    tags = []
+    wake.logutil.log = lambda tag, **kw: tags.append((tag, kw))
+    real, _ = _stub({"/api/session": json.dumps({"data": []})})
+    try:
+        got = wake.select_session({"url": "http://oc"}, "dir")
+    finally:
+        _restore(real)
+        wake.logutil.log = real_tag
+    assert got is None
+    assert not [t for t in tags if t[0] == "agent_wake_no_al_session"], (
+        "an empty workspace reported that chats were unnamed - it cannot"
+        f" know that, and the tag has to stay rare to stay readable: {tags}"
+    )
+    assert [t for t in tags if t[0] == "agent_wake_no_session"], (
+        f"the plain no-session tag should still be the answer here: {tags}"
+    )
 
 
 def test_correction_five_matches_the_directory_itself():
@@ -2582,6 +2784,11 @@ def main():
         test_correction_limit_default_is_logged_not_guessed,
         test_limit_prefers_api_model_when_present,
         test_correction_selection_skips_subagent_children,
+        test_the_title_gate_beats_recency,
+        test_the_title_gate_accepts_both_named_forms,
+        test_the_gate_can_be_switched_off_and_then_recency_is_whole,
+        test_no_named_chat_is_its_own_answer_not_a_silent_miss,
+        test_an_empty_workspace_does_not_claim_the_named_answer,
         test_selection_honours_session_max_age,
         test_gate_free_rejections,
         test_gate_debounce_window_edge,

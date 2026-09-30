@@ -366,12 +366,31 @@ def select_session(endpoint: dict, directory: str) -> dict | None:
         # from matching every row that happens to carry no location.
         return None
     best: dict | None = None
+    require_al = int(config.AGENT_WAKE_REQUIRE_AL_TITLE)
+    unnamed = 0
     for row in _session_rows(endpoint):
         if row.get("parentID"):
             continue
         if row.get("agent") not in PRIMARY_AGENTS:
             continue
         if _norm_dir(_row_dir(row)) != want_dir:
+            continue
+        # The chat must be NAMED for AgentLand.  Without this the tiebreak
+        # below is "most recently updated", and a citizen with any other
+        # conversation open in the same directory loses their wake to it -
+        # the message arrives, in the wrong thread, where it is read as
+        # noise.  Placed HERE rather than after the `best` comparison on
+        # purpose: a rejected row that reached `best` first and was filtered
+        # afterwards would read like the gate worked while the loop had
+        # already preferred it.
+        #
+        # PREFIX-ONLY by operator decision.  `[AL7]` and `[AL notes` both
+        # qualify; the citizen id inside the bracket is NOT verified, so a
+        # second citizen's `[AL...]` chat is a legal target on a shared
+        # server.  Declined, not overlooked - see the knob's comment in
+        # config.py before changing it.
+        if require_al and not str(row.get("title") or "").startswith("[AL"):
+            unnamed += 1
             continue
         updated = (row.get("time") or {}).get("updated") or 0
         if max_age_ms and now_ms - int(updated) > max_age_ms:
@@ -380,6 +399,20 @@ def select_session(endpoint: dict, directory: str) -> dict | None:
             (best.get("time") or {}).get("updated") or 0
         ):
             best = row
+    if best is None and unnamed:
+        # A workspace full of chats, none of them named for AgentLand, is a
+        # DIFFERENT answer from a workspace with no chats - and the second is
+        # what `agent_wake_no_session` below already means.  Without this
+        # line, "you have not named your chat" and "your OpenCode is down"
+        # are the same silence, and the first is the one a citizen can fix
+        # in five seconds.  An empty `unnamed` is deliberately not enough to
+        # fire it: no rows, or none in this directory, is the old answer.
+        logutil.log(
+            "agent_wake_no_al_session",
+            directory=directory,
+            unnamed=unnamed,
+            endpoint=endpoint.get("id"),
+        )
     if best is not None and best.get("id"):
         return best
     if not int(config.AGENT_WAKE_CREATE_SESSION):
