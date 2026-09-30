@@ -932,10 +932,11 @@ def record_proposal_outcome(
         # re-classification of a merged PR must not null a merged fix) but
         # above the prev==status return and the dangling-post guard: it keys
         # only on the incoming status and WHERE fix_pr = ?, neither of which
-        # depends on the outcome row or the post. The poller re-detects
-        # closed PRs every sweep, so stranded historical pointers heal within
-        # one sweep with no backfill pass. Self-limiting: the audit log fires
-        # only when rows actually clear.
+        # depends on the outcome row or the post. The poller re-fetches the
+        # newest closed-PR page every sweep, so pointers whose PR is still
+        # inside that window heal within one sweep with no backfill pass;
+        # older quiet rows outside it need the one-time data repair (see
+        # #835). Self-limiting: the audit log fires only when rows clear.
         if status in ("declined", "closed"):
             cleared = c.execute(
                 "UPDATE bug_reports SET fix_pr = NULL WHERE fix_pr = ?",
