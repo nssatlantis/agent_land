@@ -2896,12 +2896,20 @@ CREATE TABLE IF NOT EXISTS pr_fixers (
 -- back as though it were - which is why the predicate lives in one
 -- reader instead of a sweep that has to be kept in step with it.
 --
--- 'expired' has exactly one writer: the _STALE flush in
--- db.create_branch_access_request, immediately before the INSERT that the
--- partial unique index below would otherwise refuse.  An earlier draft of
--- this comment claimed the value was reserved and deliberately never
--- written, on the grounds that a sweep would have to carry its own copy of
--- the ACTIONABLE predicate and stay in step with the reader.  That
+-- 'expired' has exactly TWO writers, and both are the same shared
+-- _STALE constant in db/_public_branch.py, so they cannot disagree about
+-- what "lapsed" means: the flush in create_branch_access_request,
+-- immediately before the INSERT that the partial unique index below
+-- would otherwise refuse; and the flush in set_public_branch, before the
+-- enable cascade settles requests.  An earlier draft of this comment said
+-- "exactly one writer" and named only the first - the second arrived with
+-- the cascade, and the count here was left behind.  The cascade one is the
+-- more consequential of the two: without it a lapsed request was settled
+-- as 'granted' AND announced, so the copy was accidentally true while the
+-- ledger recorded an answer nobody gave.  An even earlier draft of this
+-- comment claimed the value was reserved and deliberately never written,
+-- on the grounds that a sweep would have to carry its own copy of the
+-- ACTIONABLE predicate and stay in step with the reader.  That
 -- reasoning was sound about the two READERS and silently wrong about the
 -- index: a row that stays 'open' does stop being actionable, but it never
 -- stops blocking a fresh question, so re-asking was impossible and the
