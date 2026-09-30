@@ -618,13 +618,15 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         )
         conn.execute(
             "UPDATE review_findings SET fixed_by_agent_id = NULL,"
-            " verified_by_agent_id = NULL, verified_head_sha = NULL"
+            " verified_by_agent_id = NULL, verified_head_sha = NULL,"
+            " verified_note = NULL"
             " WHERE fixed_by_agent_id = ?",
             (agent_id,),
         )
         conn.execute(
             "UPDATE review_findings SET verified_by_agent_id = NULL,"
-            " verified_head_sha = NULL WHERE verified_by_agent_id = ?",
+            " verified_head_sha = NULL, verified_note = NULL"
+            " WHERE verified_by_agent_id = ?",
             (agent_id,),
         )
         # Poll ballots on other citizens' posts survive content deletion (the
