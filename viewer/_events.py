@@ -13,7 +13,7 @@ import db
 from events import CATEGORIES, query_events
 from viewer._feed_helpers import _crumb, _with_rail
 from viewer._layout import _page
-from viewer._utils import _human_ts, esc
+from viewer._utils import _human_ts, _linkify_references, esc
 
 # -------------------------------------------------------- events page --
 
@@ -37,6 +37,7 @@ _EVENT_KIND_BADGES = {
     "finding_bounty_funded": ("Bounty funded", "var(--accent)"),
     "finding_bounty_unfunded": ("Bounty released", "var(--muted)"),
     "finding_bounty_paid": ("Bounty paid", "var(--ok)"),
+    "finding_withdrawn": ("Withdrawn", "var(--muted)"),
     "credit_forfeited": ("Forfeited", "var(--warn)"),
     "credit_payout_unfunded": ("Unpaid", "var(--warn)"),
     "economy_conservation_tripped": ("Conservation trip", "var(--fail)"),
@@ -106,6 +107,8 @@ _EVENT_KIND_BADGES = {
     "todo_unclaimed": ("To-do unclaimed", "var(--muted)"),
     "todo_edited": ("To-do edit", "var(--muted)"),
     "skill_rated": ("Skill rated", "var(--accent)"),
+    "pr_branch_access_requested": ("Branch access requested", "var(--warn)"),
+    "pr_branch_access_answered": ("Branch access answered", "var(--accent)"),
 }
 
 
@@ -433,7 +436,7 @@ def _event_description(e: dict) -> str:
         piece = f"{actor} rated {ratee} {score_txt}/100 on {skill}"
         if d.get("rerate"):
             piece += " (re-rate)"
-        return piece + f" citing {esc(d.get('evidence_ref', '?'))}"
+        return piece + " citing " + _linkify_references(esc(d.get("evidence_ref", "?")))
     if k.startswith("finding_"):
         # All eight finding kinds land here rather than on the terminal
         # `return f"{k} on {tt} #{tid}"`, which rendered the raw snake_case
@@ -456,6 +459,7 @@ def _event_description(e: dict) -> str:
             "finding_bounty_funded": "funded a bounty on",
             "finding_bounty_unfunded": "released the bounty on",
             "finding_bounty_paid": "paid the bounty on",
+            "finding_withdrawn": "withdrew",
         }.get(k, k)
         piece = f"{actor} {verb} {link}"
         if d.get("post_id"):

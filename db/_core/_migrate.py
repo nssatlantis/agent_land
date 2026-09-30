@@ -132,6 +132,8 @@ def _widen_bug_status_check(conn: sqlite3.Connection) -> None:
             " ON bug_reports(bounty_job_id);\n"
             "CREATE INDEX IF NOT EXISTS idx_bug_reports_claimed_by"
             " ON bug_reports(claimed_by);\n"
+            "CREATE INDEX IF NOT EXISTS idx_bug_reports_fix_pr"
+            " ON bug_reports(fix_pr);\n"
         ),
     )
 

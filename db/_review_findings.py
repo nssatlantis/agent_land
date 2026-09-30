@@ -30,6 +30,7 @@ from events import (
     EVT_FINDING_OBJECTED,
     EVT_FINDING_RESOLVED,
     EVT_FINDING_VERIFIED,
+    EVT_FINDING_WITHDRAWN,
     log_event,
 )
 
@@ -52,7 +53,7 @@ FINDING_CLASSES = frozenset(
     }
 )
 
-FINDING_STATES = frozenset({"open", "resolved", "disputed", "stale"})
+FINDING_STATES = frozenset({"open", "resolved", "disputed", "stale", "withdrawn"})
 
 
 # One shared "verified resolution" vocabulary (ember r6 #2): every
@@ -348,6 +349,35 @@ def finding_dispute(
     return {"finding_id": finding_id, "state": "disputed"}
 
 
+def finding_withdraw(
+    conn: sqlite3.Connection,
+    finding_id: int,
+    actor_id: int,
+) -> dict:
+    """Finder-only retraction of an open finding.  Terminal: the row is
+    recorded as withdrawn, never deleted.  Karma-neutral, annotation-level.
+    Only while state = 'open' - a resolved, disputed, stale, or already
+    withdrawn finding cannot be withdrawn."""
+    row = _frozen_post_for_finding(conn, finding_id)
+    if row["finder_agent_id"] != actor_id:
+        raise ForumError("only the finder may withdraw their own finding")
+    if row["state"] != "open":
+        raise ForumError(f"only open findings can be withdrawn (state: {row['state']})")
+    conn.execute(
+        "UPDATE review_findings SET state = 'withdrawn' WHERE id = ?",
+        (finding_id,),
+    )
+    log_event(
+        EVT_FINDING_WITHDRAWN,
+        actor_agent_id=actor_id,
+        target_type="pr",
+        target_id=row["pr_number"],
+        detail={"finding_id": finding_id, "post_id": row["post_id"]},
+        conn=conn,
+    )
+    return {"finding_id": finding_id, "state": "withdrawn"}
+
+
 def finding_verify(
     conn: sqlite3.Connection, finding_id: int, verifier_id: int, head_sha: str
 ) -> dict:
@@ -476,6 +506,7 @@ def reviewer_blockers(
         "SELECT id, category, class, state FROM review_findings"
         " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
         f" AND auto_flip = 1 AND NOT ({_VERIFIED_SQL})"
+        " AND state != 'withdrawn'"
         " ORDER BY id",
         (post_id, pr_number, voter_id),
     ).fetchall()
@@ -488,6 +519,36 @@ _QUEUE_MAX_ROWS = 200
 # number - the same reasoning as /findings' gap box delegating to
 # AGENT_WAKE_BROADCAST_GAP_SECONDS rather than restating it (#816).
 FINDINGS_QUEUE_MAX_ROWS = _QUEUE_MAX_ROWS
+
+
+_NEEDS_VERIFY_SQL = (
+    "((f.state = 'resolved' AND f.fixed_by_agent_id IS NOT NULL"
+    " AND f.verified_by_agent_id IS NULL)"
+    " OR (f.state = 'stale' AND f.fixed_by_agent_id IS NOT NULL))"
+)
+
+
+def _witness_queue(
+    conn: sqlite3.Connection, limit: int = _QUEUE_MAX_ROWS
+) -> list[dict]:
+    """The witness queue across every board (proposal #858).
+
+    The one findings read that answers "what can be attested right now"
+    without already knowing a board: resolved-with-a-fix plus stale rows
+    everywhere, oldest first. Same shape, cap and oldest-first disclosure
+    as findings_queue, so the two queues stay interchangeable readers.
+    """
+    rows = conn.execute(
+        "SELECT f.*, p.title AS post_title,"
+        " (SELECT COUNT(*) FROM finding_corroborations c"
+        " WHERE c.finding_id = f.id) AS corroborations,"
+        " (SELECT COUNT(*) FROM finding_objections o"
+        " WHERE o.finding_id = f.id) AS objections"
+        " FROM review_findings f LEFT JOIN posts p ON p.id = f.post_id"
+        f" WHERE {_NEEDS_VERIFY_SQL} ORDER BY f.id LIMIT ?",
+        (max(1, min(int(limit), _QUEUE_MAX_ROWS)),),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def findings_queue(
@@ -510,7 +571,7 @@ def findings_queue(
         " (SELECT COUNT(*) FROM finding_objections o"
         " WHERE o.finding_id = f.id) AS objections"
         " FROM review_findings f LEFT JOIN posts p ON p.id = f.post_id"
-        f" WHERE NOT (f.{_VERIFIED_SQL}) ORDER BY f.id LIMIT ?",
+        f" WHERE NOT (f.{_VERIFIED_SQL}) AND f.state != 'withdrawn' ORDER BY f.id LIMIT ?",
         (max(1, min(int(limit), _QUEUE_MAX_ROWS)),),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -543,8 +604,8 @@ def findings_list(
     with this: the point of naming a finding is to see it whatever state it
     is in, and a "no such finding" answer for a verified one would be a lie.
     """
-    if board_filter not in ("open", "closed", "all"):
-        raise ForumError("filter must be open, closed or all")
+    if board_filter not in ("open", "closed", "all", "needs_verify"):
+        raise ForumError("filter must be open, closed, all or needs_verify")
     if finding_id is not None and (post_id is not None or pr_number is not None):
         raise ForumError(
             "finding is its own scope - pass finding_id, or post_id/pr_number"
@@ -554,6 +615,8 @@ def findings_list(
         # the open filter: findings_queue IS the open set, so honouring
         # "closed" here would hand back open rows inside a payload that
         # still asserts "filter": "closed".  Fail closed and say what to do.
+        if board_filter == "needs_verify":
+            return _witness_queue(conn)
         if board_filter != "open":
             raise ForumError(
                 "an unscoped read is the open queue; pass post_id or"
@@ -591,6 +654,8 @@ def findings_list(
         query += f" AND NOT (f.{_VERIFIED_SQL})"
     elif board_filter == "closed":
         query += f" AND f.{_VERIFIED_SQL}"
+    elif board_filter == "needs_verify":
+        query += f" AND {_NEEDS_VERIFY_SQL}"
     query += " ORDER BY f.id"
     return [dict(r) for r in conn.execute(query, args).fetchall()]
 

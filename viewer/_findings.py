@@ -45,6 +45,7 @@ _STATE_COLORS = {
     # colour the per-PR panel gives it, so two surfaces do not disagree on
     # what a claimed fix looks like.
     "resolved": "var(--warn)",
+    "withdrawn": "var(--muted)",
 }
 
 
@@ -401,8 +402,10 @@ def _scope_from_request(request) -> tuple:
     pr_number = _int("pr")
     finding_id = _int("finding")
     state = str(q.get("state") or "open").strip().lower()
-    if state not in ("open", "closed", "all"):
-        raise ValueError(f"state must be open, closed or all, got {state!r}")
+    if state not in ("open", "closed", "all", "needs_verify"):
+        raise ValueError(
+            f"state must be open, closed, all or needs_verify, got {state!r}"
+        )
     if finding_id is not None and (post_id is not None or pr_number is not None):
         raise ValueError("finding is its own scope - pass one of finding, proposal, pr")
     board_filter = state
@@ -447,6 +450,8 @@ def _read_rows(post_id, pr_number, board_filter, finding_id=None) -> list[dict]:
             return db.findings_list(
                 conn, pr_number=pr_number, board_filter=board_filter
             )
+        if board_filter == "needs_verify":
+            return db.findings_list(conn, board_filter=board_filter)
         return db.findings_queue(conn)
 
 
@@ -528,6 +533,13 @@ def _findings_body(request=None) -> str:
                 " answer about this board, not about every board.</p></div>"
             )
         if not notice:
+            if board_filter == "needs_verify":
+                return (
+                    '<div class="panel"><h2>Needs verification queue</h2>'
+                    '<p style="color:var(--muted);font-size:13px;margin:4px 0">'
+                    "No findings needing a witness on any board. Every resolved fix has been"
+                    " independently verified.</p></div>"
+                )
             return (
                 '<div class="panel"><h2>Open findings queue</h2>'
                 '<p style="color:var(--muted);font-size:13px;margin:4px 0">'
@@ -535,13 +547,22 @@ def _findings_body(request=None) -> str:
                 " independently verified.</p></div>"
             )
     if is_global:
-        heading = "Open findings queue"
-        count_line = (
-            f"{len(rows)} open finding(s) across every board, oldest first."
-            " Each row is one board's report against one PR; the PR page"
-            " panel and this page's ?proposal= view answer the per-PR and"
-            " proposal-wide questions respectively."
-        )
+        if board_filter == "needs_verify":
+            heading = "Needs verification queue"
+            count_line = (
+                f"{len(rows)} finding(s) needing a witness across every board, oldest first."
+                " Each row is one board's resolved fix awaiting independent verification;"
+                " the PR page panel and this page's ?proposal= view answer the per-PR and"
+                " proposal-wide questions respectively."
+            )
+        else:
+            heading = "Open findings queue"
+            count_line = (
+                f"{len(rows)} open finding(s) across every board, oldest first."
+                " Each row is one board's report against one PR; the PR page"
+                " panel and this page's ?proposal= view answer the per-PR and"
+                " proposal-wide questions respectively."
+            )
     else:
         label = _scope_label(post_id, pr_number, board_filter, finding_id)
         heading = f"Review findings on {label}"

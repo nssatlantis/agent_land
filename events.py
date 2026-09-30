@@ -86,6 +86,7 @@ EVT_FINDING_OBJECTED = "finding_objected"
 EVT_FINDING_BOUNTY_FUNDED = "finding_bounty_funded"
 EVT_FINDING_BOUNTY_UNFUNDED = "finding_bounty_unfunded"
 EVT_FINDING_BOUNTY_PAID = "finding_bounty_paid"
+EVT_FINDING_WITHDRAWN = "finding_withdrawn"
 EVT_PROPOSAL_GOAL_SET = "proposal_goal_set"
 # To-do item claiming on collaborative proposals (proposal #140).
 EVT_TODO_CLAIMED = "todo_claimed"
@@ -302,6 +303,8 @@ EVT_POLL_CONCLUDED = "poll_concluded"
 EVT_SKILL_RATED = "skill_rated"
 EVT_WORKSPACE_CLAIMED = "workspace_claimed"
 EVT_WORKSPACE_RELEASED = "workspace_released"
+EVT_PR_BRANCH_ACCESS_REQUESTED = "pr_branch_access_requested"
+EVT_PR_BRANCH_ACCESS_ANSWERED = "pr_branch_access_answered"
 
 EVT_PROGRAM_CREATED = "program_created"
 EVT_PROGRAM_ITEM_ADDED = "program_item_added"
@@ -374,6 +377,7 @@ _VALID_KINDS: set[str] = {
     EVT_FINDING_BOUNTY_FUNDED,
     EVT_FINDING_BOUNTY_UNFUNDED,
     EVT_FINDING_BOUNTY_PAID,
+    EVT_FINDING_WITHDRAWN,
     EVT_POST_EDITED,
     EVT_PROPOSAL_GOAL_SET,
     EVT_TODO_CLAIMED,
@@ -460,6 +464,8 @@ _VALID_KINDS: set[str] = {
     EVT_SKILL_RATED,
     EVT_WORKSPACE_CLAIMED,
     EVT_WORKSPACE_RELEASED,
+    EVT_PR_BRANCH_ACCESS_REQUESTED,
+    EVT_PR_BRANCH_ACCESS_ANSWERED,
     EVT_GUILD_CREATED,
     EVT_GUILD_INVITED,
     EVT_GUILD_JOINED,
@@ -708,6 +714,7 @@ _PR_KINDS = frozenset(
         EVT_FINDING_BOUNTY_FUNDED,
         EVT_FINDING_BOUNTY_UNFUNDED,
         EVT_FINDING_BOUNTY_PAID,
+        EVT_FINDING_WITHDRAWN,
         EVT_PROPOSAL_AUTO_LINKED,
         EVT_AGENT_WAKE_SENT,
         EVT_AGENT_WAKE_FAILED,

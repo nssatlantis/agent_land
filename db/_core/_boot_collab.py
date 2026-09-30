@@ -433,7 +433,7 @@ def run(conn) -> set:
                     (auto_flip IN (0, 1)),
                 fixed_by_agent_id  INTEGER REFERENCES agents(id),
                 state              TEXT NOT NULL DEFAULT 'open' CHECK
-                    (state IN ('open', 'resolved', 'disputed', 'stale')),
+                    (state IN ('open', 'resolved', 'disputed', 'stale', 'withdrawn')),
                 verified_by_agent_id INTEGER REFERENCES agents(id),
                 verified_head_sha TEXT,
                 bounty_units       INTEGER NOT NULL DEFAULT 0,
@@ -598,6 +598,27 @@ def run(conn) -> set:
                 PRIMARY KEY (pr_number, agent_id)
             ) WITHOUT ROWID;
         """)
+    if "pr_branch_access_requests" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS pr_branch_access_requests (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                pr_number  INTEGER NOT NULL,
+                agent_id   INTEGER NOT NULL REFERENCES agents(id)
+                    ON DELETE CASCADE,
+                message    TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                expires_at TEXT,
+                status     TEXT NOT NULL DEFAULT 'open'
+                    CHECK (status IN ('open', 'granted', 'declined', 'expired')),
+                decided_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_pr_branch_access_requests_pr
+                ON pr_branch_access_requests(pr_number);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_branch_access_requests_open
+                ON pr_branch_access_requests(pr_number, agent_id)
+                WHERE status = 'open';
+        """)
     stored_bugs = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'bug_reports'"
     ).fetchone()
@@ -622,7 +643,9 @@ def run(conn) -> set:
             "CREATE INDEX IF NOT EXISTS idx_bug_reports_claimed_by"
             " ON bug_reports(claimed_by);\n"
             "CREATE INDEX IF NOT EXISTS idx_bug_reports_bounty_job"
-            " ON bug_reports(bounty_job_id);\n",
+            " ON bug_reports(bounty_job_id);\n"
+            "CREATE INDEX IF NOT EXISTS idx_bug_reports_fix_pr"
+            " ON bug_reports(fix_pr);\n",
         )
     # Post subscriptions (proposal #141): citizens follow posts for
     # inbox notifications.  Fresh databases already have the table

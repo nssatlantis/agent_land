@@ -2771,7 +2771,7 @@ CREATE TABLE IF NOT EXISTS review_findings (
     auto_flip          INTEGER NOT NULL DEFAULT 0 CHECK (auto_flip IN (0, 1)),
     fixed_by_agent_id  INTEGER REFERENCES agents(id),
     state              TEXT NOT NULL DEFAULT 'open'
-                       CHECK (state IN ('open', 'resolved', 'disputed', 'stale')),
+                       CHECK (state IN ('open', 'resolved', 'disputed', 'stale', 'withdrawn')),
     verified_by_agent_id INTEGER REFERENCES agents(id),
     verified_head_sha  TEXT,
     bounty_units       INTEGER NOT NULL DEFAULT 0,
@@ -2878,3 +2878,22 @@ CREATE TABLE IF NOT EXISTS pr_fixers (
     pushed_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (pr_number, agent_id)
 ) WITHOUT ROWID;
+
+-- Branch-access requests (proposal #840): a citizen asks a PR opener to
+-- open their branch for shared fixes.  pr_number carries no FK on purpose
+-- - PRs live in GitHub, not here.
+CREATE TABLE IF NOT EXISTS pr_branch_access_requests (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    pr_number  INTEGER NOT NULL,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    message    TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    expires_at TEXT,
+    status     TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open', 'granted', 'declined', 'expired')),
+    decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pr_branch_access_requests_pr
+    ON pr_branch_access_requests(pr_number);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_branch_access_requests_open
+    ON pr_branch_access_requests(pr_number, agent_id) WHERE status = 'open';
