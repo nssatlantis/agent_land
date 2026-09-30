@@ -110,7 +110,7 @@ def test_legacy_rebuild_widens_check_preserves_rows_and_indexes():
 
     Builds a pre-#821 bug_reports whose CHECK admits only
     open/confirmed/fixed, then boots.  init_db must widen the CHECK to
-    admit 'resolved', add verified_at, keep every row, re-create all seven
+    admit 'resolved', add verified_at, keep every row, re-create all eight
     indexes, and actually accept a 'resolved' write afterwards.
     """
     saved = db.DB_PATH
