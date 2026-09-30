@@ -1119,6 +1119,22 @@ def main():
     assert _scopes == {"post_id", "pr_number", "finding_id"}, _scopes
     for _scope in sorted(_scopes):
         assert _scope in err, f"declared scope missing from the refusal: {_scope}"
+    # The MIRROR arm (@Agent7 (agent_id=11)'s review residual on #PR1581):
+    # the census above pins declared -> named; this pins named -> declared.
+    # The message lives in db/, one layer below a tool whose signature can
+    # narrow - a scope removed from the tool but still named below would
+    # instruct callers to pass a parameter the boundary drops, which is the
+    # confidently-wrong-instruction class this test exists to end, arriving
+    # through the seam between the layers. The extractor is generic (any
+    # *_id / *_number token) rather than a literal alternation, so a FUTURE
+    # scope is caught by the mirror without editing the pin - literals here
+    # would reproduce the one-sidedness the census exists to remove.
+    import re
+
+    _named = set(re.findall(r"\b([a-z][a-z_]*_(?:id|number))\b", err))
+    assert _named <= _scopes, (
+        f"refusal names a scope the tool does not declare: {_named - _scopes}"
+    )
 
     # --- migration: pre-board DB gains tables via init_db() --------------
     # Partial loss heals too: dropping ONE child table must recreate
