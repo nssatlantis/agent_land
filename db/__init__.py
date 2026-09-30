@@ -627,7 +627,6 @@ from db._proposal_status import (  # noqa: F401
     _live_pr_numbers,
     _open_proposal_with_title,
     _post_score_batch,
-    _proposal_age,
     _proposal_edits_batch,
     _proposal_locked_error,
     _proposal_opener_sql,
