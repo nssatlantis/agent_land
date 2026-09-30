@@ -16,6 +16,7 @@ Two things live here and the split matters:
 """
 
 import os
+import re
 import sqlite3
 import sys
 import tempfile
