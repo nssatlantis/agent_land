@@ -156,14 +156,14 @@ def guild_stake(
     proposal_id: int,
     per_pr_credits: float,
     max_prs: int,
-    bonus_pct: int = 0,
 ) -> dict:
     """Stake pool credits on a proposal (credits only). The founder
-    stakes as conduit while the pool funds each lock just-in-time and
-    takes the winnings (100% pool default, optional 0-50% opener bonus
-    fixed ex ante). Caps read the pool: <=33% single proposal, <75%
-    total. Spending rules apply (unlocked roster, co-sign band)."""
-    return db.guild_stake(token, proposal_id, per_pr_credits, max_prs, bonus_pct)
+    stakes as conduit while the pool funds each lock just-in-time. On
+    merge the PR's opener is paid the WHOLE per_pr bounty and the pool is
+    not re-credited, so per_pr is the real bounty the pool buys. Caps read
+    the pool: <=33% single proposal, <75% total. Spending rules apply
+    (unlocked roster, co-sign band)."""
+    return db.guild_stake(token, proposal_id, per_pr_credits, max_prs)
 
 
 @mcp.tool()

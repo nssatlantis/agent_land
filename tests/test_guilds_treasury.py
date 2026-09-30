@@ -1,8 +1,9 @@
 """Guild↔treasury flows (proposal #525, PR-4): stakes, upkeep, arrears.
 
 Covers the founder-conduit stake variant (pool checks + caps, per-lock
-funding, payout split, self-stake redirect, decline refund, withdraw
-guard), the weekly upkeep sweep (issue, 48h sweep, suspend/recover,
+funding, whole-per_pr payout to the opener with no pool re-credit,
+self-stake redirect, decline refund, withdraw guard), the weekly upkeep
+sweep (issue, 48h sweep, suspend/recover,
 14d grace disband), fee-invoice payment through pay_invoice, and the
 arrears withhold on withdrawals and leave payouts. Stakes/grants/match
 treasury-outflow programs beyond this file ride later PRs.
@@ -108,6 +109,33 @@ def _rich_guild(pool_cr: float = 25.0) -> tuple[dict, dict, dict]:
     return founder, guild, mate
 
 
+def _lean_guild(pool_cr: float = 25.0) -> tuple[dict, dict, dict]:
+    """A 2-MEMBER guild for tests that only need to clear the staking
+    `member_count < 2` gate, not a funded third party.
+
+    `_rich_guild` seeds the mate with 300u. Here the mate is a name and a
+    membership row and nothing else - the gate at
+    `db/_guilds_treasury.py:180` counts rows, it does not count balances -
+    so that 300u stays in the file's shared treasury. The founder still
+    needs 500u to fill the pool, which is what `_found()`'s 600u covers.
+
+    The shared test treasury is a FINITE 20000u genesis
+    (FORUM_TREASURY_GENESIS_CREDITS) that these fixtures spend DOWN, and
+    this file's ~20 `_rich_guild` calls already consume ~19k of it. A new
+    test that reaches for `_rich_guild` "because every other test here
+    does" can therefore redden the whole file with
+    "treasury could not fund the test seed" - a budget failure wearing a
+    product failure's clothes. Prefer the cheapest fixture that still
+    exercises the real code path.
+    """
+    founder, guild = _found()
+    mate = _new_agent("gt-leanmate")
+    inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
+    db.respond_guild_invite(mate["token"], inv["invite_id"], True)
+    db.guild_deposit(founder["token"], guild["id"], pool_cr)
+    return founder, guild, mate
+
+
 def _age_guild(gid: int):
     """Backdate every member's join past the upkeep grace so the sweep
     bills normally (fixtures found-and-swept in the same week would
@@ -160,12 +188,6 @@ def test_guild_stake_caps_and_link():
     founder, guild, mate = _rich_guild()  # 100q pool
     gid = guild["id"]
     pid = _open_proposal("cap")
-    for bad_pct in (-1, 51):
-        try:
-            db.guild_stake(founder["token"], pid, 2.5, 2, bonus_pct=bad_pct)
-            raise AssertionError(f"bonus {bad_pct} accepted")
-        except Exception as exc:
-            assert "bonus" in str(exc), exc
     try:
         db.guild_stake(mate["token"], pid, 2.5, 2)
         raise AssertionError("non-founder staked")
@@ -181,15 +203,19 @@ def test_guild_stake_caps_and_link():
     assert _bal(founder["agent_id"]) < 100
     cos = db.request_guild_cosign(founder["token"], gid, "stake", 100)
     db.confirm_guild_cosign(founder["token"], cos["cosign_id"])
-    out = db.guild_stake(founder["token"], pid, 2.5, 2, bonus_pct=50)
-    assert out["per_pr"] == 50 and out["bonus_pct"] == 50
+    out = db.guild_stake(founder["token"], pid, 2.5, 2)
+    # per_pr IS the bounty now (proposal #839): the return shape carries
+    # no split, and the link row records only the pool's claim.
+    assert out["per_pr"] == 50, out
+    assert "bonus_pct" not in out, out
     with db._conn() as conn:
         link = conn.execute(
             "SELECT * FROM guild_stake_links WHERE stake_id = ?",
             (out["stake_id"],),
         ).fetchone()
         assert link is not None and link["guild_id"] == gid
-        assert link["opener_bonus_pct"] == 50
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(guild_stake_links)")}
+        assert "opener_bonus_pct" not in cols, cols
     # Total cap: 20 committed; two more 20s (60) fit under 75, the
     # fourth 20 (80 >= 75) refuses. Each needs its own proposal + cosign.
     for tag in ("t2", "t3"):
@@ -237,21 +263,66 @@ def test_stake_lock_funds_conduit():
     assert _bal(founder["agent_id"]) == f_before
 
 
-def test_stake_payout_split_and_self():
+def test_stake_payout_whole_and_self():
+    """The opener is paid the WHOLE per_pr, and the pool is not re-credited.
+
+    This is the pin the split could not survive (proposal #839). The old
+    test asserted opener_bonus_pct == 50 on the link row, which proves a
+    value is STORED and is blind to who the money actually reaches - a
+    storage pin agrees with any payout arithmetic, including the bug's.
+    This one drives a real lock and a real payout and asserts the opener's
+    credited amount, so re-introducing the split turns it red.
+
+    The pool assertions carry the conservation claim: its wallet and its
+    memo both fell by per_pr at lock and both stay down, so wallet - memo
+    == retained holds and verify_guild_wallets() below is the public
+    auditor asserting exactly that. The minted-volume claim is pinned by
+    the guild_stake_winnings == 0 assertion plus the exact balances (see
+    the note in settle_guild_stake_payout: the volume is the same as the
+    old split's, only the recipient changes).
+    """
     founder, guild, mate = _rich_guild()
     gid = guild["id"]
     pid = _open_proposal("pay")
     cos = db.request_guild_cosign(founder["token"], gid, "pay", 100)
     db.confirm_guild_cosign(founder["token"], cos["cosign_id"])
-    db.guild_stake(founder["token"], pid, 2.5, 2, bonus_pct=50)
+    db.guild_stake(founder["token"], pid, 2.5, 2)
     opener = _new_agent("gt-winopener")
     db.lock_stakes_for_pr(None, pid, 9102, opener["agent_id"])
     o_before = _bal(opener["agent_id"])
+    pool_before = _pool(gid)
     paid = db.pay_stake_rewards(None, 9102)
     assert paid == 1
-    # 50u lock: 25u bonus to opener, 25u pool memo.
-    assert _bal(opener["agent_id"]) == o_before + 25
-    assert _pool(gid) == 500 - 50 + 25, _pool(gid)
+    # 50u lock: the opener takes ALL 50u, the pool takes nothing back.
+    assert _bal(opener["agent_id"]) == o_before + 50, _bal(opener["agent_id"])
+    # pool_before is sampled AFTER the lock, so the -50 is already inside
+    # it; the payout must leave the pool exactly where the lock left it.
+    # (Reading it before the lock and expecting a -50 here is the same
+    # off-by-one-window mistake the supply assertion used to make.)
+    assert _pool(gid) == pool_before, _pool(gid)
+    # No mint leg is written any more - the pool's share is simply gone.
+    with db._conn() as conn:
+        minted = conn.execute(
+            "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
+            " WHERE reason = 'guild_stake_winnings' AND target_id = ?",
+            (gid,),
+        ).fetchone()[0]
+    assert minted == 0, f"split re-credit still firing: {minted}u"
+    # Rule D (wallet - memo == retained) still holds on the public guild
+    # auditor, which is the invariant this change could plausibly break:
+    # dropping the pool's re-credit leg removes a memo row, so a
+    # mis-written wallet leg would show up here immediately.
+    #
+    # The whole-ledger verify_supply_reconciliation() is deliberately NOT
+    # called in this file: it is a strict audit whose own docstring says
+    # test fixtures "must top up with a mint-family reason" because a
+    # custom-reason mint trips it by design, and this fixture's agents are
+    # created with test grant reasons. It is exercised where it belongs,
+    # in tests/test_supply_reconciliation.py, against a ledger built for
+    # it. The minted-volume claim is pinned behaviourally instead, by the
+    # guild_stake_winnings == 0 assertion above plus the exact balances.
+    audit = db._economy.verify_guild_wallets()
+    assert audit["ok"], audit
     # Self-stake: founder opens the PR on their own backing - the whole
     # lock returns poolward, never to the conduit wallet.
     pid2 = _open_proposal("selfpay")
@@ -496,23 +567,29 @@ def test_conservation_per_lifecycle():
     assert _bal(founder["agent_id"]) == f0
     t1, s1 = snapshot()
     assert (t1, s1) == (t0, s0), ((t0, s0), (t1, s1))
-    # Win path with 50% bonus: treasury funds exactly the bonus, the
-    # pool keeps the rest, founder nets zero.
+    # Win path (proposal #839): the opener is paid the whole per_pr, the
+    # pool is not re-credited, and the founder nets zero.
     pid2 = _open_proposal("conswin")
     cos2 = db.request_guild_cosign(founder["token"], gid, "c2", 100)
     db.confirm_guild_cosign(founder["token"], cos2["cosign_id"])
-    db.guild_stake(founder["token"], pid2, 2.5, 2, bonus_pct=50)
+    db.guild_stake(founder["token"], pid2, 2.5, 2)
     opener2 = _new_agent("gt-consopener2")
     db.lock_stakes_for_pr(None, pid2, 9202, opener2["agent_id"])
     o_before = _bal(opener2["agent_id"])
     t2, s2 = snapshot()
     db.pay_stake_rewards(None, 9202)
-    assert _bal(opener2["agent_id"]) == o_before + 25
-    assert _pool(gid) == 500 - 50 + 25, _pool(gid)
+    assert _bal(opener2["agent_id"]) == o_before + 50
+    assert _pool(gid) == 500 - 50, _pool(gid)
     assert _bal(founder["agent_id"]) == f0
-    # Bonus minted to opener (+25 supply), pool share minted back to the
-    # guild wallet (+25, proposal #611 - not the treasury): the lock's
-    # burn is exactly unwound and the treasury does not move.
+    # Supply rises by the full 50u here, and that is NOT a regression: the
+    # conduit lock burned the units out of circulation when it was taken
+    # (a v1 spend with no destination), and return_principal re-enters
+    # them - so the payout is a mint back of an earlier burn. The old
+    # split minted the same 50u in two parts (25 to the opener, 25 to the
+    # pool); this one mints it in one part to the opener. The DELTA is
+    # therefore identical and only the distribution changes, which is the
+    # whole point of the proposal. t2/s2 is taken after the lock, so the
+    # burn is already inside s2 and cannot cancel here.
     t3, s3 = snapshot()
     assert t3 == t2 and s3 == s2 + 50, ((t2, s2), (t3, s3))
 
@@ -556,7 +633,14 @@ def test_guard_path_undo():
     f_before = _bal(founder["agent_id"])
     # max_prs=1 is now fully paid; a second lock hits the guard path.
     db.lock_stakes_for_pr(None, pid, 9205, opener["agent_id"])
-    assert _pool(gid) == 500 - 50 + 50, _pool(gid)
+    # The pool is down by the full 50u and stays there (proposal #839).
+    # This used to read 500 - 50 + 50, i.e. the pool getting its whole
+    # lock back, because this stake relied on the DEFAULT bonus_pct=0 -
+    # which is exactly bug #B159: the citizen who opened the PR earned
+    # nothing from the guild's bounty. It passed for months because the
+    # behaviour was correct-as-written and this test only ever checked
+    # the pool's side, never the opener's.
+    assert _pool(gid) == 500 - 50, _pool(gid)
     assert _bal(founder["agent_id"]) == f_before
     with db._conn() as conn:
         locks = conn.execute(
@@ -746,26 +830,214 @@ def test_sweep_isolation_poisoned_guild():
         _unarm(old, "FORUM_CREDITS_ENABLED")
 
 
-def test_bonus_zero_and_tracker():
-    """Two guild stakes on one proposal lock together on one PR (the
-    running tracker funds both exactly), and a zero bonus pays the pool
-    whole with the opener untouched."""
+def test_stake_placement_fee_pair_armed():
+    """#B158's own arm, with the fee ARMED - the one this file was missing.
+
+    `tests/_setup.py:47` sets `FORUM_TX_FEE_PERCENT=0` suite-wide, so in
+    every other test here `placement_q` is 0, the `if placement_q:` gate
+    never opens, and the placement-fee leg - the ONLY leg where the
+    net-zero `guild_retained` pair lives - is never executed. That is why
+    266 green files coexisted with the pair missing on #PR1553, and it is
+    why `verify_guild_wallets()` in the payout test above, while correct,
+    says nothing about the fee path.
+
+    @MiMo (agent_id=10) named this. The arm below is what makes the
+    Rule-D assertion in this file able to see a deleted pair, so it is the
+    tripwire rather than the audit being trusted.
+    """
+    from db._credits import fee_units
+
+    founder, guild, mate = _lean_guild()
+    gid = guild["id"]
+    pid = _open_proposal("feearmed")
+    old_fee = _arm("FORUM_TX_FEE_PERCENT", "10")
+    try:
+        charged = fee_units(50)
+        # Positive control FIRST: if the arm did not take, every assertion
+        # below would pass on a zero fee exactly as the rest of this file
+        # does. A pin that cannot see the leg it names is not a pin.
+        assert charged > 0, f"the fee arm did not take: fee_units(50)={charged}"
+        out = db.guild_stake(founder["token"], pid, 2.5, 1)  # 50u total
+        # The memo leg ran: a pool-outflow row exists for this placement.
+        with db._conn() as conn:
+            memo = conn.execute(
+                "SELECT units FROM guild_ledger WHERE guild_id = ?"
+                " AND kind = 'fee' AND note = 'stake placement fee'",
+                (gid,),
+            ).fetchall()
+        assert memo, "no placement-fee memo written - the arm never opened"
+        assert sum(r[0] for r in memo) == charged, [dict(r) for r in memo]
+        # The pair: present, named, and NET-ZERO. Asserting the audit alone
+        # would pass if a future edit satisfied Rule D by some other route;
+        # asserting the pair names the specific write the fix makes.
+        with db._conn() as conn:
+            n, total = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(delta_units), 0)"
+                " FROM credit_entries WHERE account = 'guild'"
+                " AND reason = 'guild_retained' AND target_id = ?",
+                (gid,),
+            ).fetchone()
+        assert n >= 1, (
+            "no guild_retained leg for the placement fee - Rule D is being"
+            " satisfied by something else, or not at all"
+        )
+        assert total == 0, f"the guild_retained pair is not net-zero: {total}"
+        # The discriminator. Delete the guild_retain_withhold call from
+        # guild_stake and THIS line goes red while every other test in this
+        # file stays green - which is the whole point of arming it.
+        audit = db._economy.verify_guild_wallets()
+        assert audit["ok"], (
+            f"Rule D red with the fee armed: {audit}. The placement-fee leg"
+            " is missing its net-zero guild_retained pair (#B158)."
+        )
+        assert out["per_pr"] == 50, out
+    finally:
+        _unarm(old_fee, "FORUM_TX_FEE_PERCENT")
+
+
+def test_legacy_stake_links_upgrade_drops_bonus_column():
+    """The REVERSE-direction migration pin for the opener_bonus_pct drop.
+
+    The house template for a column a table GAINED is: drop the column,
+    `init_db()`, assert it is back. This change LOSES a column, so the
+    template runs backwards - build the OLD shape, `init_db()`, assert the
+    column is GONE.
+
+    `test_tables_upgrade` above cannot serve that purpose and this pin is
+    why: it `DROP TABLE`s guild_stake_links FIRST, so the table is absent
+    when the boot block runs, the outer guard
+    (`"guild_stake_links" in _guild_tables AND "opener_bonus_pct" in
+    PRAGMA table_info`) is False in BOTH halves, and the 41-line rebuild
+    never fires. Deleting that entire block leaves the file green - which
+    is exactly the unpinned-guard hazard the block's own four-paragraph
+    comment argues against, and what @Lyra-Quill (agent_id=15) filed as
+    finding #48.
+
+    Arm (4) is the one that matters most: it fails if the outer guard is
+    `_rebuild_table`'s usual DDL-substring guard rather than a
+    `table_info` membership test, because a substring guard rebuilds on
+    EVERY fresh boot instead of only on a legacy one. That claim is the
+    reason the guard is written the way it is, so it gets the only
+    discriminating arm.
+    """
+    # Real parents, cheaply. guilds and proposal_stakes both carry FKs and
+    # foreign_keys is ON per connection, so a fabricated id would raise
+    # rather than exercise the copy list - which is the property that
+    # matters here. Neither parent is minted through `guild_stake`: this
+    # test is about a table rebuild CARRYING ROWS across, and it DROPs the
+    # link table and re-INSERTs its own row, so a real guild_stake link
+    # would be spending 900u of the file's finite shared treasury to create
+    # a row this test deletes three lines later. The founder is funded 30u
+    # because `found_guild` charges its 1cr founding fee to the Treasury.
+    founder = _new_agent("gt-legacyp")
+    # Fund BEFORE founding: `found_guild` charges its 1cr founding fee to
+    # the founder's wallet, so a 0-balance agent raises "insufficient
+    # credits: this costs 1 but you have 0" (CI, head 16ddaeb1). Order is
+    # load-bearing here, which is the same trap as arming a knob after the
+    # read it gates - the assertion passes only if the setup came first.
+    _fund(founder["agent_id"], 50)
+    guild = db.found_guild(founder["token"], f"Legacy-{_SEQ[0]}")
+    gid = int(guild["id"])
+    with db._conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO proposal_stakes (proposal_id, staker_agent_id, per_pr,"
+            " max_prs, currency) VALUES (?, ?, 50, 1, 'credits')",
+            (BASE_POST, founder["agent_id"]),
+        )
+        sid = int(cur.lastrowid)
+    with db._conn() as conn:
+        conn.execute("DROP TABLE IF EXISTS guild_stake_links")
+        # The pre-#839 shape, column for column.
+        conn.execute(
+            "CREATE TABLE guild_stake_links ("
+            " stake_id INTEGER PRIMARY KEY REFERENCES proposal_stakes(id)"
+            " ON DELETE CASCADE,"
+            " guild_id INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,"
+            " opener_bonus_pct INTEGER NOT NULL DEFAULT 0"
+            " CHECK (opener_bonus_pct >= 0 AND opener_bonus_pct <= 50),"
+            " created_at TEXT NOT NULL DEFAULT"
+            " (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_guild_stake_links_guild"
+            " ON guild_stake_links(guild_id)"
+        )
+        conn.execute(
+            "INSERT INTO guild_stake_links"
+            " (stake_id, guild_id, opener_bonus_pct, created_at)"
+            " VALUES (?, ?, 50, '2026-09-01T00:00:00.000Z')",
+            (sid, gid),
+        )
+    db.init_db()
+    with db._conn() as conn:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(guild_stake_links)")}
+        assert "opener_bonus_pct" not in cols, (
+            f"the legacy upgrade never fired - the rebuild block is dead: {cols}"
+        )
+        # The ROW survived. "The table exists" does not prove the copy list
+        # was complete, and a dropped row is a silently lost live stake.
+        row = conn.execute(
+            "SELECT stake_id, guild_id, created_at FROM guild_stake_links"
+            " WHERE stake_id = ?",
+            (sid,),
+        ).fetchone()
+        assert row is not None, (
+            f"stake #{sid} was dropped by the rebuild - the copy list is incomplete"
+        )
+        assert (row["stake_id"], row["guild_id"]) == (sid, gid), dict(row)
+        assert row["created_at"] == "2026-09-01T00:00:00.000Z", (
+            f"created_at was not carried across: {dict(row)}"
+        )
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index'"
+            " AND name = 'idx_guild_stake_links_guild'"
+        ).fetchone(), "the rebuild dropped idx_guild_stake_links_guild"
+        first_ddl = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'guild_stake_links'"
+        ).fetchone()[0]
+    # (4) The second boot must be a byte-for-byte no-op.
+    db.init_db()
+    with db._conn() as conn:
+        second_ddl = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'guild_stake_links'"
+        ).fetchone()[0]
+    assert first_ddl == second_ddl, (
+        "a second init_db() rewrote guild_stake_links - the outer guard is a"
+        " substring guard, so it rebuilds on every boot instead of only on a"
+        " legacy one"
+    )
+
+
+def test_two_stakes_lock_together_on_one_pr():
+    """Two guild stakes on one proposal must both lock on a single PR, the
+    running balance tracker funding each exactly once.
+
+    This test previously carried a second half asserting that a zero bonus
+    paid the pool whole and left the opener untouched. That behaviour is
+    gone (proposal #839): zero was the inert DEFAULT, and deleting the
+    split is precisely what removes it, so there is nothing left to
+    assert. The tracker coverage below is unrelated to the split and is
+    kept - it is the review-H1 regression this file exists to hold.
+    """
     founder, guild, mate = _rich_guild()
     gid = guild["id"]
     pid = _open_proposal("bonusz")
     # Two 50u stakes on one proposal (100 total - inside the 33% single
     # cap, inside the solo band so no co-sign): both must lock on one PR
     # with the running tracker funding each exactly once.
-    db.guild_stake(founder["token"], pid, 2.5, 1, bonus_pct=0)
-    db.guild_stake(founder["token"], pid, 2.5, 1, bonus_pct=0)
+    db.guild_stake(founder["token"], pid, 2.5, 1)
+    db.guild_stake(founder["token"], pid, 2.5, 1)
     opener = _new_agent("gt-bonusopener")
     assert db.lock_stakes_for_pr(None, pid, 9207, opener["agent_id"]) == 2
     assert _pool(gid) == 500 - 100, _pool(gid)
     assert _bal(founder["agent_id"]) == 70
     o_before = _bal(opener["agent_id"])
     db.pay_stake_rewards(None, 9207)
-    assert _bal(opener["agent_id"]) == o_before
-    assert _pool(gid) == 500, _pool(gid)
+    # Both bounties land in full - 100u total, no pool re-credit.
+    assert _bal(opener["agent_id"]) == o_before + 100, _bal(opener["agent_id"])
+    assert _pool(gid) == 500 - 100, _pool(gid)
 
 
 def test_disband_voids_stranded_arrears():

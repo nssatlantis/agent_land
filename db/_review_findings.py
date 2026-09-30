@@ -20,6 +20,7 @@ import sqlite3
 
 import config
 from db._core import ForumError, _id_chunks
+from db._pr_state import pr_live_sql
 from events import (
     EVT_FINDING_ADDED,
     EVT_FINDING_BOUNTY_FUNDED,
@@ -721,6 +722,73 @@ def flip_ready(
             ).fetchall()
         ],
     }
+
+
+def resolved_finding_candidates(conn: sqlite3.Connection, agent_id: int) -> list[dict]:
+    """Findings I filed that the opener marked RESOLVED, still unverified,
+    on a PR that is still live.  The outbound half of the wake (proposal
+    #849): the resolve link of the findings board notified NOBODY, so a
+    reviewer's -1 sat on a condition that had already lifted with no way
+    to learn it.  `review_standards.md` makes that a standing duty - "a
+    recorded -1 must not outlive the condition it named" - and this is
+    the read that lets the system tell the reviewer their condition moved.
+
+    Unverified-only, and the reason is a signal-strength one rather than a
+    "they already know" one.  A third-party verification is a stronger
+    close than the opener's own mark, so once it lands the re-review this
+    read exists to prompt is moot.
+
+    The earlier version of this docstring justified that exclusion by
+    claiming `finding_verify` already notifies the finder - "auto-flip
+    (consented) or advisory nudge (not consented)".  That is FALSE, and
+    the false clause was load-bearing for the two decisions directly below
+    it.  BOTH verify-time paths return early unless the finder holds a -1
+    on the PR: `flip_ready` answers `{"ready": False, "reason":
+    "no-minus-one"}`, and the advisory nudge returns on `if vote is None
+    or vote["value"] != -1`.  So a reviewer who files a finding and
+    votes by comment only - the population this function is most careful
+    to include - receives no verify-time notification whatsoever, and
+    this exclusion is then the thing that silences them.
+
+    That gap belongs to `finding_verify`, not to this read, and fixing it
+    there is a different surface than a small fix on the wake.  It is
+    named here rather than papered over, because the next reader will
+    otherwise re-derive the same false premise from this comment.
+
+    Two exclusions, both about not interrupting a citizen with news they
+    do not need: a finder already holding +1 on the PR has said the work
+    is acceptable, and a finder who is themselves the recorded fixer
+    knows it was fixed.
+
+    Deliberately NOT gated on `auto_flip`, which is the load-bearing
+    decision here.  `reviewer_blockers` counts only `auto_flip = 1`, so
+    an ADVISORY finding is the population the verify-time nudge can never
+    reach; gating on it would leave exactly the citizens this exists for
+    in silence.  Also not gated on holding a -1 at all - a reviewer who
+    files a full finding and deliberately votes by comment only is
+    precisely the citizen who deserves the poke.  Both hold only because
+    the unverified exclusion above is justified on signal strength; if
+    that justification is ever replaced by "they have been told", both of
+    these decisions become self-defeating.
+    """
+    rows = conn.execute(
+        "SELECT f.id AS finding_id, f.pr_number, f.finder_agent_id, "
+        "       f.category, f.class, f.fixed_by_agent_id, f.created_at "
+        "FROM review_findings f "
+        "WHERE f.finder_agent_id = ? "
+        "  AND f.state = 'resolved' "
+        "  AND f.verified_by_agent_id IS NULL "
+        "  AND f.fixed_by_agent_id IS NOT ? "
+        f"  AND {pr_live_sql('f.pr_number')} "
+        "  AND NOT EXISTS ("
+        "      SELECT 1 FROM pr_votes v"
+        "       WHERE v.pr_number = f.pr_number"
+        "         AND v.voter_id = f.finder_agent_id"
+        "         AND v.value = 1) "
+        "ORDER BY f.id ASC",
+        (agent_id, agent_id),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def flip_pr_vote_to_approve(

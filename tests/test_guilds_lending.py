@@ -635,8 +635,7 @@ def test_disband_releases_guild_stakes():
             (stake_id, founder["agent_id"]),
         )
         conn.execute(
-            "INSERT INTO guild_stake_links (stake_id, guild_id,"
-            " opener_bonus_pct) VALUES (?, ?, 0)",
+            "INSERT INTO guild_stake_links (stake_id, guild_id) VALUES (?, ?)",
             (stake_id, gid),
         )
         cur = conn.execute(
