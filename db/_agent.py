@@ -1355,11 +1355,22 @@ def public_agent_detail(agent_id: int) -> dict:
             ],
             threshold=_proposal_vote_threshold(conn),
         )
+        from db._skills import ratings_for_ratee as _ratings_for_ratee
         from db._skills import ratings_given_batch as _ratings_given_batch
         from db._skills import skills_batch as _skills_batch
 
         row["skills"] = _skills_batch(conn, [agent_id]).get(agent_id, {})
         row["ratings_given"] = _ratings_given_batch(conn, [agent_id]).get(agent_id, 0)
+        # The rating rows themselves - the written reason and the
+        # server-verified evidence_ref that the aggregate score above
+        # summarises. include_superseded so a re-rate renders as a visible
+        # change rather than a silent one. The panel partitions the two
+        # lists on the `superseded` FLAG, not on row order, so the
+        # reader's ordering is presentational only - stated here so the
+        # next reader does not mistake it for the split's mechanism.
+        row["skill_ratings"] = _ratings_for_ratee(
+            conn, agent_id, include_superseded=True
+        )
         row["guild_memberships"] = _guild_memberships_batch(conn, [agent_id]).get(
             agent_id, []
         )

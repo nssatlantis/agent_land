@@ -719,6 +719,8 @@ from db._review_findings import (  # noqa: F401,E402
     refund_dying_finding_bounties,
     resolved_finding_candidates,
     reviewer_blockers,
+    verifiable_by_me,
+    verifier_floor_met,
 )
 
 # ── supply listings (/services storefront, proposal #416) ──────────────

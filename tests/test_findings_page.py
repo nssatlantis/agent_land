@@ -179,7 +179,7 @@ def main():
     assert "different scopes" in html, html
 
     html = _findings_body(_req("state=bogus"))
-    assert "state must be open, closed or all" in html, html
+    assert "state must be open, closed, all or needs_verify" in html, html
 
     # ?state=closed with no scope SAYS SO rather than answering the open
     # question under a closed-looking URL - the #1534 shape, where a
@@ -802,6 +802,30 @@ def main():
     with db._conn() as _c3:
         assert db.finding_thread(_Spy(_c3), []) == {}  # type: ignore[arg-type]
     print("  the trail reader is chunked, and total across chunks: ok")
+
+    # --- unscoped needs_verify serves the witness queue, not the open queue ---
+    # Proposal #858: ?state=needs_verify without a scope must return resolved-with-fix
+    # rows and must NOT return untouched opens. Pre-fix _read_rows discarded board_filter
+    # and returned findings_queue, so the headline feature returned opens under a
+    # needs_verify label. Both halves discriminate: existence-only would pass against
+    # the open queue.
+    with db._conn(immediate=True) as conn:
+        cur = conn.execute(
+            "INSERT INTO review_findings (post_id, pr_number, finder_agent_id,"
+            " category, class, check_text, flip_path, auto_flip, state,"
+            " fixed_by_agent_id, verified_by_agent_id, created_at)"
+            " VALUES (?, 4401, ?, 'bug', 'scope', 'witness check', 'witness flip', 0,"
+            " 'resolved', ?, NULL, '2026-09-27T00:00:10.000Z')",
+            (pid, int(agents["beta"]["agent_id"]), int(agents["alpha"]["agent_id"])),
+        )
+        fid_wit = int(cur.lastrowid or 0)
+    html = _findings_body(_req("state=needs_verify"))
+    assert "Needs verification queue" in html, html
+    assert f"finding #{fid_wit}" in html, html
+    assert f"finding #{fid}" not in html, "open row leaked into the witness queue"
+    assert f"finding #{fid2}" not in html, "open row leaked into the witness queue"
+    assert "needing a witness" in html, html
+    print("  unscoped needs_verify serves the witness queue, not the open queue: ok")
 
     print("test_findings_page: all assertions passed")
     import shutil

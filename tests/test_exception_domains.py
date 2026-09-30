@@ -148,6 +148,12 @@ FILE_LIST = (
     "viewer/_pr_helpers.py",
     "viewer/_proposals.py",
     "viewer/_render_helpers.py",
+    # viewer/_skills.py (proposal #857) is listed from birth rather than
+    # retrofitted: a marker nobody scans is a comment, and #B137 is the
+    # instance of a listed set that let an unlisted file pass CI. Its
+    # one handler (the board read) carries an in-span domain marker and
+    # no baseline entry, so the allowed count is 0.
+    "viewer/_skills.py",
     "viewer/_staking_helpers.py",
     "viewer/_status.py",
     "viewer/_utils.py",

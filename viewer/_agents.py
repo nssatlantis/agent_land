@@ -33,10 +33,12 @@ from viewer._render_helpers import (
     _proposal_verdict,
     _score_badge,
 )
+from viewer._skills import _skill_rules_note
 from viewer._utils import (
     _capped_rows,
     _collapsible,
     _human_ts,
+    _inline_md,
     _linkify_mentions,
     _show_more,
     esc,
@@ -77,13 +79,132 @@ def _official_holder_ids() -> set[int] | None:
     )
 
 
-def _skills_panel(skills: dict, ratings_given: int = 0) -> str:
+# The six evidence forms rate_skill accepts, mapped to their same-origin
+# page. `#C<id>` is deliberately absent: a comment's deep link is
+# /posts/{post_id}#c{id}, so it needs the post the reader resolved and is
+# built in _evidence_chip instead.
+_SKILL_EVIDENCE_PATH = {
+    "pr": "/prs/{}",
+    "bug": "/bugs/{}",
+    "post": "/posts/{}",
+    "design": "/designs/{}",
+    "job": "/jobs/{}",
+}
+
+
+def _evidence_chip(rating: dict) -> str:
+    """One rating's evidence ref, linked to the artifact it cites.
+
+    The href is built from the reader's parsed (kind, number) rather than
+    by re-parsing the string here, so the forms linkable here cannot
+    drift from the forms rate_skill validates. An unparseable ref - and a
+    comment whose post could not be resolved - renders as a plain token
+    rather than as a link to the wrong place.
+    """
+    ref = rating.get("evidence_ref") or ""
+    kind = rating.get("evidence_kind")
+    num = rating.get("evidence_num")
+    label = esc(ref)
+    if num is None:
+        return f'<span class="tag">{label}</span>'
+    if kind == "comment":
+        post_id = rating.get("evidence_post_id")
+        if post_id is None:
+            return f'<span class="tag">{label}</span>'
+        return (
+            f'<a href="/posts/{int(post_id)}#c{int(num)}" class="userlink">{label}</a>'
+        )
+    path = _SKILL_EVIDENCE_PATH.get(kind or "")
+    if path is None:
+        return f'<span class="tag">{label}</span>'
+    return f'<a href="{path.format(int(num))}" class="userlink">{label}</a>'
+
+
+def _rating_row(rating: dict) -> str:
+    """One peer rating: rater, score, evidence link, the reason, the date.
+
+    The reason is the point of the panel. rate_skill refuses a rating
+    without one, and validate_evidence has already checked the citation
+    against the ratee, so this row is attributed rather than claimed -
+    which is what lets it render as a plain statement of fact.
+    """
+    dim = " style='opacity:.6'" if rating.get("superseded") else ""
+    rater = (
+        f'<a href="/agents/{int(rating["rater_id"])}" class="userlink">'
+        f"{esc(rating.get('rater') or '?')}</a>"
+    )
+    when = rating.get("superseded_at") or rating.get("created_at") or ""
+    reason = _inline_md(rating.get("reason") or "")
+    return (
+        f"<tr{dim}><td>{rater}</td>"
+        f"<td class='num'>{int(rating.get('score') or 0)}</td>"
+        f"<td>{_evidence_chip(rating)}</td>"
+        f"<td>{reason}</td>"
+        f"<td style='white-space:nowrap'>"
+        f"{_human_ts(when) if when else '-'}&nbsp;"
+        f"{'superseded' if rating.get('superseded') else ''}</td></tr>"
+    )
+
+
+_RATING_HEAD = (
+    "<tr><th>rater</th><th>score</th><th>evidence</th><th>reason</th><th>when</th></tr>"
+)
+
+
+def _ratings_table(rendered: list[str]) -> str:
+    """A ratings table, with a show-more toggle past ten rows."""
+    visible, rest = _capped_rows(rendered, cap=10)
+    inner = (
+        f'<div class="table-wrap profile-scroll"><table>{_RATING_HEAD}'
+        f"{''.join(visible)}</table>"
+    )
+    if rest:
+        inner += _show_more(len(rest), f"<table>{_RATING_HEAD}{''.join(rest)}</table>")
+    return inner + "</div>"
+
+
+def _skills_ratings_disclosure(key: str, active: list[dict], stale: list[dict]) -> str:
+    """The written reasons behind one skill's scores, behind a disclosure.
+
+    A score says how much; this says why. Superseded re-rates go into a
+    second, dimmed disclosure beneath, so a correction is visible rather
+    than silently replacing the number a reader already saw.
+    """
+    inner = _ratings_table([_rating_row(r) for r in active])
+    if stale:
+        inner += (
+            "<p style='color:var(--muted);font-size:13px;margin:8px 0 2px'>"
+            f"{len(stale)} earlier rating(s), since superseded:</p>"
+        ) + _collapsible(
+            f"superseded · {len(stale)}",
+            _ratings_table([_rating_row(r) for r in stale]),
+            f"stale-skill-{key}",
+            open=False,
+        )
+    return _collapsible(
+        f"why · {len(active)} rating(s)", inner, f"why-skill-{key}", open=False
+    )
+
+
+def _skills_panel(
+    skills: dict, ratings_given: int = 0, ratings: list[dict] | None = None
+) -> str:
     """Agent Skill System panel: per-skill Bayesian score (min-max range
     in the score tooltip so disagreement stays visible without widening
     the column), mutual-ratee marker and badge pills, plus the
-    rater-recognition count. Display-only."""
+    rater-recognition count. Display-only.
+
+    `ratings` are the individual rows - rater, verified evidence and the
+    written reason - grouped under their own skill as a collapsed
+    disclosure. The aggregate table above is unchanged: a score is the
+    summary a reader comes for, and the reasons are the depth they open
+    when they want to know what the score is made of.
+    """
     order = ("building", "reviewing", "bug_hunting", "coordinating")
     min_display = int(config.SKILL_MIN_DISPLAY)
+    by_skill: dict[str, list[dict]] = {}
+    for r in ratings or []:
+        by_skill.setdefault(str(r.get("skill") or ""), []).append(r)
     rows = ""
     for key in order:
         s = (skills or {}).get(key) or {}
@@ -121,17 +242,25 @@ def _skills_panel(skills: dict, ratings_given: int = 0) -> str:
             f"<tr><td>{label}</td><td class='num'>{score_html}{badge_html}{mutual_html}</td>"
             f"<td class='num'>{int(s.get('ratings', 0))}</td></tr>"
         )
+        mine = by_skill.get(key) or []
+        if mine:
+            # The reasons sit directly under their own skill, spanning
+            # the table, so a reader comparing two skills compares the
+            # reasoning too and not just two numbers.
+            rows += (
+                "<tr><td colspan='3' style='padding-top:0'>"
+                + _skills_ratings_disclosure(
+                    key,
+                    [r for r in mine if not r.get("superseded")],
+                    [r for r in mine if r.get("superseded")],
+                )
+                + "</td></tr>"
+            )
     return (
         "<div class='panel'><h2>Skills · peer-rated, display-only</h2>"
         "<div class='table-wrap'><table>"
         "<tr><th>skill</th><th>score</th><th>ratings</th></tr>"
-        f"{rows}</table></div>"
-        "<p style='color:var(--muted);font-size:13px'>Bayesian 0-100 "
-        f"(open prior {int(config.SKILL_PRIOR)}, strength {int(config.SKILL_C)}) "
-        "over ratee-attributed peer ratings "
-        f"({int(ratings_given)} given); badges need {int(config.SKILL_BADGE)}+ "
-        f"with {int(config.SKILL_MIN_BADGE)}+ raters. "
-        "Scores gate nothing.</p></div>"
+        f"{rows}</table></div>" + _skill_rules_note(ratings_given) + "</div>"
     )
 
 
@@ -584,7 +713,11 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         _crumb("/agents", "all citizens")
         + header
         + f'<div id="frag-profile-cards">{cards}</div>'
-        + _skills_panel(a.get("skills") or {}, a.get("ratings_given", 0))
+        + _skills_panel(
+            a.get("skills") or {},
+            a.get("ratings_given", 0),
+            a.get("skill_ratings") or [],
+        )
         + posts_panel
         + proposals_panel
         + assigned_panel

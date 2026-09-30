@@ -343,6 +343,7 @@ def test_correction_selection_skips_subagent_children():
                 "id": "ses_root",
                 "parentID": None,
                 "agent": "plan",
+                "title": "[AL]",
                 "location": {"directory": "dir"},
                 "time": {"updated": now - 5_000_000},
             },
@@ -357,6 +358,7 @@ def test_correction_selection_skips_subagent_children():
                 "id": "ses_sub",
                 "parentID": None,
                 "agent": "general",
+                "title": "[AL]",
                 "location": {"directory": "dir"},
                 "time": {"updated": now},
             },
@@ -364,6 +366,7 @@ def test_correction_selection_skips_subagent_children():
                 "id": "ses_build",
                 "parentID": None,
                 "agent": "build",
+                "title": "[AL]",
                 "location": {"directory": "dir"},
                 "time": {"updated": now - 1_000},
             },
@@ -388,6 +391,7 @@ def test_selection_honours_session_max_age():
                             "id": "ses_old",
                             "parentID": None,
                             "agent": "plan",
+                            "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": stale},
                         }
@@ -577,6 +581,7 @@ def test_sweep_burst_collapses_to_one_wake():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
@@ -671,6 +676,7 @@ def test_sweep_skips_resolved_during_debounce():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
@@ -1125,6 +1131,7 @@ def test_deferred_wake_is_retried_on_the_next_tick():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
@@ -1172,6 +1179,105 @@ def test_deferred_wake_is_retried_on_the_next_tick():
         restore()
     assert any(o["outcome"] == "busy" for o in first), first
     assert len(sent) == 1, f"the deferred wake must be retried: {second}"
+    assert any(o["outcome"] == "sent" for o in second), second
+
+
+def test_a_nameless_chat_defers_the_wake_rather_than_burning_it():
+    """A title miss must be a DEFER that names itself, not a silent drop.
+
+    Refusing to deliver into a chat with nothing to do with AgentLand is
+    only half the fix. The other half is what happens to the FINDING
+    afterwards: a refusal that also recorded the wake as delivered would
+    drop the notification permanently - the same failure shape as the
+    row-existence seen-set this file already pins a regression for, and it
+    would be invisible, because the citizen sees no prompt and no error.
+
+    And a refusal that logs the same tag as "OpenCode is unreachable"
+    leaves the citizen with no way to know the difference between a server
+    they cannot fix and a chat they can rename in one keystroke. So this
+    drives the REAL sweep twice against the same finding: once with the
+    newest row unnamed - so nothing but the title gate can reject it - and
+    once after the chat is named, which is the action the log tag tells
+    them to take.
+
+    The first sweep must send nothing and stay retryable; the second must
+    deliver. A single-sweep assertion would not distinguish "deferred" from
+    "dropped", which is the whole claim.
+    """
+    agents = AGENTS
+    alpha = agents["alpha"]["agent_id"]
+    restore = _wake_cfg()
+    pid = _proposal(agents, "alpha", "nameless")
+    with db._conn(immediate=True) as conn:
+        _link(conn, pid, 6090, alpha)
+        _register(conn, alpha, "dir")
+        _finding(conn, pid, agents["beta"]["agent_id"], 6090)
+
+    def _sessions(title):
+        return json.dumps(
+            {
+                "data": [
+                    {
+                        "id": "ses_root",
+                        "parentID": None,
+                        "agent": "plan",
+                        "title": title,
+                        "location": {"directory": "dir"},
+                        "time": {"updated": int(time.time() * 1000)},
+                        "model": {"id": "m", "providerID": "opencode"},
+                    }
+                ]
+            }
+        )
+
+    payloads = {
+        "/api/session": _sessions(None),
+        "/api/model": json.dumps(
+            {
+                "data": [
+                    {
+                        "id": "m",
+                        "providerID": "opencode",
+                        "limit": {"context": 262144},
+                    }
+                ]
+            }
+        ),
+        "/session/status": json.dumps({"data": {}}),
+        "/message": json.dumps(
+            [{"info": {"role": "assistant", "tokens": {"total": 1000}}}]
+        ),
+    }
+    sent = []
+    logged = []
+    real, _ = _stub(payloads)
+    real_send = wake.send_wake
+    real_log = wake.logutil.log
+    wake.send_wake = lambda e, s, t: (sent.append(t), True)[1]
+    wake.logutil.log = lambda tag, **kw: logged.append(tag)
+    try:
+        first = wake.wake_sweep()
+        after_first = len(sent)
+        # The citizen does the one thing the log tag tells them to do.
+        payloads["/api/session"] = _sessions("[AL] build")
+        second = wake.wake_sweep()
+    finally:
+        wake.logutil.log = real_log
+        wake.send_wake = real_send
+        _restore(real)
+        restore()
+
+    assert after_first == 0, (
+        f"a chat with no AgentLand name must not receive the prompt: {first}"
+    )
+    assert any(o["outcome"] == "no-session" for o in first), first
+    assert "agent_wake_no_al_session" in logged, (
+        "rows were present and none was named, so the miss has to name "
+        f"itself - otherwise it is the same silence as a down OpenCode: {logged}"
+    )
+    assert len(sent) == 1, (
+        f"a title miss must stay retryable, not record a delivery: {second}"
+    )
     assert any(o["outcome"] == "sent" for o in second), second
 
 
@@ -1225,6 +1331,7 @@ def test_quiet_hours_does_not_consume_the_burst():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
@@ -1297,6 +1404,7 @@ def test_self_filed_finding_does_not_arm_the_debounce():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
@@ -1747,6 +1855,7 @@ def test_compaction_failure_does_not_brick_the_wake():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
@@ -1810,6 +1919,7 @@ def test_wake_defers_when_context_is_genuinely_full():
                             "id": "ses_root",
                             "parentID": None,
                             "agent": "plan",
+                            "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
                             "model": {"id": "m", "providerID": "opencode"},
@@ -1854,7 +1964,16 @@ def test_wake_defers_when_context_is_genuinely_full():
 # --- correction 5: the directory match is OURS, not the server's -----------
 
 
-def _srow(session_id, directory, *, agent="build", parent=None, updated=None, loc=True):
+def _srow(
+    session_id,
+    directory,
+    *,
+    agent="build",
+    parent=None,
+    updated=None,
+    loc=True,
+    title="[AL]",
+):
     """One session row shaped like the live server's - `location` included.
 
     The location is not decoration. Correction 5 moved the directory match
@@ -1863,6 +1982,14 @@ def _srow(session_id, directory, *, agent="build", parent=None, updated=None, lo
     response this server does not send. A test that asserts a session IS
     selected has to carry one now. That is a fixture telling the truth
     about the wire, not a test being relaxed to fit new code.
+
+    `title` defaults to `[AL]`, the GENERIC named form, because after the
+    title gate a session the selector may legitimately pick for an AgentLand
+    wake carries that name - so the default is the wire-truthful shape for
+    the world this file now tests, not a relaxation. Pass `title=None` for
+    the unrelated-chat case and a literal for a named one. No row is left
+    untitled by accident, which is the point: the four untitled roots on
+    the measured host are the unrelated chats the gate exists to skip.
     """
     row = {
         "id": session_id,
@@ -1874,7 +2001,258 @@ def _srow(session_id, directory, *, agent="build", parent=None, updated=None, lo
     }
     if loc:
         row["location"] = {"directory": directory}
+    if title is not None:
+        row["title"] = title
     return row
+
+
+def test_the_title_gate_beats_recency():
+    """The actual bug: a named chat LOSES to a newer unrelated one without
+    this gate, and wins with it.
+
+    Recency is the tiebreak and it is correct - among the citizen's own
+    AgentLand chats, the one being worked in is the one to poke. It is only
+    wrong when the newest row is not one of theirs, which is what an open
+    second conversation looks like.
+    """
+    now = int(time.time() * 1000)
+    real, _ = _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        # The named chat is OLDER, and used to lose.
+                        _srow(
+                            "ses_named",
+                            "dir",
+                            updated=now - 600_000,
+                            title="[AL7] work",
+                        ),
+                        # The unrelated chat is NEWER, and used to win.
+                        _srow("ses_other", "dir", updated=now, title=None),
+                    ]
+                }
+            )
+        }
+    )
+    try:
+        got = wake.select_session({"url": "http://oc"}, "dir")
+    finally:
+        _restore(real)
+    assert got is not None and got.get("id") == "ses_named", (
+        "the wake would land in a conversation that is not the citizen's"
+        f" AgentLand chat, chosen only because it was touched most recently:"
+        f" {got}"
+    )
+
+
+def test_a_created_session_is_named_so_the_gate_does_not_orphan_it():
+    """A created session must not be born already rejected by the gate.
+
+    `AGENT_WAKE_CREATE_SESSION` defaults OFF, so the pre-existing pins all
+    stub the GET as an empty list and reach the create arm through the
+    EMPTY path - `unnamed` is 0 and the gate is never consulted. That left
+    the interaction this change creates completely uncovered.
+
+    With the gate ON (the default) and a directory whose rows are all
+    untitled, the create fallback used to POST `{"location": ...}` and hand
+    the untitled result straight to `_wake_one`, which delivers the prompt
+    into it. Worse, the NEXT tick found the same untitled rows, refused them
+    again, and created again - one orphan chat per finding per tick,
+    forever, delivering nothing. That is precisely the fan-out that knob's
+    own comment exists to prevent, so a change that quietly reintroduced it
+    would be a regression wearing a new feature's clothes.
+
+    So this asserts the POSTED payload carries the name, not merely that a
+    session came back: a create that returns an untitled row is the defect,
+    whatever the row happens to be called.
+    """
+    now = int(time.time() * 1000)
+    restore = _wake_cfg(AGENT_WAKE_CREATE_SESSION=1)
+    posted = []
+    real_call = wake._json_call
+
+    def _spy(endpoint, path, method="GET", payload=None):
+        if method == "POST":
+            posted.append(payload)
+        return real_call(endpoint, path, method=method, payload=payload)
+
+    real, _ = _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        _srow("ses_untitled", "dir", updated=now, title=None),
+                    ]
+                }
+            )
+        }
+    )
+    wake._json_call = _spy
+    try:
+        # The return value is deliberately not asserted on: `_stub` answers
+        # the POST with the GET's body, so a row read back here would be
+        # stub noise rather than a created session. The POSTED payload is
+        # the claim - an untitled create is the defect, whatever the row
+        # that comes back is called.
+        wake.select_session({"url": "http://oc"}, "dir")
+    finally:
+        wake._json_call = real_call
+        _restore(real)
+        restore()
+
+    assert posted, "the create path must actually POST"
+    assert str(posted[0].get("title") or "").startswith("[AL"), (
+        f"a created session is born rejected unless it is NAMED: {posted[0]}"
+    )
+
+
+def test_the_title_gate_accepts_both_named_forms():
+    """`[AL7]` and a bare `[AL ...` both qualify - the id is not checked.
+
+    TWO independent drives, and the first version of this pin was VACUOUS:
+    it listed the bare form 600s OLDER than the id-bearing form and
+    asserted the id-bearing one won. A gate deleted entirely, and a strict
+    `^\\[AL\\d+\\]` id check, both pass that - the row carrying the bare form
+    was never the answer, so nothing about it was actually pinned. Verified
+    by running the pin with the gate off, where it still passed.
+
+    So the row under test must always be the one the gate has to ACCEPT,
+    never merely the one that happens to be newest:
+
+      drive A - the BARE form is the newest, so a strict id check rejects it
+                and returns the older id-bearing row instead. Reds.
+      drive B - the bare form ALONE. Nothing else can be returned, so this
+                holds against any id check, and against a prefix that
+                demands something after `[AL`.
+    """
+    now = int(time.time() * 1000)
+
+    def _pick(rows):
+        real, _ = _stub({"/api/session": json.dumps({"data": rows})})
+        try:
+            return wake.select_session({"url": "http://oc"}, "dir")
+        finally:
+            _restore(real)
+
+    a = _pick(
+        [
+            _srow("ses_ided", "dir", updated=now - 600_000, title="[AL13] other"),
+            _srow("ses_generic", "dir", updated=now, title="[AL scratch notes"),
+        ]
+    )
+    assert a is not None and a.get("id") == "ses_generic", (
+        "the bare `[AL ` form must beat an OLDER id-bearing row, or an id"
+        f" check could be tightened without this test noticing: {a}"
+    )
+
+    b = _pick([_srow("ses_bare", "dir", updated=now, title="[AL")])
+    assert b is not None and b.get("id") == "ses_bare", (
+        f"a bare `[AL` prefix alone must qualify: {b}"
+    )
+
+
+def test_the_gate_can_be_switched_off_and_then_recency_is_whole():
+    """The escape hatch reproduces today's behaviour exactly.
+
+    Without this the knob is untested in the OFF direction, which is the
+    direction an operator reaches for when the gate is wrong for them - and
+    an OFF that silently still filtered would strand them.
+    """
+    now = int(time.time() * 1000)
+    restore = _wake_cfg(AGENT_WAKE_REQUIRE_AL_TITLE=0)
+    real, _ = _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        _srow(
+                            "ses_named",
+                            "dir",
+                            updated=now - 600_000,
+                            title="[AL7] work",
+                        ),
+                        _srow("ses_other", "dir", updated=now, title=None),
+                    ]
+                }
+            )
+        }
+    )
+    try:
+        got = wake.select_session({"url": "http://oc"}, "dir")
+    finally:
+        _restore(real)
+        restore()
+    assert got is not None and got.get("id") == "ses_other", (
+        "with the gate off the newest row wins again, untitled or not -"
+        f" which is the behaviour being preserved: {got}"
+    )
+
+
+def test_no_named_chat_is_its_own_answer_not_a_silent_miss():
+    """Chats exist and none is named is a DIFFERENT answer from no chats.
+
+    Both end in the caller's `no-session`, so without a distinct tag the
+    only way to tell "renamed your chat" from "OpenCode is down" is to read
+    the container logs - and the first is the one a citizen can fix.
+    """
+    now = int(time.time() * 1000)
+    real_tag = wake.logutil.log
+    tags = []
+    wake.logutil.log = lambda tag, **kw: tags.append((tag, kw))
+    real, _ = _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        _srow("ses_a", "dir", updated=now, title=None),
+                        _srow("ses_b", "dir", updated=now - 1, title=None),
+                    ]
+                }
+            )
+        }
+    )
+    try:
+        got = wake.select_session({"url": "http://oc"}, "dir")
+    finally:
+        _restore(real)
+        wake.logutil.log = real_tag
+    assert got is None, f"an unnamed chat must not be selected: {got}"
+    fired = [t for t in tags if t[0] == "agent_wake_no_al_session"]
+    assert len(fired) == 1, (
+        "the named-but-absent case did not log its own tag, so it is"
+        f" indistinguishable from a dead server: {tags}"
+    )
+    assert fired[0][1].get("unnamed") == 2, (
+        f"the tag must count what it skipped, or it cannot be read: {fired[0][1]}"
+    )
+
+
+def test_an_empty_workspace_does_not_claim_the_named_answer():
+    """The negative control for the tag above.
+
+    An EMPTY result is not a pass: with no rows at all there is nothing to
+    have been unnamed, so firing the named tag there would make the one
+    true signal indistinguishable from the default state - the exact shape
+    that makes a ratchet cry wolf and get deleted.
+    """
+    real_tag = wake.logutil.log
+    tags = []
+    wake.logutil.log = lambda tag, **kw: tags.append((tag, kw))
+    real, _ = _stub({"/api/session": json.dumps({"data": []})})
+    try:
+        got = wake.select_session({"url": "http://oc"}, "dir")
+    finally:
+        _restore(real)
+        wake.logutil.log = real_tag
+    assert got is None
+    assert not [t for t in tags if t[0] == "agent_wake_no_al_session"], (
+        "an empty workspace reported that chats were unnamed - it cannot"
+        f" know that, and the tag has to stay rare to stay readable: {tags}"
+    )
+    assert [t for t in tags if t[0] == "agent_wake_no_session"], (
+        f"the plain no-session tag should still be the answer here: {tags}"
+    )
 
 
 def test_correction_five_matches_the_directory_itself():
@@ -2089,6 +2467,7 @@ def _oc_routes():
                         "id": "ses_root",
                         "parentID": None,
                         "agent": "plan",
+                        "title": "[AL]",
                         "location": {"directory": "dir"},
                         "time": {"updated": int(time.time() * 1000)},
                         "model": {"id": "m", "providerID": "opencode"},
@@ -2702,6 +3081,13 @@ def main():
         test_correction_limit_default_is_logged_not_guessed,
         test_limit_prefers_api_model_when_present,
         test_correction_selection_skips_subagent_children,
+        test_the_title_gate_beats_recency,
+        test_a_created_session_is_named_so_the_gate_does_not_orphan_it,
+        test_the_title_gate_accepts_both_named_forms,
+        test_the_gate_can_be_switched_off_and_then_recency_is_whole,
+        test_no_named_chat_is_its_own_answer_not_a_silent_miss,
+        test_an_empty_workspace_does_not_claim_the_named_answer,
+        test_a_nameless_chat_defers_the_wake_rather_than_burning_it,
         test_selection_honours_session_max_age,
         test_gate_free_rejections,
         test_gate_debounce_window_edge,
