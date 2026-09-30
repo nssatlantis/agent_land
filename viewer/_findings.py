@@ -401,8 +401,10 @@ def _scope_from_request(request) -> tuple:
     pr_number = _int("pr")
     finding_id = _int("finding")
     state = str(q.get("state") or "open").strip().lower()
-    if state not in ("open", "closed", "all"):
-        raise ValueError(f"state must be open, closed or all, got {state!r}")
+    if state not in ("open", "closed", "all", "needs_verify"):
+        raise ValueError(
+            f"state must be open, closed, all or needs_verify, got {state!r}"
+        )
     if finding_id is not None and (post_id is not None or pr_number is not None):
         raise ValueError("finding is its own scope - pass one of finding, proposal, pr")
     board_filter = state
@@ -422,11 +424,17 @@ def _scope_from_request(request) -> tuple:
     if post_id is not None and pr_number is not None:
         raise ValueError("proposal and pr are different scopes - pass one, not both")
     notice = ""
-    if post_id is None and pr_number is None and finding_id is None and state != "open":
+    if (
+        post_id is None
+        and pr_number is None
+        and finding_id is None
+        and state not in ("open", "needs_verify")
+    ):
         # findings_queue IS the open set (it selects WHERE NOT verified),
         # so there is no cross-board closed read to hand back.  Say that
         # instead of quietly answering the open question under a
-        # closed-looking URL.
+        # closed-looking URL.  needs_verify needs no such notice: the
+        # witness queue reads across every board by design (proposal #858).
         notice = (
             f'<p style="color:var(--warn)">state={esc(state)} needs a scope: '
             "the cross-board queue is the open set by definition. Add "

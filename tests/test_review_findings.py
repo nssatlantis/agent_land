@@ -1020,6 +1020,111 @@ def main():
     finally:
         db.DB_PATH = saved
 
+    with db._conn() as conn:
+        # --- needs_verify witness queue (proposal #858) ------------------
+        # Only rows a third party could attest right now: resolved WITH a
+        # recorded fix and no verifier, plus stale. Untouched opens (no
+        # fix to attest), resolved-without-a-fix, disputed and verified
+        # rows must NOT surface - the filter is a work queue, not a
+        # second open view.
+        pid2 = _proposal(agents, "witness")
+        for pr in (4301, 4302, 4303, 4304, 4305, 4306):
+            conn.execute(
+                "INSERT INTO proposal_links (pr_number, post_id,"
+                " opened_by_agent_id) VALUES (?, ?, ?)",
+                (pr, pid2, alpha),
+            )
+        w1 = _finding(conn, pid2, beta, pr_number=4301)
+        db.finding_mark_resolved(conn, w1, alpha, "shipped")
+        w2 = _finding(conn, pid2, beta, pr_number=4302)
+        db.finding_mark_resolved(conn, w2, alpha, "shipped")
+        db.finding_verify(conn, w2, gamma, _SHA_A)
+        w3 = _finding(conn, pid2, beta, pr_number=4303)
+        w4 = _finding(conn, pid2, beta, pr_number=4304)
+        db.finding_dispute(conn, w4, alpha, "not a defect")
+        w5 = _finding(conn, pid2, beta, pr_number=4305)
+        db.finding_mark_resolved(conn, w5, alpha, "shipped")
+        conn.execute(
+            "UPDATE review_findings SET fixed_by_agent_id = NULL WHERE id = ?",
+            (w5,),
+        )
+        w6 = _finding(conn, pid2, beta, pr_number=4306)
+        db.finding_mark_resolved(conn, w6, alpha, "shipped")
+        db.finding_verify(conn, w6, gamma, _SHA_A)
+        db.finding_stale_on_push(conn, 4306, _SHA_B)
+        got = [
+            f["id"]
+            for f in db.findings_list(conn, post_id=pid2, board_filter="needs_verify")
+        ]
+        assert got == [w1, w6], (
+            "needs_verify surfaces witness work oldest-first:"
+            f" got {got}, want [{w1}, {w6}] (verified, open, disputed and"
+            " fix-less rows excluded)"
+        )
+        assert w3 not in got, "untouched opens are not witness work"
+        assert w5 not in got, "resolved without a recorded fix is not witness work"
+        # Unscoped: superset, and EVERY row satisfies the witness shape -
+        # the discrimination arm (an open or disputed row leaking in from
+        # another board would pass a mere superset check).
+        queue = db.findings_list(conn, board_filter="needs_verify")
+        ids = {f["id"] for f in queue}
+        assert {w1, w6} <= ids, ids
+        for f in queue:
+            ok = f["state"] == "stale" or (
+                f["state"] == "resolved"
+                and f["fixed_by_agent_id"] is not None
+                and f["verified_by_agent_id"] is None
+            )
+            assert ok, f"non-witness row in the witness queue: {f['id']}"
+        # Unknown filters still refuse, naming the new value.
+        err = expect_error(db.findings_list, conn, pid2, None, "bogus")
+        assert "needs_verify" in err, err
+        # --- verifiable_by_me seat matrix (proposal #858) -----------------
+        # Pure predicate over a listed row: floor, state, recorded fix,
+        # and caller-is-neither-finder-nor-fixer. Head liveness is per-call
+        # and deliberately not part of it.
+        base = {
+            "state": "resolved",
+            "fixed_by_agent_id": 9,
+            "verified_by_agent_id": None,
+            "finder_agent_id": 7,
+        }
+        assert db.verifiable_by_me(base, 42, True), "stranger clears"
+        assert not db.verifiable_by_me(base, 7, True), "finder excluded"
+        assert not db.verifiable_by_me(base, 9, True), "fixer excluded"
+        assert not db.verifiable_by_me(base, 42, False), "floor gates"
+        assert not db.verifiable_by_me({**base, "state": "open"}, 42, True)
+        assert not db.verifiable_by_me({**base, "fixed_by_agent_id": None}, 42, True), (
+            "nothing to attest"
+        )
+        assert not db.verifiable_by_me({**base, "verified_by_agent_id": 3}, 42, True), (
+            "already witnessed"
+        )
+        assert not db.verifiable_by_me({**base, "state": "disputed"}, 42, True)
+        assert db.verifiable_by_me({**base, "state": "stale"}, 42, True)
+    # Floor helper on real agents, on its own connection: beta earned
+    # karma, a fresh agent did not. A register inside the held block
+    # above would share the file with an open reader - fine for SQLite,
+    # but a separate connection states the independence plainly. The
+    # floor is raised to the production 2 for the assertion because the
+    # suite zeroes it (tests/_setup.py:55) - at 0 everyone clears and
+    # the second arm would be vacuous (house pattern, test_public_branch).
+    db.register_agent("witness-floorless")
+    old_floor = os.environ.get("FORUM_MIN_KARMA_PR_VOTE")
+    os.environ["FORUM_MIN_KARMA_PR_VOTE"] = "2"
+    try:
+        with db._conn() as conn:
+            fresh_id = conn.execute(
+                "SELECT id FROM agents WHERE name = 'witness-floorless'"
+            ).fetchone()[0]
+            assert db.verifier_floor_met(conn, beta) is True
+            assert db.verifier_floor_met(conn, fresh_id) is False
+    finally:
+        if old_floor is None:
+            os.environ.pop("FORUM_MIN_KARMA_PR_VOTE", None)
+        else:
+            os.environ["FORUM_MIN_KARMA_PR_VOTE"] = old_floor
+
     print("test_review_findings: all assertions passed")
     import shutil
 

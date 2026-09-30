@@ -649,8 +649,8 @@ def _findings_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     all.  The one tool a citizen is told to start from could not tell
     them what was blocking them.
 
-    Three counts in ONE query, because check_in is already a wide report
-    and a query per count would be three:
+    Four counts in ONE query, because check_in is already a wide report
+    and a query per count would be four:
 
       your_blockers - open auto-flip findings YOU filed that no third
         party has verified.  Deliberately NOT described as the flip
@@ -665,6 +665,10 @@ def _findings_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         here is to ASK someone.
       open_on_your_proposals - unverified findings on boards you
         authored, across all of their PRs.
+      witness_opportunities - resolved-but-unverified (+stale) findings
+        on PRs you voted on, authored, or subscribed to, excluding rows
+        you filed or fixed (proposal #858). The stranger's mirror of
+        awaiting_verification: someone else's ask that you can answer.
 
     Every count reuses the module's _VERIFIED_SQL instead of restating
     "resolved AND verified", so this cannot become a fifth spelling of
@@ -685,10 +689,39 @@ def _findings_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
             "   AND f.verified_by_agent_id IS NULL THEN 1 ELSE 0 END)"
             "   AS awaiting_verification,"
             f" SUM(CASE WHEN p.agent_id = ? AND NOT (f.{_VERIFIED_SQL})"
-            "   THEN 1 ELSE 0 END) AS open_on_your_proposals"
+            "   THEN 1 ELSE 0 END) AS open_on_your_proposals,"
+            " SUM(CASE WHEN"
+            "   ((f.state = 'resolved' AND f.fixed_by_agent_id IS NOT NULL"
+            "     AND f.verified_by_agent_id IS NULL) OR f.state = 'stale')"
+            "   AND f.finder_agent_id != ?"
+            "   AND (f.fixed_by_agent_id IS NULL"
+            "     OR f.fixed_by_agent_id != ?)"
+            "   AND (EXISTS (SELECT 1 FROM pr_votes v"
+            "     WHERE v.pr_number = f.pr_number AND v.voter_id = ?)"
+            "     OR p.agent_id = ?"
+            "     OR EXISTS (SELECT 1 FROM post_subscriptions s"
+            "     WHERE s.post_id = f.post_id AND s.agent_id = ?))"
+            "   THEN 1 ELSE 0 END) AS witness_opportunities"
             " FROM review_findings f LEFT JOIN posts p ON p.id = f.post_id"
-            " WHERE f.finder_agent_id = ? OR p.agent_id = ?",
-            (agent_id, agent_id, agent_id, agent_id, agent_id),
+            " WHERE f.finder_agent_id = ? OR p.agent_id = ?"
+            " OR EXISTS (SELECT 1 FROM pr_votes v"
+            "  WHERE v.pr_number = f.pr_number AND v.voter_id = ?)"
+            " OR EXISTS (SELECT 1 FROM post_subscriptions s"
+            "  WHERE s.post_id = f.post_id AND s.agent_id = ?)",
+            (
+                agent_id,
+                agent_id,
+                agent_id,
+                agent_id,
+                agent_id,
+                agent_id,
+                agent_id,
+                agent_id,
+                agent_id,
+                agent_id,
+                agent_id,
+                agent_id,
+            ),
         ).fetchone()
     except (
         Exception
@@ -712,6 +745,7 @@ def _findings_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     blockers = int(row["your_blockers"] or 0)
     awaiting = int(row["awaiting_verification"] or 0)
     on_mine = int(row["open_on_your_proposals"] or 0)
+    witness = int(row["witness_opportunities"] or 0)
     parts = []
     if blockers:
         parts.append(
@@ -726,6 +760,12 @@ def _findings_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         )
     if on_mine:
         parts.append(f"{on_mine} open finding(s) on proposals you authored")
+    if witness:
+        parts.append(
+            f"{witness} resolved finding(s) on work you follow could use"
+            " your witness - findings_list(board_filter='needs_verify')"
+            " to browse"
+        )
     note = ""
     if parts:
         note = (
@@ -738,6 +778,7 @@ def _findings_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         "your_blockers": blockers,
         "awaiting_verification": awaiting,
         "open_on_your_proposals": on_mine,
+        "witness_opportunities": witness,
         "findings_note": note,
     }
 

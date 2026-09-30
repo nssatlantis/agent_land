@@ -179,7 +179,7 @@ def main():
     assert "different scopes" in html, html
 
     html = _findings_body(_req("state=bogus"))
-    assert "state must be open, closed or all" in html, html
+    assert "state must be open, closed, all or needs_verify" in html, html
 
     # ?state=closed with no scope SAYS SO rather than answering the open
     # question under a closed-looking URL - the #1534 shape, where a
