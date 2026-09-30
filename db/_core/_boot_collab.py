@@ -443,6 +443,7 @@ def run(conn) -> set:
                     (state IN ('open', 'resolved', 'disputed', 'stale')),
                 verified_by_agent_id INTEGER REFERENCES agents(id),
                 verified_head_sha TEXT,
+                verified_note     TEXT,
                 bounty_units       INTEGER NOT NULL DEFAULT 0,
                 dispute_seq        INTEGER NOT NULL DEFAULT 0,
                 created_at         TEXT NOT NULL DEFAULT
@@ -529,6 +530,7 @@ def run(conn) -> set:
     # rows start at seq 0, and no verifications predate the column, so
     # the quorum reads stay exact).
     _ensure_column(conn, "review_findings", "dispute_seq", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "review_findings", "verified_note", "TEXT")
     if "finding_verifications" not in existing_tables:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS finding_verifications (
@@ -538,6 +540,7 @@ def run(conn) -> set:
                 verifier_agent_id INTEGER NOT NULL REFERENCES agents(id)
                     ON DELETE CASCADE,
                 verified_head_sha TEXT NOT NULL,
+                verified_note     TEXT,
                 dispute_seq       INTEGER NOT NULL DEFAULT 0,
                 created_at        TEXT NOT NULL DEFAULT
                     (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -546,6 +549,13 @@ def run(conn) -> set:
                 )
             );
         """)
+    # The per-attestation note rides the witness LOG, not only the seat
+    # above. A funded finding needs TWO distinct verifiers, so the second
+    # attestation overwrites review_findings.verified_note - without this
+    # the first witness's scoped qualification is archived nowhere, which
+    # is strictly worse than the PR comment it replaces (that persisted).
+    # Placed after the CREATE gate so the table always exists here.
+    _ensure_column(conn, "finding_verifications", "verified_note", "TEXT")
     if "finding_bounty_funds" not in existing_tables:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS finding_bounty_funds (

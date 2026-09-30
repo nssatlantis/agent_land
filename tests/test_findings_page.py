@@ -358,7 +358,7 @@ def main():
     print("  a verified finding is reachable by URL, still out of the queue: ok")
 
     # The per-finding read is a FILTER on findings_list, not a new reader.
-    # `SELECT * FROM review_findings WHERE id = ?` returns 17 keys - no
+    # `SELECT * FROM review_findings WHERE id = ?` returns 18 keys - no
     # post_title, no corroborations, no objections - and it is precisely the
     # one-liner a builder reaches for here.  A third row shape is how
     # findings_queue and findings_list came to disagree in the first place.

@@ -340,10 +340,22 @@ def test_delete_agent_fk_sweep():
             False,
         )
         db.finding_mark_resolved(conn, hf2, helper["agent_id"], "fixed")
-        db.finding_verify(conn, hf2, victim["agent_id"], "d" * 40)
+        # Seed a real note. With the default the column is NULL BEFORE
+        # the sweep, so asserting NULL afterwards would be a pin that
+        # cannot fail - the fixture has to carry the thing the sweep
+        # removes, or the arm is decoration.
+        _VNOTE = "the victim's own words about what they checked"
+        db.finding_verify(conn, hf2, victim["agent_id"], "d" * 40, _VNOTE)
 
     # Seed sanity: the agent row must not come out clean until every arm
     # above is swept. delete_agent raises on the first dangling FK.
+    with db._conn() as conn:
+        assert (
+            conn.execute(
+                "SELECT verified_note FROM review_findings WHERE id = ?", (hf2,)
+            ).fetchone()[0]
+            == _VNOTE
+        ), "the victim's note is on the row BEFORE the sweep - positive control"
     rep = moderation.delete_agent(victim["agent_id"], "root", destroy_content=True)
     assert rep["deleted"] is True
 
@@ -420,14 +432,20 @@ def test_delete_agent_fk_sweep():
         )
         assert surv_f[3] == "resolved", "the row keeps its resolved state"
         surv_f2 = conn.execute(
-            "SELECT verified_by_agent_id, verified_head_sha, state"
+            "SELECT verified_by_agent_id, verified_head_sha, verified_note, state"
             " FROM review_findings WHERE id = ?",
             (hf2,),
         ).fetchone()
         assert surv_f2[0] is None and surv_f2[1] is None, (
             "the victim's verify seat anonymizes to NULL"
         )
-        assert surv_f2[2] == "resolved", (
+        # A note is part of the attestation, so a purged verifier's words
+        # must not outlive their attestation. Discriminating only because
+        # the fixture seeded one (see _VNOTE above).
+        assert surv_f2[2] is None, (
+            "the victim's verification note is cleared with their seat"
+        )
+        assert surv_f2[3] == "resolved", (
             "the row survives as an unverified resolution - it honestly"
             " blocks again until someone re-verifies"
         )

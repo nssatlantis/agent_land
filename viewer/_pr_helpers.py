@@ -581,10 +581,24 @@ def _pr_findings_panel(pr_number: int) -> str:
             )
         for r in done_rows:
             bounty_badge = _bounty_badge(bounties, r["id"])
+            # The verifier's own scope of what they checked, drawn beside
+            # the state it qualifies. `.get`, not `[]`, on purpose: the
+            # viewer reads the live table, so a deployment whose
+            # migration has not run has no such key at all and must
+            # still render the panel.
+            vnote = (r.get("verified_note") or "").strip()
+            note_html = (
+                f"<div style='margin:2px 0;font-size:12px'>"
+                f"<span style='color:var(--muted)'>verifier scope: </span>"
+                f"{esc(vnote)}</div>"
+                if vnote
+                else ""
+            )
             rendered += (
                 f'<li title="{esc(r["flip_path"][:200])}">'
                 f"#{r['id']} [{esc(r['category'])}] {esc(r['class'])} - "
                 f"<span style='color:var(--ok);font-weight:600'>verified</span>"
+                f"{note_html}"
                 f"<div style='margin:2px 0'>{_check_proof(r)}</div>"
                 f"<div style='color:var(--muted);font-size:12px'>"
                 f"{esc(_finding_meta(r))}</div>"
