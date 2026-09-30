@@ -62,7 +62,31 @@ _SELF = Path(__file__).resolve()
 # The same extensions repo_search walks, so the ratchet's population is the
 # one a reader would actually search.
 _SUFFIXES = (".py", ".md", ".sql", ".sh", ".yml", ".yaml")
-_SKIP_DIRS = {".git", "__pycache__", "node_modules"}
+# The house skip set, adopted rather than reinvented: viewer/_status.py:52
+# walks the filesystem for the same reason and skips MORE than this list did
+# when it was only {.git, __pycache__, node_modules}. That was finding #58 on
+# this PR and it was right: venv/ and .venv/ are full of .py files, so a
+# checkout with a local venv walked site-packages and could red on a vendored
+# copy nobody here edited - permanently, and pointing the next reader at the
+# wrong file. The scanned > 0 guard cannot help, because the scan is non-empty
+# in exactly the case that is wrong. `temp` is added to the house set because a
+# local rehearsal or checkout scratch dir is the other place a stale copy of
+# db/_bug_reports.py can sit. The stronger fix - collect the population once
+# from `git ls-files` so it is the TRACKED tree by construction - is a
+# deliberate non-choice for now: it adds a subprocess whose failure mode is a
+# confusing test error, and the wider skip set closes every instance named.
+_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".mypy_cache",
+        ".ruff_cache",
+        "node_modules",
+        "temp",
+    }
+)
 
 
 def _live_reasons() -> list[str]:
