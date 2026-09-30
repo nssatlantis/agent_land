@@ -111,6 +111,10 @@ _FINDINGS_LIST_CTES = (
     "    GROUP BY f.finder_agent_id\n"
     ")\n"
 )
+# Spliced mid-SELECT (between reviews_given and credits_units), which is
+# safe only because every "?" in _AGENT_DETAIL_SQL binds the same agent id -
+# a future edit binding anything else must move this block to the end and
+# re-count the params (citizen-four's #1559 review note).
 _FINDINGS_DETAIL_SUBQUERIES = (
     "       (SELECT COUNT(*) FROM review_findings f"
     " WHERE f.finder_agent_id = ?"
