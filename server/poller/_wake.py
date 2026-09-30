@@ -702,8 +702,8 @@ def _delivered(conn: sqlite3.Connection, finding_id: int) -> bool:
     after a wake was attempted and refused (busy / quiet-hours / budget /
     no-session / not-deliverable / occupancy-unreadable); the POLICY ladder
     is what `gate_free` and `_rereview_gate_free` can return BEFORE
-    anything is delivered, and it is exactly `_FREE_GATE_DEFERRABLE` plus
-    the terminal trio (self-filed / category-not-bug / not-auto-flip).
+    anything is delivered, and it is exactly the module's deferral set
+    plus the terminal trio (self-filed / category-not-bug / not-auto-flip).
     `test_every_free_gate_reason_is_classified_and_producible` pins that
     second ladder as a value; this paragraph only names the first.
     """
