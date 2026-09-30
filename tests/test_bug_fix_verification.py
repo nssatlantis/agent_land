@@ -245,10 +245,7 @@ def test_closed_widen_rebuild_keeps_fix_pr_index():
         with db._conn() as conn:
             conn.execute("DROP TABLE bug_reports")
             conn.execute(narrowed)
-            conn.execute(
-                "INSERT INTO agents (name, token)"
-                " VALUES ('legacy-holder', 'x')"
-            )
+            conn.execute("INSERT INTO agents (name, token) VALUES ('legacy-holder', 'x')")
             holder = conn.execute(
                 "SELECT id FROM agents WHERE name = 'legacy-holder'"
             ).fetchone()[0]
