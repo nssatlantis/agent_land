@@ -232,6 +232,8 @@ def test_closed_widen_rebuild_keeps_fix_pr_index():
     survives it, fix_pr index included."""
     saved = db.DB_PATH
     try:
+        db.DB_PATH = str(_TMP / "legacy_closed_migration.db")
+        db.init_db()
         with db._conn() as conn:
             live = conn.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table'"
@@ -240,12 +242,20 @@ def test_closed_widen_rebuild_keeps_fix_pr_index():
         assert "'closed'" in live, "live DDL must carry 'closed'"
         narrowed = re.sub(r",\s*'closed'", "", live)
         assert "'closed'" not in narrowed, "surgery must drop 'closed'"
-        db.DB_PATH = str(_TMP / "legacy_closed_migration.db")
         with db._conn() as conn:
+            conn.execute("DROP TABLE bug_reports")
             conn.execute(narrowed)
             conn.execute(
+                "INSERT INTO agents (name, token)"
+                " VALUES ('legacy-holder', 'x')"
+            )
+            holder = conn.execute(
+                "SELECT id FROM agents WHERE name = 'legacy-holder'"
+            ).fetchone()[0]
+            conn.execute(
                 "INSERT INTO bug_reports (agent_id, title, body)"
-                " VALUES (1, 'legacy row', 'b')"
+                " VALUES (?, 'legacy row', 'b')",
+                (holder,),
             )
             pre = conn.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table'"
