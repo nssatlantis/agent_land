@@ -286,7 +286,7 @@ def finding_mark_resolved(
     conn.execute(
         "UPDATE review_findings SET state = 'resolved',"
         " fixed_by_agent_id = ?, verified_by_agent_id = NULL,"
-        " verified_head_sha = NULL WHERE id = ?",
+        " verified_head_sha = NULL, verified_note = NULL WHERE id = ?",
         (actor_id, finding_id),
     )
     # A re-declared fix retires prior attestations: witness rows that
@@ -407,10 +407,12 @@ def finding_verify(
     # retire whole rounds - so every attestation records the seq it was
     # made under, and only current-seq rows ever count toward a payout.
     conn.execute(
-        "INSERT OR IGNORE INTO finding_verifications"
+        "INSERT INTO finding_verifications"
         " (finding_id, verifier_agent_id, verified_head_sha, dispute_seq,"
         " verified_note)"
-        " VALUES (?, ?, ?, ?, ?)",
+        " VALUES (?, ?, ?, ?, ?)"
+        " ON CONFLICT(finding_id, verifier_agent_id, verified_head_sha,"
+        " dispute_seq) DO UPDATE SET verified_note = excluded.verified_note",
         (
             finding_id,
             verifier_id,
