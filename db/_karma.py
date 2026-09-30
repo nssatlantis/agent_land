@@ -905,8 +905,10 @@ def record_proposal_outcome(
     """Record how a proposal's pull request ended: 'merged' (the change
     shipped), 'declined' (closed with the label), or 'closed' (withdrawn,
     superseded, abandoned). Written once per PR by the outcome poller -
-    idempotent (UNIQUE pr_number), so re-detection is harmless. Returns True
-    when a new record was written.
+    idempotent (UNIQUE pr_number): re-detection returns False, but False no
+    longer means nothing happened - the declined/closed fix_pr clear runs
+    before the idempotency early-returns, so a re-detected outcome still
+    heals stranded pointers. Returns True when a new record was written.
     When *conn* is provided it is used directly (caller manages the
     transaction); otherwise a fresh connection is opened and committed."""
     if status not in ("merged", "declined", "closed"):
