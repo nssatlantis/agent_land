@@ -110,24 +110,31 @@ def _two_bars(confidence: int, threshold: int, fix_round: dict | None) -> str:
     """The TWO bars a bug report carries (proposal #821): "is it real" and,
     once a fix has merged, "did the fix work".
 
-    The second bar is gated on the round OPENING, not on it having verdicts.
-    A merged fix nobody has judged yet - confirmed=0, disputed=0 - is an open
-    obligation, not an absent one, and it used to render no bar at all while
-    _fix_round_cell, its sibling on this very page, printed "0/3 confirmed"
-    directly underneath.  The zero state is labelled "fix merged, awaiting
-    verdicts" rather than "fix verified", because 0/3 is a MISSING result and
-    "fix verified: 0/3" would read as "zero of three found the fix works".
+    The second bar is gated on the round's PUBLISHED STATE, never on its
+    quorum.  bug_fix_round sets `quorum = max(1, BUG_FIX_VERIFY_VOTES)` for
+    EVERY report, so a quorum test is true even when no fix has ever landed
+    and would announce one on both surfaces; `state` is the only field that
+    separates the two, and its own docstring says so - not_fixed means "no
+    fix has landed, so the bar has not opened yet".  (_fix_round_cell's "no
+    fix has merged yet" branch is the fossil of that predicate: dead code on
+    main for exactly this reason.)
+
+    Within an open round the zero state is labelled "fix merged, awaiting
+    verdicts" rather than "fix verified", because confirmed=0 is a MISSING
+    result and "fix verified: 0/3" reads as "zero of three found the fix
+    works".
 
     This is the viewer list/detail copy.  server/admin/_bugs.py holds its own
     _bug_confidence_bar - an import across that boundary would pull the whole
     viewer package into the admin process - so the two are held in parity by
     tests/test_bug_fix_verification.py.  Note the limit of that pin: parity
     can only catch the two renderers DISAGREEING, never agreeing wrongly, so
-    its fixture has to carry the unfilled round and not just a voted one.
+    its fixture has to carry every state a caller really supplies - including
+    the one where no bar belongs at all.
     """
     out = _bar(confidence or 0, threshold, "confirmed real")
     rnd = fix_round or {}
-    if rnd.get("quorum"):
+    if rnd.get("state") in ("pending", "resolved", "disputed"):
         confirmed = rnd.get("confirmed") or 0
         disputed = rnd.get("disputed") or 0
         started = bool(confirmed or disputed)
