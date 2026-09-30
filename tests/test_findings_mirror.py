@@ -116,6 +116,37 @@ def main():
     big = ftools.render_findings_mirror(pid, 4242, many, None)
     assert "+10 more (see forum findings_list)." in big, big
     assert len(big) < 6000, len(big)
+    # --- the same on the /prs panel, through the REAL reader ------------
+    # The mirror is pure, so the arms above feed it rows directly. The
+    # panel does its own db read and takes only a pr_number, so this arm
+    # builds real attestations and asserts on the html. Without it the
+    # panel render is the one surface nothing checks - which is how a
+    # documented rendering ends up with no reachable render path.
+    from viewer._pr_helpers import _pr_findings_panel
+
+    _earn(agents, post_id, "alpha")
+    _a = agents["alpha"]["agent_id"]
+    _b = agents["beta"]["agent_id"]
+    _g = agents["gamma"]["agent_id"]
+    with db._conn() as conn:
+        said = db.finding_add(
+            conn, pid, 4242, _a, "bug", "other", "c", "f", ["a.py"], False
+        )
+        db.finding_mark_resolved(conn, said, _b, "fixed")
+        db.finding_verify(
+            conn, said, _g, "e" * 40, "panel arm: the guard is routed here"
+        )
+        quiet = db.finding_add(
+            conn, pid, 4242, _a, "bug", "other", "c", "f", ["a.py"], False
+        )
+        db.finding_mark_resolved(conn, quiet, _b, "fixed")
+        db.finding_verify(conn, quiet, _g, "e" * 40)
+    panel = _pr_findings_panel(4242)
+    assert "panel arm: the guard is routed here" in panel, panel
+    # The bare attestation renders no scope line, so the two findings stay
+    # distinguishable on the page rather than both reading "verified".
+    assert panel.count("verifier scope:") == 1, panel.count("verifier scope:")
+
     # --- upsert idempotent, preserves surrounding prose ----------------
     body = "Proposal: #1\n\nHello.\n\nCitizen: x"
     once = ftools.upsert_findings_mirror_body(body, section)
