@@ -438,6 +438,94 @@ def test_guild_intake_allowlist_ignores_custody_moves():
     print("  guild intake allowlist ignores custody moves: ok")
 
 
+def _stray(gid, aid, reason, units):
+    """A guild credit_entries leg with no guild_ledger twin.
+
+    That is the real shape behind the divergence this field reports:
+    guild_wallet_balance sums credit_entries, guild_memo_balance sums
+    guild_ledger, so a leg present in only one of them moves one trail.
+    """
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO credit_entries"
+            " (agent_id, delta_units, reason, account, target_type, target_id)"
+            f" VALUES (?, {units}, ?, 'guild', 'guild', ?)",
+            (aid, reason, gid),
+        )
+
+
+def _unstray(gid):
+    with db._conn() as conn:
+        conn.execute(
+            "DELETE FROM credit_entries"
+            " WHERE target_type = 'guild' AND target_id = ?"
+            " AND reason IN ('guild_retained', 'test_stray_leg')",
+            (gid,),
+        )
+
+
+def test_divergence_names_the_two_trails_disagreeing():
+    # wallet - memo != 0, and that difference is not the retained figure.
+    # This is the live shape: the two trails disagree with EACH OTHER.
+    founder, guild = _found()
+    gid = guild["id"]
+    _add_mate(founder, gid)
+    db.guild_deposit(founder["token"], gid, 5.0)
+    _stray(gid, founder["agent_id"], "test_stray_leg", 3)
+    rep = db._economy.verify_guild_wallets()
+    row = [r for r in rep["guilds"] if r["guild_id"] == gid][0]
+    assert not row["ok"], row
+    assert row["divergence"] == "wallet_vs_memo", row
+    assert row["trail_delta_units"] == 3, row
+    _unstray(gid)
+    assert db._economy.verify_guild_wallets()["ok"]
+    _rule_d(gid)
+    print("  divergence names the two trails disagreeing: ok")
+
+
+def test_divergence_names_retained_disagreeing_with_the_trails():
+    # The other failure: the two trails agree exactly and the retained
+    # figure is what breaks the identity. A lone retained leg cannot
+    # reach this arm on its own - it moves the wallet too, so the
+    # identity holds - which is why the offsetting stray is here rather
+    # than a simpler fixture. This arm is NOT the live instance, so
+    # without its own fixture it would ship untested.
+    founder, guild = _found()
+    gid = guild["id"]
+    _add_mate(founder, gid)
+    db.guild_deposit(founder["token"], gid, 5.0)
+    _stray(gid, founder["agent_id"], "guild_retained", 2)
+    _stray(gid, founder["agent_id"], "test_stray_leg", -2)
+    rep = db._economy.verify_guild_wallets()
+    row = [r for r in rep["guilds"] if r["guild_id"] == gid][0]
+    assert not row["ok"], row
+    assert row["divergence"] == "retained_vs_trails", row
+    assert row["trail_delta_units"] == 0, row
+    _unstray(gid)
+    assert db._economy.verify_guild_wallets()["ok"]
+    _rule_d(gid)
+    print("  divergence names retained disagreeing with the trails: ok")
+
+
+def test_healthy_row_reports_no_divergence_explicitly():
+    # The negative control: a green row must SAY so. If the key were
+    # absent in the healthy case a reader could not tell "no
+    # divergence" from "not computed", which is the same unreadable
+    # shape this field exists to remove.
+    founder, guild = _found()
+    gid = guild["id"]
+    _add_mate(founder, gid)
+    db.guild_deposit(founder["token"], gid, 5.0)
+    rep = db._economy.verify_guild_wallets()
+    row = [r for r in rep["guilds"] if r["guild_id"] == gid][0]
+    assert row["ok"], row
+    assert "divergence" in row, row
+    assert row["divergence"] is None, row
+    assert row["trail_delta_units"] == 0, row
+    _rule_d(gid)
+    print("  healthy row reports no divergence explicitly: ok")
+
+
 if __name__ == "__main__":
     test_deposit_holds_in_wallet()
     test_upkeep_pays_poolward_not_treasury()
@@ -452,4 +540,7 @@ if __name__ == "__main__":
     test_backfill_shortfall_skips_without_negative()
     test_backfill_seed_excluded_from_guild_intake()
     test_guild_intake_allowlist_ignores_custody_moves()
+    test_divergence_names_the_two_trails_disagreeing()
+    test_divergence_names_retained_disagreeing_with_the_trails()
+    test_healthy_row_reports_no_divergence_explicitly()
     print("\n== test_guild_wallet: all passed ==")

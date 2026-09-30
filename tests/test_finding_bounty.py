@@ -317,7 +317,16 @@ def main():
         g5 = _finding(conn, pid, beta, pr=_PR2)
         db.finding_fund(conn, g5, alpha, 20)
         db.finding_mark_resolved(conn, g5, gamma, "fixed", (gamma,))
-        db.finding_verify(conn, g5, delta, _SHA_A)
+        db.finding_verify(conn, g5, delta, _SHA_A, "scope: mirror only")
+        # Positive control BEFORE the re-declare: without this the arm is
+        # green when the note was never written at all, which is the
+        # vacuous trap that made #1574's first purge arm meaningless.
+        assert (
+            conn.execute(
+                "SELECT verified_note FROM review_findings WHERE id = ?", (g5,)
+            ).fetchone()[0]
+            == "scope: mirror only"
+        )
         assert db.finding_stale_on_push(conn, _PR2, _SHA_B) >= 1
         db.finding_mark_resolved(conn, g5, epsilon, "fixed", (epsilon,))
         n_rows = conn.execute(
@@ -325,6 +334,36 @@ def main():
             (g5,),
         ).fetchone()[0]
         assert n_rows == 0, "re-declare wipes the old fix's attestations"
+        # #72: a note is part of the attestation, so it must not outlive it.
+        # finding_verify's own docstring already states this rule for the
+        # delete-agent sweep; this is the second site that broke it.
+        assert (
+            conn.execute(
+                "SELECT verified_note FROM review_findings WHERE id = ?", (g5,)
+            ).fetchone()[0]
+            is None
+        ), "a witness note outlived the attestation that cleared it (#72)"
+        # #73: a repeat attestation by the same witness at the same head and
+        # dispute round collides with UNIQUE(finding_id, verifier_agent_id,
+        # verified_head_sha, dispute_seq), so INSERT OR IGNORE kept the FIRST
+        # note in the log while the unconditional seat UPDATE had already
+        # stored the second - a divergence no reader could see.
+        g_note = _finding(conn, pid, beta, pr=_PR2)
+        db.finding_mark_resolved(conn, g_note, gamma, "fixed", (gamma,))
+        db.finding_verify(conn, g_note, delta, _SHA_A, "first reading")
+        db.finding_verify(conn, g_note, delta, _SHA_A, "second reading")
+        seat_note, log_note, n_log = conn.execute(
+            "SELECT (SELECT verified_note FROM review_findings WHERE id = ?),"
+            " (SELECT verified_note FROM finding_verifications"
+            "  WHERE finding_id = ? AND verifier_agent_id = ?),"
+            " (SELECT COUNT(*) FROM finding_verifications WHERE finding_id = ?)",
+            (g_note, g_note, delta, g_note),
+        ).fetchone()
+        assert seat_note == "second reading", seat_note
+        assert log_note == "second reading", (
+            f"the witness log kept a superseded note the seat moved past: {log_note}"
+        )
+        assert n_log == 1, f"one witness at one head is one row, got {n_log}"
         db.finding_verify(conn, g5, zeta, _SHA_B)
         out = db.maybe_pay_finding_bounty(conn, g5, _SHA_B)
         assert out["paid"] is False and out["verifiers"] == [zeta], out
@@ -516,6 +555,23 @@ def main():
                 for r in conn.execute("PRAGMA table_info(review_findings)").fetchall()
             ]
             assert "dispute_seq" in cols, cols
+        # The witness log's own migration. The scenario above DROPS the
+        # table, so its CREATE path cannot reach this column - which
+        # means the arm that matters is a deployment that already HAS
+        # the table. Without _ensure_column the column is unproven
+        # there, and that is the argument it ships on, so it gets the
+        # arm rather than the assertion.
+        with db._conn() as conn:
+            conn.execute("ALTER TABLE finding_verifications DROP COLUMN verified_note")
+        db.init_db()
+        with db._conn() as conn:
+            vcols = [
+                r[1]
+                for r in conn.execute(
+                    "PRAGMA table_info(finding_verifications)"
+                ).fetchall()
+            ]
+            assert "verified_note" in vcols, vcols
         db.init_db()  # second boot is a clean no-op
     finally:
         db.DB_PATH = saved

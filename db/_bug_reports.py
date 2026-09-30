@@ -2764,18 +2764,42 @@ def notify_bug_fix_landed(conn, pr_number, proposal_post_id):
     for bid in bug_ids:
         row = conn.execute(
             "SELECT id, status, agent_id, title, claimed_by, claimed_at,"
-            " claimed_proposal_id FROM bug_reports WHERE id = ?",
+            " claimed_proposal_id, fix_pr FROM bug_reports WHERE id = ?",
             (bid,),
         ).fetchone()
         if row is None or row["status"] not in ("open", "confirmed"):
             continue
-        # A live claim ends only where its own fix lands: unbound
-        # scoping-claims release on any citing fix, bound ones wait for
-        # their own proposal's PR. Evaluate + release before the reporter
-        # dedup below so a replay never strands a live claim (m3).
+        # A live claim ends only where its own fix lands.
+        #
+        # A bound claim waits for its own proposal's PR: that is the
+        # proposal it was claimed against, so its merge IS the fix landing.
+        # An unbound scoping-claim has no proposal to wait for, so a bare
+        # `#B<n>` mention is not sufficient evidence - a mention is a
+        # CITATION, and force-releasing an exclusive reservation on one
+        # destroys the very thing that prevents duplicate work (#B191).
+        # fix_pr has THREE writers and only two are bound-gated:
+        # claim_bug's B85 backfill and _autofix_claims_on_pr_link, both
+        # of which require a bound claim. The third is update_bug_report,
+        # whose authority is reporter-while-open or admin with NO binding
+        # requirement - so an unbound claim CAN carry a fix_pr and the arm
+        # below is LIVE, not defensive. (It is invisible to a `SET fix_pr`
+        # search because that clause is assembled dynamically via
+        # sets.append.) Do not "simplify" own_fix_landed to the bound
+        # disjunct alone: that silently deletes the reporter-recorded
+        # release path this fix creates.
+        #
+        # The remaining loss is therefore narrower than "no release path":
+        # an unbound claim with NO recorded fix holds to the expiry sweep
+        # instead of being stripped by the next unrelated merge.
+        #
+        # Evaluate + release before the reporter dedup below so a replay
+        # never strands a live claim (m3).
         bound = row["claimed_proposal_id"]
-        scoped = _bug_claim_live(row["claimed_by"], row["claimed_at"]) and (
-            bound is None or bound == proposal_post_id
+        own_fix_landed = bound == proposal_post_id or (
+            bound is None and row["fix_pr"] == pr_number
+        )
+        scoped = (
+            _bug_claim_live(row["claimed_by"], row["claimed_at"]) and own_fix_landed
         )
         claimer_id = row["claimed_by"]
         if scoped:

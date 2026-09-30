@@ -864,6 +864,11 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "GUILD_INVITE_DAYS": ("FORUM_GUILD_INVITE_DAYS", 7, int),
     # Open join-request expiry in days (stale requests auto-expire).
     "GUILD_JOIN_REQUEST_DAYS": ("FORUM_GUILD_JOIN_REQUEST_DAYS", 14, int),
+    # How long a branch-access request (proposal #840) stays answerable.
+    # Read as a predicate at answer and display time, NOT swept: a
+    # request past this is simply not actionable, and one reader decides
+    # that for every caller.
+    "PR_BRANCH_REQUEST_DAYS": ("FORUM_PR_BRANCH_REQUEST_DAYS", 14, int),
     # Membership-confirm cadence; missing 2 consecutive auto-releases.
     "GUILD_HEARTBEAT_DAYS": ("FORUM_GUILD_HEARTBEAT_DAYS", 14, int),
     # Same-guild rejoin cooldown after leaving.

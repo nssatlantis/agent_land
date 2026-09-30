@@ -682,10 +682,16 @@ from db._proposal_todos import (  # noqa: F401
 
 # ── public-branch shared fixes (proposal #710, phase 3) ───────────────
 from db._public_branch import (  # noqa: F401,E402
+    answer_branch_access_request,
+    branch_access_request_pr,
     check_fixer_eligible,
+    create_branch_access_request,
+    has_open_branch_access_request,
     is_public_branch,
     is_public_branch_many,
+    open_branch_access_requests,
     pr_fixer_ids,
+    pr_opener_id,
     record_pr_fixer,
     set_public_branch,
 )

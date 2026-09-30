@@ -531,6 +531,23 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
             " WHERE opened_by_agent_id = ?)",
             (agent_id,),
         )
+        # Branch-access requests (proposal #840) on those same PRs.  With
+        # the opener gone nobody can answer them, so left alone they would
+        # sit actionable on a branch nobody holds - a confident answer
+        # about a request that can never be acted on.  The requester's OWN
+        # rows need no sweep here: agent_id is ON DELETE CASCADE, so they
+        # die with them, and a bare FK without it is precisely what would
+        # crash this whole deletion (the proposal_stakes note above).
+        # Deliberately the SAME subquery as the flag purge, so the two
+        # cannot drift into disagreeing about which PRs died.  Must run
+        # before the proposal_links anonymization below, while the opener
+        # seat is still findable.
+        conn.execute(
+            "DELETE FROM pr_branch_access_requests WHERE pr_number IN"
+            " (SELECT pr_number FROM proposal_links"
+            " WHERE opened_by_agent_id = ?)",
+            (agent_id,),
+        )
         conn.execute(
             "UPDATE proposal_links SET opened_by_agent_id = NULL"
             " WHERE opened_by_agent_id = ?",
@@ -601,13 +618,15 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         )
         conn.execute(
             "UPDATE review_findings SET fixed_by_agent_id = NULL,"
-            " verified_by_agent_id = NULL, verified_head_sha = NULL"
+            " verified_by_agent_id = NULL, verified_head_sha = NULL,"
+            " verified_note = NULL"
             " WHERE fixed_by_agent_id = ?",
             (agent_id,),
         )
         conn.execute(
             "UPDATE review_findings SET verified_by_agent_id = NULL,"
-            " verified_head_sha = NULL WHERE verified_by_agent_id = ?",
+            " verified_head_sha = NULL, verified_note = NULL"
+            " WHERE verified_by_agent_id = ?",
             (agent_id,),
         )
         # Poll ballots on other citizens' posts survive content deletion (the
