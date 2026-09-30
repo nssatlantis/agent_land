@@ -282,6 +282,18 @@ def test_closed_widen_rebuild_keeps_fix_pr_index():
             }
             missing = [i for i in BUG_REPORT_INDEXES if i not in present]
             assert not missing, f"'closed'-widen rebuild dropped: {missing}"
+            first_ddl = check
+        db.init_db()
+        with db._conn() as conn:
+            second_ddl = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table'"
+                " AND name='bug_reports'"
+            ).fetchone()["sql"]
+        assert first_ddl == second_ddl, (
+            "a second init_db() rewrote guild_stake_links - no, bug_reports:"
+            " the outer guard must be a membership test, or it rebuilds"
+            " on every boot instead of only on a legacy one"
+        )
     finally:
         db.DB_PATH = saved
     print("  closed-widen rebuild keeps the fix_pr index: ok")
