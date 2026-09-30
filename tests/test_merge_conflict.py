@@ -867,6 +867,18 @@ def test_branch_refs_reads_nested_and_flat_payloads():
     flat = {"state": "open", "head": "feature", "base": "main"}
     assert _branch_refs(nested) == ("feature", "main")
     assert _branch_refs(flat) == ("feature", "main")
+    # A ref that passes the guard must come back stripped: the contract is
+    # "resolves a ref, or raises", true of the VALUE returned and not only of
+    # the test applied to it. Both shapes - the padding must survive the
+    # nested .get("ref") hop as well as the flat read.
+    padded_nested = {
+        "state": "open",
+        "head": {"ref": " feature\n"},
+        "base": {"ref": " main "},
+    }
+    padded_flat = {"state": "open", "head": "\tfeature", "base": "main "}
+    assert _branch_refs(padded_nested) == ("feature", "main")
+    assert _branch_refs(padded_flat) == ("feature", "main")
 
     for bad, label in (
         ({"state": "open", "head": None, "base": "main"}, "head=None"),
