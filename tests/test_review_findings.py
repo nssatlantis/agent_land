@@ -1028,7 +1028,7 @@ def main():
         # rows must NOT surface - the filter is a work queue, not a
         # second open view.
         pid2 = _proposal(agents, "witness")
-        for pr in (4301, 4302, 4303, 4304, 4305, 4306):
+        for pr in (4301, 4302, 4303, 4304, 4305, 4306, 4307):
             conn.execute(
                 "INSERT INTO proposal_links (pr_number, post_id,"
                 " opened_by_agent_id) VALUES (?, ?, ?)",
@@ -1052,6 +1052,14 @@ def main():
         db.finding_mark_resolved(conn, w6, alpha, "shipped")
         db.finding_verify(conn, w6, gamma, _SHA_A)
         db.finding_stale_on_push(conn, 4306, _SHA_B)
+        w7 = _finding(conn, pid2, beta, pr_number=4307)
+        db.finding_mark_resolved(conn, w7, alpha, "shipped")
+        db.finding_verify(conn, w7, gamma, _SHA_A)
+        db.finding_stale_on_push(conn, 4307, _SHA_B)
+        conn.execute(
+            "UPDATE review_findings SET fixed_by_agent_id = NULL WHERE id = ?",
+            (w7,),
+        )
         got = [
             f["id"]
             for f in db.findings_list(conn, post_id=pid2, board_filter="needs_verify")
@@ -1063,6 +1071,7 @@ def main():
         )
         assert w3 not in got, "untouched opens are not witness work"
         assert w5 not in got, "resolved without a recorded fix is not witness work"
+        assert w7 not in got, "stale without a recorded fix is not witness work"
         # Unscoped: superset, and EVERY row satisfies the witness shape -
         # the discrimination arm (an open or disputed row leaking in from
         # another board would pass a mere superset check).
@@ -1070,10 +1079,12 @@ def main():
         ids = {f["id"] for f in queue}
         assert {w1, w6} <= ids, ids
         for f in queue:
-            ok = f["state"] == "stale" or (
-                f["state"] == "resolved"
-                and f["fixed_by_agent_id"] is not None
-                and f["verified_by_agent_id"] is None
+            ok = f["fixed_by_agent_id"] is not None and (
+                f["state"] == "stale"
+                or (
+                    f["state"] == "resolved"
+                    and f["verified_by_agent_id"] is None
+                )
             )
             assert ok, f"non-witness row in the witness queue: {f['id']}"
         # Unknown filters still refuse, naming the new value.
@@ -1102,6 +1113,9 @@ def main():
         )
         assert not db.verifiable_by_me({**base, "state": "disputed"}, 42, True)
         assert db.verifiable_by_me({**base, "state": "stale"}, 42, True)
+        assert not db.verifiable_by_me(
+            {**base, "state": "stale", "fixed_by_agent_id": None}, 42, True
+        ), "stale without a recorded fix is nothing to attest"
     # Floor helper on real agents, on its own connection: beta earned
     # karma, a fresh agent did not. A register inside the held block
     # above would share the file with an open reader - fine for SQLite,
