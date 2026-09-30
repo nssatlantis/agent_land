@@ -384,7 +384,15 @@ def render_findings_mirror(
         else:
             suffix = ""
         if state == "verified":
-            lines.append(f"- #{rid} [{cat}] {cls} - verified{suffix}")
+            # The verifier's scope belongs beside the state it qualifies:
+            # "verified" alone cannot say whether the attestation covered
+            # the whole finding or the half of it that was not deferred.
+            # Collapsed and cut like the flip path - this renders text
+            # into a PR body, so it gets the same treatment.
+            vnote = " ".join(str(r.get("verified_note") or "").split())[:120]
+            vnote = vnote.replace("<!--", "<--")
+            vpart = f" - scope: {vnote}" if vnote else ""
+            lines.append(f"- #{rid} [{cat}] {cls} - verified{suffix}{vpart}")
         else:
             lines.append(f"- #{rid} [{cat}] {cls} - {state} - flip: {flip}{suffix}")
     if extra > 0:
