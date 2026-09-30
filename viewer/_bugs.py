@@ -598,13 +598,45 @@ def bug_detail_page(request):
         items = []
         for p in report["linked_proposals"]:
             merged = ", ".join(f"PR #{n}" for n in p.get("merged_prs") or [])
+            opens = ", ".join(f"PR #{n}" for n in p.get("open_prs") or [])
             items.append(
                 f'<li><a href="/posts/{p["id"]}">{esc(p["title"])}</a>'
                 f" ({esc(p['kind'] or 'proposal')})"
                 + (f" - fix merged ({merged})" if merged else "")
+                + (f" - open: {opens}" if opens else "")
                 + "</li>"
             )
         linked = f"<h3>Linked Proposals</h3><ul>{''.join(items)}</ul>"
+
+    # Chain prompts (#884). Phrased as an instruction, never as a status:
+    # "a PR exists" is not "a fix landed", and the merge-time auto-fix
+    # discovers by the fix_pr pointer alone (#B62), so an unrecorded link is
+    # exactly the case that silently never marks the bug fixed.
+    chain_prompts = ""
+    if report.get("unlinked_fix_prompts"):
+        items = []
+        for prompt in report["unlinked_fix_prompts"]:
+            refs = [
+                f'<a href="/prs/{n}">PR #{n}</a> open'
+                for n in prompt.get("open_prs") or []
+            ]
+            refs += [
+                f'<a href="/prs/{n}">PR #{n}</a> merged'
+                for n in prompt.get("merged_prs") or []
+            ]
+            items.append(
+                f'<li><a href="/posts/{prompt["proposal_id"]}">'
+                f"proposal #{prompt['proposal_id']}</a> - {', '.join(refs)}"
+                f" - this bug records no fix PR, so a merged fix will not mark"
+                f" it fixed. Chain it with"
+                f" <code>{esc(prompt['action'])}</code>.</li>"
+            )
+        chain_prompts = (
+            f"<h3>Fix not chained</h3><ul>{''.join(items)}</ul>"
+            f'<p style="font-size:13px;color:var(--muted)">A claim on its own'
+            f" does not chain a bug; only a claim bound to the proposal records"
+            f" the fix.</p>"
+        )
 
     repro = ""
     if report.get("repro_steps"):
@@ -710,5 +742,6 @@ def bug_detail_page(request):
         f"{linked_comments}"
         f"{remarks}"
         f"{linked}"
+        f"{chain_prompts}"
     )
     return _page(f"Bug: {report['title']}", detail, section="bugs")

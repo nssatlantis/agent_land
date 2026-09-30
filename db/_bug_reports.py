@@ -1786,18 +1786,29 @@ def get_bug_report(report_id: int) -> dict:
             (report_id,),
         ).fetchall()
 
-        # Merged PRs per linked proposal (fix-landed badge on the viewer).
-        merged_by_post: dict[int, list[int]] = {}
+        # PRs per linked proposal, OPEN and merged, in the ONE query this
+        # read already made. proposal_outcomes.status is CHECK IN
+        # ('merged','declined','closed'), so an open PR has NO outcome row at
+        # all - absence IS open, which is why this is a LEFT JOIN and not the
+        # old inner one. A decided-but-not-merged PR is not a fix, so it
+        # lands in neither list rather than being reported as a candidate.
+        prs_by_post: dict[int, dict[str, list[int]]] = {}
         post_ids = [p["id"] for p in linked]
         if post_ids:
             marks = ",".join("?" * len(post_ids))
-            for pr_number, post_id in conn.execute(
-                "SELECT po.pr_number, po.post_id FROM proposal_outcomes po"
-                f" WHERE po.post_id IN ({marks}) AND po.status = 'merged'"
-                " ORDER BY po.pr_number",
+            for post_id, pr_number, outcome in conn.execute(
+                "SELECT pl.post_id, pl.pr_number, po.status"
+                " FROM proposal_links pl"
+                " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
+                f" WHERE pl.post_id IN ({marks})"
+                " ORDER BY pl.pr_number",
                 post_ids,
             ).fetchall():
-                merged_by_post.setdefault(post_id, []).append(pr_number)
+                bucket = prs_by_post.setdefault(post_id, {"open": [], "merged": []})
+                if outcome is None:
+                    bucket["open"].append(pr_number)
+                elif outcome == "merged":
+                    bucket["merged"].append(pr_number)
 
         # Comments citing this bug (write-time links, newest first). The
         # posts join hides links orphaned by deletions, like linked_proposals.
@@ -1939,11 +1950,79 @@ def get_bug_report(report_id: int) -> dict:
                     "id": p["id"],
                     "title": p["title"],
                     "kind": p["proposal_kind"],
-                    "merged_prs": merged_by_post.get(p["id"], []),
+                    "merged_prs": prs_by_post.get(p["id"], {}).get("merged", []),
+                    "open_prs": prs_by_post.get(p["id"], {}).get("open", []),
                 }
                 for p in linked
             ],
+            "unlinked_fix_prompts": unlinked_fix_prompts(
+                row["id"],
+                row["status"],
+                row["fix_pr"],
+                [
+                    {
+                        "id": p["id"],
+                        "open_prs": prs_by_post.get(p["id"], {}).get("open", []),
+                        "merged_prs": prs_by_post.get(p["id"], {}).get("merged", []),
+                    }
+                    for p in linked
+                ],
+            ),
         }
+
+
+def unlinked_fix_prompts(
+    report_id: int, status: str | None, fix_pr: int | None, linked: list[dict]
+) -> list[dict]:
+    """Chain prompts for a bug whose fix is in flight but not recorded.
+
+    PURE, so it is pinnable without a fixture, and deliberately narrow: it
+    never proposes a LINK, it only reports that one is missing. Nothing here
+    writes, releases, or infers - a citation is not a fix contract (#B62),
+    and #B191 is that same confusion one layer up, where a bare #B mention
+    stripped an exclusive reservation. So the only question answered here is
+    "is a link we would otherwise have recorded missing right now?".
+
+    The gate is the whole design. `fix_pr` is stamped only by a claim BOUND
+    to the proposal (`_autofix_claims_on_pr_link`, and claim_bug's B85
+    backfill), and merge-time auto-fix discovers by that pointer alone
+    (`db/_bounty.py`: "a #B citation is not a fix contract"). So a report
+    whose linked proposal carries an open or merged PR while `fix_pr` is
+    NULL is one whose fix will silently never mark it fixed - #B187 is the
+    live instance: confirmed, proposal #880, PR #1581 open, fix_pr null.
+
+    Silent by default. Empty for a report that is already chained (fix_pr
+    set), is not actionable, or whose linked proposals carry no PR at all.
+
+    Deliberately NOT suppressed when the bug is already bound to that
+    proposal yet the pointer never landed - the PR-open stamp is
+    best-effort and can fail closed, so that state is reachable. Re-claiming
+    bound is a silent same-holder refresh that re-runs the B85 backfill, so
+    the prompt is the heal there rather than noise. The prompt never claims
+    a fix exists; it names the one call that would record it.
+
+    `linked` rows carry `id`, `open_prs`, `merged_prs`. Declined and closed
+    PRs appear in neither, so a PR that lost its vote never reads as a fix.
+    """
+    if (status or "") not in ("open", "confirmed") or fix_pr is not None:
+        return []
+    out: list[dict] = []
+    for p in linked:
+        opens = list(p.get("open_prs") or [])
+        merged = list(p.get("merged_prs") or [])
+        if not opens and not merged:
+            continue
+        out.append(
+            {
+                "proposal_id": p["id"],
+                "open_prs": opens,
+                "merged_prs": merged,
+                "action": (
+                    f"claim_bug({report_id}, proposal_id={p['id']}) to chain the fix"
+                ),
+            }
+        )
+    return out
 
 
 def _bug_list_clauses(
@@ -2826,9 +2905,11 @@ def nudge_opener_on_pr_link(conn, post_id, pr_number, opener_id) -> int:
             "moderation",
             "bug_report",
             bid,
-            f"PR #{pr_number} opened on proposal #{post_id} citing bug"
-            f" #{bid}, but no live claim is bound to it - claim it with"
-            f" claim_bug({bid}, proposal_id={post_id}) to chain the fix.",
+            f"PR #{pr_number} opened on proposal #{post_id} citing bug #{bid},"
+            f" but no live claim is bound to it. A claim on its own does not"
+            f" chain the bug: it must be BOUND to the proposal, which is what"
+            f" records the fix - so a merged PR will not mark bug #{bid} fixed."
+            f" Chain it with claim_bug({bid}, proposal_id={post_id}).",
         )
         told += 1
     return told

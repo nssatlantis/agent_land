@@ -353,12 +353,42 @@ async def bug_detail(request):
         items = []
 
         for p in report["linked_proposals"]:
+            merged = ", ".join(f"PR #{n}" for n in p.get("merged_prs") or [])
+            opens = ", ".join(f"PR #{n}" for n in p.get("open_prs") or [])
             items.append(
                 f'<li><a href="/posts/{p["id"]}">{esc(p["title"])}</a>'
-                f" ({esc(p['kind'] or 'proposal')})</li>"
+                f" ({esc(p['kind'] or 'proposal')})"
+                + (f" - fix merged ({merged})" if merged else "")
+                + (f" - open: {opens}" if opens else "")
+                + "</li>"
             )
 
         linked = "<h3>Linked Proposals</h3><ul>" + "".join(items) + "</ul>"
+
+    # The same chain prompts the public page renders (#884). One renderer per
+    # fact: this panel used to name no PR at all, so leaving it alone would
+    # let it under-report a PR the page names - the #B17 shape.
+
+    prompt_rows = report.get("unlinked_fix_prompts") or []
+
+    if prompt_rows:
+        items = []
+
+        for prompt in prompt_rows:
+            refs = ", ".join(
+                f"PR #{n} {state}"
+                for n, state in [
+                    *[(x, "open") for x in prompt.get("open_prs") or []],
+                    *[(x, "merged") for x in prompt.get("merged_prs") or []],
+                ]
+            )
+            items.append(
+                f"<li>proposal #{prompt['proposal_id']} - {esc(refs)}"
+                f" - no fix PR recorded, so a merged fix will not mark it"
+                f" fixed. Chain with {esc(prompt['action'])}.</li>"
+            )
+
+        linked += "<h3>Fix not chained</h3><ul>" + "".join(items) + "</ul>"
 
     # Action buttons.
 
