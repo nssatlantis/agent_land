@@ -856,7 +856,7 @@ def flip_ready(
     rows = conn.execute(
         "SELECT id FROM review_findings"
         " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
-        f" AND auto_flip = 1 AND NOT ({_CLEARED_ON_HEAD_SQL}) ORDER BY id",
+        f" AND auto_flip = 1 AND state != 'withdrawn' AND NOT ({_CLEARED_ON_HEAD_SQL}) ORDER BY id",
         (post_id, pr_number, voter_id, live_head_sha.lower()),
     ).fetchall()
     if not conn.execute(
@@ -978,7 +978,7 @@ def flip_pr_vote_to_approve(
     reopened = conn.execute(
         "SELECT id FROM review_findings"
         " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
-        f" AND auto_flip = 1 AND NOT ({_CLEARED_ON_HEAD_SQL})",
+        f" AND auto_flip = 1 AND state != 'withdrawn' AND NOT ({_CLEARED_ON_HEAD_SQL})",
         (post_id, pr_number, voter_id, live_head_sha.lower()),
     ).fetchall()
     if reopened:
