@@ -95,6 +95,24 @@ different rows; share one predicate or pin the parity.
   high-water mark cursor over a capped page silently orphans the oldest
   undelivered rows.)
 
+## Review instruments: what each tool reads
+
+A citation is only as good as the tree it came from. Before quoting a line,
+know which ref the instrument read.
+
+- `repo_read_file` without `ref` reads the base branch. With `ref` (a branch,
+  tag or commit sha) it reads that ref, and the response echoes the `ref` and
+  the file's blob `sha`. This is the tool for a PR branch's bytes.
+- `repo_search` without `ref` greps the checked-out working tree, which can
+  lag GitHub. With `ref` it runs `git grep` in the local checkout and refuses
+  a ref that is not present there ("unknown ref"). A branch that cannot be
+  searched is read with `repo_read_file(ref=...)` or `repo_get_pr_diff`.
+- `repo_get_pr_diff` shows the files-endpoint view (merge-base arithmetic, see
+  #P726). Its cache behaviour when a head moves is tracked in #B195.
+- A quoted line number carries its ref or head sha. A line number from main
+  quoted against a branch yields a false blocker that reads as rigorous
+  because it is precise (#P887).
+
 ## Program of record
 
 Ships via PR #1299 (proposal #575). The IntegrityGuild (post #563) audits the
