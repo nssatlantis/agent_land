@@ -50,6 +50,14 @@ _DECLINED_PR = 9160
 # silent PK collision is invisible in a test that does not look at PRs, and
 # it steals the row from whichever test runs later.
 _NONMUT_PR = 9161
+# A PR whose ONLY verdict is the merge ledger, with no proposal_outcomes row
+# at all. This is the shape that made absence-is-open wrong: decided, and
+# merged, and a query that buckets on outcome.status calls it in-flight.
+_MERGE_LEDGER_PR = 9162
+# Two proposals on ONE bug, each with its own PR, so the per-post_id bucketing
+# has more than one bucket to keep apart.
+_SPLIT_PR_A = 9163
+_SPLIT_PR_B = 9164
 
 # file_bug_report dedups on the title when neither side carries a URL, and
 # create_proposal dedups on the exact title too. So every fixture needs a
@@ -141,7 +149,7 @@ def test_action_names_the_exact_call():
 # --- wiring: the helper is actually called ---------------------------------
 
 
-def _fixture(status="confirmed", outcome=None, pr=None):
+def _fixture(status="confirmed", outcome=None, pr=None, merge_ledger=False):
     """A report linked to a proposal carrying a PR in the given state.
 
     `outcome` is what proposal_outcomes says: None means the PR is still
@@ -178,6 +186,12 @@ def _fixture(status="confirmed", outcome=None, pr=None):
                 " VALUES (?, ?, ?, ?)",
                 (pr, pid, outcome, "2026-09-30T00:00:00.000Z"),
             )
+        if merge_ledger:
+            # A merge verdict recorded ONLY here, with no proposal_outcomes
+            # row - the shape pr_decided_sql exists to catch.
+            conn.execute(
+                "INSERT OR IGNORE INTO pr_merges (pr_number) VALUES (?)", (pr,)
+            )
         conn.commit()
     return rid, pid, pr
 
@@ -206,12 +220,88 @@ def test_get_bug_report_wires_the_merged_case():
     assert len(report["unlinked_fix_prompts"]) == 1, report["unlinked_fix_prompts"]
 
 
+def test_merge_ledger_only_pr_is_merged_not_open():
+    """The pin that makes the decided-ness fix non-vacuous.
+
+    A PR can be decided by `pr_merges` with no `proposal_outcomes` row ever
+    written - #B107's "a PR merged on GitHub whose verdict row was never
+    written is decided, not in flight". Bucketing on the absence of an
+    outcome row calls this one OPEN, and the prompt then tells a citizen a
+    fix that already shipped "will not mark it fixed", which is the precise
+    false statement this change exists to remove.
+
+    On the pre-fix query this reds with the PR sitting in `open_prs`.
+    """
+    rid, pid, pr = _fixture(outcome=None, pr=_MERGE_LEDGER_PR, merge_ledger=True)
+    report = bug_mod.get_bug_report(rid)
+    row = next(p for p in report["linked_proposals"] if p["id"] == pid)
+    assert row["merged_prs"] == [pr], (
+        f"a merge-ledger verdict is MERGED, not open: {row}"
+    )
+    assert row["open_prs"] == [], f"and must not also read as in-flight: {row}"
+    # The prompt must still fire: the bug really is unchained, so the work is
+    # real. Only the PR's STATE was misreported, not the need.
+    prompts = report["unlinked_fix_prompts"]
+    assert len(prompts) == 1, prompts
+    assert prompts[0]["merged_prs"] == [pr], prompts
+    assert prompts[0]["open_prs"] == [], prompts
+
+
+def test_two_linked_proposals_bucket_independently():
+    """The query's one non-trivial new logic is the per-post_id bucketing.
+
+    Every other fixture links exactly ONE proposal, so a bug that leaked one
+    proposal's PRs into another's bucket would satisfy every other pin -
+    there is only ever one bucket to be right about. Two proposals, two PRs,
+    one bug, and each must see only its own.
+    """
+    tag = _tag()
+    rid = bug_mod.file_bug_report(
+        ALPHA["token"], f"split fixture {tag}", "body citing nothing yet"
+    )["id"]
+    pids = [
+        db.create_proposal(
+            ALPHA["token"], f"split fixture proposal {tag}{letter}", "fix"
+        )["post_id"]
+        for letter in ("a", "b")
+    ]
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "UPDATE bug_reports SET status = 'confirmed' WHERE id = ?", (rid,)
+        )
+        for pid in pids:
+            conn.execute(
+                "INSERT OR IGNORE INTO bug_report_links (report_id, post_id)"
+                " VALUES (?, ?)",
+                (rid, pid),
+            )
+        for pid, pr_number in ((pids[0], _SPLIT_PR_A), (pids[1], _SPLIT_PR_B)):
+            conn.execute(
+                "INSERT OR IGNORE INTO proposal_links (post_id, pr_number)"
+                " VALUES (?, ?)",
+                (pid, pr_number),
+            )
+        conn.commit()
+    report = bug_mod.get_bug_report(rid)
+    rows = {p["id"]: p for p in report["linked_proposals"]}
+    assert rows[pids[0]]["open_prs"] == [_SPLIT_PR_A], rows[pids[0]]
+    assert rows[pids[1]]["open_prs"] == [_SPLIT_PR_B], rows[pids[1]]
+    assert _SPLIT_PR_B not in rows[pids[0]]["open_prs"], "buckets leaked"
+    assert _SPLIT_PR_A not in rows[pids[1]]["open_prs"], "buckets leaked"
+
+
 def test_get_bug_report_is_non_mutating():
     """The load-bearing safety property: this is a READ.
 
-    Everything here is derived in the response dict. Nothing may write, and
-    in particular nothing may touch the claim - #B191 is what happens when
-    a mention moves a reservation.
+    Everything here is derived in the response dict, so the read must not
+    write - and in particular must not touch the claim, since #B191 is what
+    happens when a mention moves a reservation.
+
+    Scoped honestly: this snapshots the six columns the claim path lives on.
+    It is not a whole-row guarantee, and the docstring used to read as one -
+    a write to any OTHER column would pass it. Asserting all of them would
+    mean freezing a column list that has to be re-derived on every schema
+    change; naming the six is the trade I am willing to defend.
     """
     rid, _pid, _pr = _fixture(outcome=None, pr=_NONMUT_PR)
     cols = "status, fix_pr, claimed_by, claimed_at, claimed_proposal_id, updated_at"
