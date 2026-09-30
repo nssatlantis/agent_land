@@ -22,6 +22,7 @@ Env:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import hmac
 import json
 import os
@@ -31,7 +32,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 RUNNER_VERSION = 1
@@ -65,7 +65,16 @@ _CHECKS_TO_SCRIPT = {
 
 _mods: dict | None = None
 
-_START_TIME = time.time()
+# Filename of the digest ci_farm/install.sh records after `pip install`,
+# inside the data dir. Disk truth, not a process clock - see
+# _deps_fresh and #B189.
+_DEPS_STAMP = "deps.sha256"
+
+# What a stale venv earns, and the refusal /health reports. It names the
+# action that installs, because a restart re-imports this module and
+# would pass the check while leaving the venv untouched.
+_DEPS_STALE = "runner dependencies changed; re-run ci_farm/install.sh"
+
 _START_SHA: str | None = None  # checkout HEAD at startup, set by main()
 
 # Last thing that went wrong on THIS runner, reported verbatim by /health.
@@ -184,21 +193,75 @@ def _repo_moved() -> bool:
     return head is not None and head != _START_SHA
 
 
-def _deps_fresh(since: float, root: str | None = None) -> bool:
-    """True when neither requirements file changed since `since` (epoch).
+def _requirements_digest(root: str) -> str | None:
+    """sha256 over both requirements files, or None if either is unreadable.
 
-    A changed requirements file with a running pre-change process means a
-    stale venv: refuse work fail-loud instead of serving stale deps. A
-    missing file also reads stale (broken checkout, fail closed).
+    Content, not mtime: a checkout that moves without changing a
+    dependency must not read stale, and one that rewrites a file with
+    identical bytes must not read fresh.
     """
-    base = root if root is not None else _repo_root()
+    h = hashlib.sha256()
     for name in ("requirements.txt", "requirements-dev.txt"):
         try:
-            if os.path.getmtime(os.path.join(base, name)) > since:
-                return False
+            with open(os.path.join(root, name), "rb") as fh:
+                h.update(fh.read())
         except OSError:
-            return False
+            return None
+    return h.hexdigest()
+
+
+def _write_deps_stamp(data_dir: str | None = None, root: str | None = None) -> bool:
+    """Record the requirements digest this venv was built from.
+
+    Called by ci_farm/install.sh *through this module*, so the stamp and
+    the check that reads it are one implementation in one language. A
+    shell reimplementation of the digest would be a second convention to
+    keep in step, and its disagreement reads as 'stale' on a current venv.
+
+    Writes nothing and returns False when the digest is unreadable, so a
+    broken checkout cannot leave a stamp that vouches for it.
+    """
+    dd = data_dir if data_dir is not None else _data_dir()
+    base = root if root is not None else _repo_root()
+    digest = _requirements_digest(base)
+    if digest is None:
+        return False
+    try:
+        with open(os.path.join(dd, _DEPS_STAMP), "w", encoding="utf-8") as fh:
+            fh.write(digest + "\n")
+    except OSError:
+        # An unwritable data dir is the installer's problem to hear
+        # about, not a traceback out of a post-pip step: set -e turns
+        # this False into an aborted install.
+        return False
     return True
+
+
+def _deps_fresh(root: str | None = None, data_dir: str | None = None) -> bool:
+    """True when the checkout's requirements match the installed venv's.
+
+    The baseline is the stamp install.sh wrote after `pip install`, not a
+    process clock. A clock baseline is reset by everything that restarts a
+    process while leaving the venv alone - os.execv on a moved checkout,
+    systemctl restart, a crash loop - so the re-exec that correctly fixed
+    stale *code* silently served a stale *venv*, and the guard could not
+    observe the one population it exists for (#B189). A stamp on disk has
+    no such reset.
+
+    Fails closed: a missing stamp (new code, uninstalled venv) or an
+    unreadable requirements file both read stale.
+    """
+    base = root if root is not None else _repo_root()
+    dd = data_dir if data_dir is not None else _data_dir()
+    want = _requirements_digest(base)
+    if want is None:
+        return False
+    try:
+        with open(os.path.join(dd, _DEPS_STAMP), encoding="utf-8") as fh:
+            have = fh.read().strip()
+    except OSError:
+        return False
+    return have == want
 
 
 def _check_token(token: str, expected: str) -> bool:
@@ -462,13 +525,12 @@ class FarmHandler(BaseHTTPRequestHandler):
                     sys.stderr.write(f"ci_farm runner re-exec failed: {exc}\n")
                     self._json(500, {"error": "runner restart failed"})
                 return
-            if not _deps_fresh(_START_TIME):
-                # requirements*.txt changed since startup: the venv predates
-                # them. Fail loud (503) instead of serving stale dependencies.
-                _LAST_ERROR = "runner dependencies changed; restart the runner"
-                self._json(
-                    503, {"error": "runner dependencies changed; restart the runner"}
-                )
+            if not _deps_fresh():
+                # The checkout's requirements no longer match the digest
+                # install.sh stamped after pip install: this venv predates
+                # them. Fail loud (503) instead of serving stale deps.
+                _LAST_ERROR = _DEPS_STALE
+                self._json(503, {"error": _DEPS_STALE})
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))

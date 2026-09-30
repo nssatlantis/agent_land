@@ -6,6 +6,8 @@ modules), and the HTTP surface (health + 401 auth). No docker, no
 network beyond 127.0.0.1.
 """
 
+import importlib.util
+import inspect
 import os
 import sys
 import tempfile
@@ -223,6 +225,12 @@ def test_dispatch_parity_ignores_run_specific_summary_keys():
 
 
 def test_http_health_and_auth():
+    # An installed node carries the requirements stamp ci_farm/install.sh
+    # writes after pip install. Establish that precondition, or the runner's
+    # dependency guard answers 503 and the Content-Length arm below would be
+    # testing the guard rather than the body cap it names. Also a real
+    # assertion: the writer must work against the actual checkout.
+    assert runner._write_deps_stamp(data_dir=str(_TMP), root=str(_REPO_ROOT)) is True
     farm = runner.FarmRunner("127.0.0.1", 0, token="farm-test-token")
     t = threading.Thread(target=farm.serve_forever, daemon=True)
     t.start()
@@ -289,16 +297,82 @@ def test_repo_head_shape():
     assert head is None or runner._BASE_SHA_RE.fullmatch(head) is not None
 
 
-def test_deps_freshness():
-    """_deps_fresh: older requirements are fresh, newer-or-missing are stale."""
+def _seed_requirements(root: str, text: str = "x\n") -> None:
+    for name in ("requirements.txt", "requirements-dev.txt"):
+        Path(root, name).write_text(text, encoding="utf-8")
+
+
+def _fresh_runner_module():
+    """A second, independent module object from the same source file.
+
+    This is what os.execv produces, without disturbing the module object
+    the rest of this file holds - a plain importlib.reload would rebind
+    the functions other pins captured in their own finally blocks.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "ci_farm_runner_fresh", runner.__file__
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_deps_stamp_contract():
+    """_deps_fresh keys on the installer's stamp, not a process clock.
+
+    A stamp matching the current requirements passes; editing either file
+    fails; restoring the exact bytes passes again (content, not mtime); a
+    missing stamp, a missing root and an unwritable data dir all read stale.
+    """
     with tempfile.TemporaryDirectory() as tmp:
-        for name in ("requirements.txt", "requirements-dev.txt"):
-            Path(tmp, name).write_text("x\n", encoding="utf-8")
-        assert runner._deps_fresh(time.time() + 60, root=tmp) is True
-        Path(tmp, "requirements.txt").write_text("y\n", encoding="utf-8")
-        os.utime(Path(tmp, "requirements.txt"), (time.time() + 120,) * 2)
-        assert runner._deps_fresh(time.time(), root=tmp) is False
-        assert runner._deps_fresh(time.time(), root=str(Path(tmp, "nope"))) is False
+        root = os.path.join(tmp, "repo")
+        data = os.path.join(tmp, "data")
+        os.makedirs(root)
+        os.makedirs(data)
+        _seed_requirements(root)
+        # No stamp yet: a node carrying new code but an uninstalled venv.
+        assert runner._deps_fresh(root=root, data_dir=data) is False
+        assert runner._write_deps_stamp(data_dir=data, root=root) is True
+        assert runner._deps_fresh(root=root, data_dir=data) is True, (
+            "the stamp install.sh writes must satisfy the guard it exists for"
+        )
+        Path(root, "requirements-dev.txt").write_text("y\n", encoding="utf-8")
+        assert runner._deps_fresh(root=root, data_dir=data) is False
+        Path(root, "requirements-dev.txt").write_text("x\n", encoding="utf-8")
+        assert runner._deps_fresh(root=root, data_dir=data) is True
+        assert (
+            runner._deps_fresh(root=os.path.join(tmp, "nope"), data_dir=data) is False
+        )
+        assert (
+            runner._deps_fresh(root=root, data_dir=os.path.join(tmp, "nodir")) is False
+        )
+        assert (
+            runner._write_deps_stamp(data_dir=os.path.join(tmp, "nodir"), root=root)
+            is False
+        )
+
+
+def test_deps_guard_survives_a_fresh_import():
+    """The regression this change exists for (#B189).
+
+    A guard keyed on a process clock is disarmed by the very re-exec that
+    fixes stale code: os.execv re-imports the module, the baseline moves to
+    now, and the stale venv passes. There must be no input through which a
+    fresh import can re-arm it.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "repo")
+        data = os.path.join(tmp, "data")
+        os.makedirs(root)
+        os.makedirs(data)
+        _seed_requirements(root)
+        assert runner._write_deps_stamp(data_dir=data, root=root) is True
+        Path(root, "requirements.txt").write_text("new-dep\n", encoding="utf-8")
+        fresh = _fresh_runner_module()
+        assert fresh._deps_fresh(root=root, data_dir=data) is False, (
+            "a fresh import must not re-arm a stale venv"
+        )
+        assert "since" not in inspect.signature(fresh._deps_fresh).parameters
 
 
 def test_repo_moved_predicate():
@@ -353,11 +427,11 @@ def test_stale_gates_release_lock():
     orig_moved = runner._repo_moved
     orig_execv = _os.execv
     try:
-        runner._deps_fresh = lambda since: False
+        runner._deps_fresh = lambda *a, **k: False
         status, _ = _post(b"{}")
         assert status == 503, f"stale venv must fail loud, got {status}"
         _assert_lock_free()
-        runner._deps_fresh = lambda since: True
+        runner._deps_fresh = lambda *a, **k: True
         status, body = _post(
             json.dumps({"checks": "nope", "mode": "main"}).encode("utf-8")
         )
@@ -634,7 +708,11 @@ def _run_all_tests() -> int:
         ("test_http_health_and_auth", test_http_health_and_auth),
         ("test_import_side_effect_safety", test_import_side_effect_safety),
         ("test_repo_head_shape", test_repo_head_shape),
-        ("test_deps_freshness", test_deps_freshness),
+        ("test_deps_stamp_contract", test_deps_stamp_contract),
+        (
+            "test_deps_guard_survives_a_fresh_import",
+            test_deps_guard_survives_a_fresh_import,
+        ),
         ("test_repo_moved_predicate", test_repo_moved_predicate),
         ("test_stale_gates_release_lock", test_stale_gates_release_lock),
         (
