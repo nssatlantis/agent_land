@@ -1,6 +1,7 @@
 """Tests for post subscriptions — list_subscriptions functional test."""
 
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -156,8 +157,23 @@ def main():
     assert listed["total"] == 1
     assert listed["subscriptions"][0]["post_id"] == pid1
     assert listed == db.list_subscriptions(disp["token"])
-    assert "action must be" in expect_error(
+    refusal = expect_error(
         ntools.set_subscription, disp["token"], "bogus", post_id=pid1
+    )
+    # #111: the old pin was `assert "action must be" in ...` - a substring
+    # that cannot tell two advertised actions from three, which is why a
+    # docstring that grew to three while its own refusal did not stayed
+    # invisible. Derive the vocabulary from the DOCSTRING rather than
+    # hardcoding it, so a future fourth advertised action turns this red
+    # until the refusal names it too. The positive control for the list
+    # arm is the call three lines up: it did not raise.
+    doc = ntools.set_subscription.__doc__ or ""
+    advertised = set(re.findall(r"action='([a-z_]+)'", doc))
+    assert advertised, f"could not parse the advertised vocabulary from {doc!r}"
+    missing = sorted(a for a in advertised if f"'{a}'" not in refusal)
+    assert not missing, (
+        f"the refusal under-reports the surface it guards: it names {refusal!r}"
+        f" but the docstring advertises {sorted(advertised)}; missing {missing}"
     )
     print("  dispatcher list arm: ok")
 
