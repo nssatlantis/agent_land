@@ -64,18 +64,18 @@ FINDING_STATES = frozenset({"open", "resolved", "disputed", "stale"})
 # head-pinned question (verified AT the given head - used by the two
 # flip-path predicates, the only places that may cast a vote).
 _VERIFIED_SQL = "state = 'resolved' AND verified_by_agent_id IS NOT NULL"
-# Head pin, plus the anchor it was read at (proposal #875).  A remedy that
-# ships on another PR is witnessed against THAT pr's head, so the pin is
-# only meaningful beside the pr it was taken from - without it a
-# cross-anchored row's sha can never equal a reader's head and the row
-# reads as an open blocker forever.  COALESCE carries the
-# NULL-means-board-PR default, so every row written before the anchor
-# existed resolves to its own pr and behaves exactly as it did.
-_CLEARED_ON_HEAD_SQL = (
-    _VERIFIED_SQL
-    + " AND verified_head_sha = ?"
-    + " AND COALESCE(verified_pr_number, pr_number) = ?"
-)
+# Head pin ONLY.  The anchor it was read at (proposal #875) is NOT tested
+# here, and that is deliberate: the fragment takes ONE ? for the head, but
+# each row's attestation lives at its OWN anchor's head, so a single
+# placeholder cannot be right for a mixed set.  Binding the caller's board
+# pr - the obvious shortcut - makes the conjunct False for every
+# cross-anchored row, which silently BLOCKS a consent the finder gave and
+# leaves them at -1 while the row renders as verified to a human.  So the
+# anchor is resolved PER ROW by the caller (anchor_pr) and the head for
+# each is looked up there too; see flip_ready / flip_pr_vote_to_approve.
+# A remedy shipped on another PR is witnessed against THAT pr's head, so
+# the two facts must travel together.
+_CLEARED_ON_HEAD_SQL = _VERIFIED_SQL + " AND verified_head_sha = ?"
 
 
 def anchor_pr(row: dict) -> int:
@@ -914,33 +914,52 @@ def flip_ready(
     pr_number: int,
     voter_id: int,
     live_head_sha: str,
+    anchor_heads: dict[int, str] | None = None,
 ) -> dict:
     """Pure predicate: may this voter's -1 auto-flip on this PR?  All of:
     the voter holds a -1; they filed at least one auto_flip finding
     (that flag is the flip consent - with none, there is nothing they
     consented to); every auto_flip finding is independently verified;
-    every verification pins the live head.  Anything else reports why
-    not - the caller falls back to the advisory nudge."""
+    every verification pins the live head OF THE PR IT WAS READ AT.
+
+    That last clause is per-row (proposal #875): a finding whose remedy
+    shipped elsewhere was witnessed against that pr's head, so it is
+    cleared only when the SHA matches that anchor's live head - not the
+    board pr's.  `anchor_heads` supplies those heads ({pr_number: sha});
+    omit it and only the board pr is known, which leaves a cross-anchored
+    blocker BLOCKED (with reason) rather than falsely cleared - fail-closed,
+    never fail-open.  Anything else reports why not - the caller falls back
+    to the advisory nudge."""
     vote = conn.execute(
         "SELECT value FROM pr_votes WHERE pr_number = ? AND voter_id = ?",
         (pr_number, voter_id),
     ).fetchone()
     if vote is None or vote["value"] != -1:
         return {"ready": False, "reason": "no-minus-one"}
-    rows = conn.execute(
-        "SELECT id FROM review_findings"
+    # One query for the consented rows, then the cleared/not decision per
+    # row in Python against THAT row's anchor head (#83): a single shared
+    # placeholder cannot express a mixed-anchor set.
+    consented = conn.execute(
+        "SELECT id, pr_number, verified_head_sha, verified_pr_number,"
+        f" {_VERIFIED_SQL} AS verified FROM review_findings"
         " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
-        f" AND auto_flip = 1 AND NOT ({_CLEARED_ON_HEAD_SQL}) ORDER BY id",
-        (post_id, pr_number, voter_id, live_head_sha.lower(), pr_number),
-    ).fetchall()
-    if not conn.execute(
-        "SELECT 1 FROM review_findings"
-        " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
-        " AND auto_flip = 1",
+        " AND auto_flip = 1 ORDER BY id",
         (post_id, pr_number, voter_id),
-    ).fetchone():
+    ).fetchall()
+    if not consented:
         return {"ready": False, "reason": "no-consented-findings"}
-    open_ids = [r["id"] for r in rows]
+    board_head = live_head_sha.lower()
+    heads = {pr_number: board_head, **(anchor_heads or {})}
+    open_ids = [
+        r["id"]
+        for r in consented
+        if not (
+            r["verified"]
+            and r["verified_head_sha"]
+            and heads.get(int(anchor_pr(dict(r))))
+            == r["verified_head_sha"].lower()
+        )
+    ]
     if open_ids:
         return {"ready": False, "reason": "open-blockers", "finding_ids": open_ids}
     return {
