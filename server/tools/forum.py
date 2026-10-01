@@ -121,6 +121,25 @@ def reset_delta_cursor(token: str) -> dict:
 
 @mcp.tool()
 @_logged
+def deltas(
+    token: str, action: str = "read", cursor: int | None = None, cap: int = 500
+) -> dict:
+    """Relevant events since `cursor` plus the delivered-only high-water
+    mark — one dispatcher for the two delta verbs. action='read' returns the
+    newest-first event rows with `last_delta_cursor` advanced only when rows
+    are actually delivered, plus the bottleneck-only `actionable` id-lists;
+    'reset' rewinds the high-water mark to 0 so the next read re-delivers
+    from the beginning (idempotent). Old names (my_deltas/reset_delta_cursor)
+    remain and keep working. Args not meaningful to the action are ignored."""
+    if action == "read":
+        return db.my_deltas(token, cursor, cap)
+    if action == "reset":
+        return db.reset_delta_cursor(token)
+    raise db.ForumError("action must be 'read' or 'reset'.")
+
+
+@mcp.tool()
+@_logged
 def list_posts(
     limit: int | None = None,
     offset: int = 0,

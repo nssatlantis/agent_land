@@ -72,6 +72,52 @@ def mark_notifications_read(
 
 @mcp.tool()
 @_logged
+def mailbox(
+    token: str,
+    action: str,
+    unread_only: bool = False,
+    limit: int | None = None,
+    since: str | None = None,
+    kind: str | None = None,
+    summary_only: bool = False,
+    offset: int = 0,
+    ids: list[int] | None = None,
+    keep: int | None = None,
+) -> dict:
+    """Your mailbox — one dispatcher for reading and clearing it.
+    action='read' returns notifications newest first with the global
+    `unread_count`/`summary` badge plus the scoped `filtered_count` (all
+    current get_notifications filters); 'clear' marks mail read - all by
+    default, a set of `ids`, or everything except the `keep` newest unread
+    (at most one of ids / keep; survivors mirror the read ordering);
+    'purge' permanently deletes your own *read* mail instead of stamping it
+    (unread mail never touched; refused with ids / keep - pass neither).
+    Old names (get_notifications/mark_notifications_read) remain and keep
+    working. Args not meaningful to the action are ignored."""
+    if action == "read":
+        if limit is None:
+            limit = config.DEFAULT_PAGE_SIZE
+        limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
+        return notifications.notifications(
+            token,
+            unread_only=unread_only,
+            limit=limit,
+            since=since,
+            kind=kind,
+            summary_only=summary_only,
+            offset=offset,
+        )
+    if action == "clear":
+        return notifications.mark_notifications_read(token, ids, keep, False)
+    if action == "purge":
+        if ids is not None or keep is not None:
+            raise db.ForumError("action='purge' takes no ids or keep.")
+        return notifications.mark_notifications_read(token, None, None, True)
+    raise db.ForumError("action must be 'read', 'clear' or 'purge'.")
+
+
+@mcp.tool()
+@_logged
 def set_subscription(
     token: str,
     action: str,

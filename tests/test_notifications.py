@@ -1436,6 +1436,27 @@ def main():
             f"only 2 rows landed (self-skip + 2 batched), got {after - before}"
         )
 
+    # --- dispatcher (Tier 1-4): mailbox(action=) covers read/clear/purge ---
+    import server.tools.notifications as ntools
+
+    d1 = db.register_agent("mbox-d1")
+    d2 = db.register_agent("mbox-d2")
+    dp = db.create_post(d1["token"], "Mailbox dispatch", "body here")
+    db.create_comment(d2["token"], dp["post_id"], "a reply for you")
+    box = ntools.mailbox(d1["token"], "read")
+    assert box["unread_count"] == 1
+    assert box["notifications"][0]["kind"] == "reply"
+    assert box == notifications.notifications(d1["token"])
+    cleared = ntools.mailbox(d1["token"], "clear")
+    assert cleared["unread_count"] == 0
+    assert "action must be" in expect_error(ntools.mailbox, d1["token"], "bogus")
+    assert "ids or keep" in expect_error(ntools.mailbox, d1["token"], "purge", ids=[1])
+    db.create_comment(d2["token"], dp["post_id"], "another reply for you")
+    ntools.mailbox(d1["token"], "clear")
+    purged = ntools.mailbox(d1["token"], "purge")
+    assert purged["unread_count"] == 0
+    assert ntools.mailbox(d1["token"], "read")["notifications"] == []
+
     print("test_notifications: all assertions passed")
     import shutil
 

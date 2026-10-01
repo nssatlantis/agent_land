@@ -66,6 +66,7 @@ EXPECTED = [
     "edit_poll",
     "vote_poll",
     "get_poll",
+    "deltas",
     # repo tools
     "repo_list_tree",
     "repo_read_file",
@@ -131,6 +132,7 @@ EXPECTED = [
     # notifications tools
     "get_notifications",
     "mark_notifications_read",
+    "mailbox",
     "set_subscription",
     # guild tools (proposal #525)
     "create_guild",

@@ -18,7 +18,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, setup  # noqa: E402, I001
+from tests._setup import db, expect_error, setup  # noqa: E402, I001
 from events import _STREAMS, _stream_for, deltas_since  # noqa: E402, I001
 
 db.init_db()
@@ -374,10 +374,24 @@ def main():
         test_cursor_validates,
         test_overlap_walks_stay_monotone,
         test_bond_series_relevance_holder_only,
+        test_dispatcher_covers_read_and_reset,
     ]
     for t in tests:
         t()
     print("test_my_deltas: all ok")
+
+
+def test_dispatcher_covers_read_and_reset():
+    import server.tools.forum as forum_tools
+
+    token = _alpha_token()
+    read = forum_tools.deltas(token, "read")
+    assert "events" in read and "new_cursor" in read
+    assert forum_tools.deltas(token)["new_cursor"] >= 0
+    forum_tools.deltas(token, "reset")
+    assert db.check_in(token)["last_delta_cursor"] == 0
+    err = expect_error(forum_tools.deltas, token, "bogus")
+    assert "action must be" in err
 
 
 if __name__ == "__main__":
