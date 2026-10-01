@@ -5,6 +5,7 @@ file_bug_report, confidence tracking, #B references, viewer helpers.
 """
 
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -137,6 +138,101 @@ def test_list_filter(helpers):
     assert all_reports["reports"][0]["title"] == "Bug B"
     assert all_reports["reports"][1]["title"] == "Bug A"
     print("  list filter: ok")
+
+
+def _schema_bug_statuses() -> set[str]:
+    """The lifecycle states schema.sql's CHECK on bug_reports.status allows.
+
+    Parsed from the file rather than restated, so the db-side tuple and the
+    schema cannot drift apart unnoticed (proposal #888).
+    """
+    text = (Path(__file__).resolve().parent.parent / "schema.sql").read_text(
+        encoding="utf-8"
+    )
+    start = text.index("CREATE TABLE IF NOT EXISTS bug_reports (")
+    body = text[start : text.index(");", start)]
+    m = re.search(r"CHECK \(status IN \(([^)]*)\)\)", body, re.S)
+    assert m, "bug_reports.status CHECK not found in schema.sql"
+    return set(re.findall(r"'([^']+)'", m.group(1)))
+
+
+def test_list_status_enum_and_fields(helpers):
+    """status is refused when it is not a real state, and each row carries
+    the closure + second-bar fields the list used to omit (#888)."""
+    alpha = helpers["alpha"]
+
+    # The guard. Before it, this returned an empty page - i.e. a reader was
+    # told there was no work while confirmed bugs sat unclaimed.
+    try:
+        bug_mod.list_bug_reports(status="actionable")
+        assert False, "should have raised on a non-member status"
+    except db.ForumError as exc:
+        assert "status must be one of" in str(exc), str(exc)
+
+    # Every legal value still works, and the default still means everything.
+    # Note the loop's `>= 0` assertion cannot itself fail - the call raising
+    # is the pin - so the '' arm below asserts the MEANING rather than the
+    # absence of a raise, since a change that made '' match nothing would
+    # satisfy a bare no-raise check and still be wrong.
+    for st in ("open", "confirmed", "fixed", "resolved", "closed"):
+        assert bug_mod.list_bug_reports(status=st)["total"] >= 0
+    everything = bug_mod.list_bug_reports()
+    assert everything["total"] >= sum(
+        bug_mod.list_bug_reports(status=st)["total"]
+        for st in ("open", "confirmed", "fixed", "resolved", "closed")
+    )
+
+    # The FALSY class belongs in the population, not just the five real states
+    # (finding #95).  '' is what a bare `?status` query key parses to, and on
+    # main it meant "no filter, every row" because the query builder tests
+    # truthiness - so a guard testing identity turned /api/bugs?status= from
+    # 200 into 400.  A five-value loop that never carried the sixth value is
+    # the same under-populated fixture as the parity pin on #1592.
+    assert bug_mod.list_bug_reports(status="")["total"] == everything["total"], (
+        "'' must mean every state, exactly as omitting it does"
+    )
+
+    # The paging signal the list did not return at all before.
+    assert everything["offset"] == 0
+    page = bug_mod.list_bug_reports(limit=1, offset=0)
+    assert page["has_more"] is (page["total"] > 1)
+    last = bug_mod.list_bug_reports(limit=1, offset=max(0, everything["total"] - 1))
+    assert last["has_more"] is False
+
+    # The new fields are present on every row.
+    r = bug_mod.file_bug_report(alpha["token"], "Enum Bug", "body", None)
+    row = bug_mod.list_bug_reports(limit=1)["reports"][0]
+    for key in ("resolution", "resolution_note", "verified_at"):
+        assert key in row, f"{key} missing from the listed row: {sorted(row)}"
+    # One round, two readers, ONE shape. test_bug_fix_verification.py holds
+    # this too, and it is what caught an earlier draft of this PR that added
+    # verified_at to the list's round but not the detail reader's.
+    detail = bug_mod.get_bug_report(r["id"])["fix_round"]
+    assert row["fix_round"] == detail, (row["fix_round"], detail)
+    assert row["fix_round"] is None or "verified_at" in row["fix_round"]
+
+    # ...and one of them carries a value: a withdrawal now says it withdrew,
+    # which is the whole point (a dup close and an invalid close used to be
+    # indistinguishable on this surface).
+    bug_mod.resolve_bug_report(alpha["token"], r["id"], "invalid", note="not a bug")
+    closed = [
+        x
+        for x in bug_mod.list_bug_reports(status="closed")["reports"]
+        if x["id"] == r["id"]
+    ][0]
+    assert closed["resolution"] == "invalid", closed
+    assert closed["resolution_note"] == "not a bug", closed
+    print("  list status enum + fields: ok")
+
+
+def test_bug_status_enum_matches_schema():
+    """The db tuple and schema.sql's CHECK are the same set, both ways.
+
+    Without this, a state added to the schema and not to _BUG_STATUSES would
+    make that new state unlistable rather than turn CI red.
+    """
+    assert set(bug_mod._BUG_STATUSES) == _schema_bug_statuses()
+    print("  bug status enum matches schema: ok")
 
 
 def test_reference_expansion(helpers):
@@ -590,6 +686,8 @@ if __name__ == "__main__":
     test_different_urls_no_duplicate(helpers)
     test_fixed_bug(helpers)
     test_list_filter(helpers)
+    test_list_status_enum_and_fields(helpers)
+    test_bug_status_enum_matches_schema()
     test_reference_expansion(helpers)
     test_linked_proposals(helpers)
     test_viewer_bugs_page(helpers)
