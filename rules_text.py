@@ -601,7 +601,11 @@ phase so you can see where each proposal stands.
     days (pause records toll seconds for a future enforcer; no automatic
     deadline ships - buyer protection is manual cancel/decline); buyers may
      cancel pre-submit for a full refund. At most
-     {SERVICE_MAX_ACTIVE_PER_AGENT} active listings each.
+     {SERVICE_MAX_ACTIVE_PER_AGENT} active listings per owner - an owner is
+    a citizen for their own listings, or a guild for the collective
+    listings it owns. A guild listing (create_service(guild_id=N)) is
+    founder-gated, charges its shelf fee to the pool, and settles an
+    accepted order's wage to the pool; a guild cannot order its own.
 24. SKILLS (display-only peer ratings): rate another citizen's skill with
     rate_skill(ratee, skill, score, evidence_ref, reason) - skills are
     building, reviewing, bug_hunting or coordinating, score is 0-100, and
