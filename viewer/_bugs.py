@@ -30,6 +30,20 @@ _STATUS_COLORS = {
     "closed": "#64748b",
 }
 
+# One table, two pages: /bugs and /bugs/{id} must not describe the same row
+# two ways. Keys are exactly the return values of `db._bug_reports`'s
+# bug_work_state (proposal #867).
+_WORK_STATE_HELP = {
+    "unrecorded": (
+        "no claim and no fix PR are recorded - this is NOT 'available': "
+        "check the report body and its remarks for an in-flight PR"
+    ),
+    "released": "a claim on this lapsed; it is unheld again",
+    "claimed": "a live claim is holding it",
+    "fix_pr": "a fix PR is recorded against it",
+    "in_flight": "a live claim is held and a fix PR is at the bar",
+}
+
 
 @lru_cache(maxsize=16)
 def _status_badge_cached(status: str) -> str:
@@ -354,6 +368,19 @@ def bugs_page(request):
             if r.get("claimed_by")
             else ""
         )
+        # Only the states the card does not ALREADY show get a word: `claimed`
+        # renders as "claimed by X" and `fix_pr` as "fix: PR #N" a few lines
+        # up, so a word beside them would be noise. `unrecorded` is the one
+        # that earns the change - every field beside it is a null that reads
+        # as "free", and that silence is what makes a reader pick a bug whose
+        # fix has been on a branch for 21 commits (#867).
+        work_state = r.get("work_state")
+        work_help = _WORK_STATE_HELP.get(work_state, "")
+        work = (
+            f' · <span title="{esc(work_help)}">{esc(work_state)}</span>'
+            if work_help and work_state not in ("claimed", "fix_pr")
+            else ""
+        )
         binfo = bounties.get(r["id"])
         bounty = (
             f' · <a href="/jobs/{binfo["job_id"]}">bounty: job #{binfo["job_id"]}</a>'
@@ -378,7 +405,7 @@ def bugs_page(request):
             + '#sec-bugs" '
             f'style="color:{r.get("reporter_color") or "var(--accent)"}">'
             f"{esc(r['reporter_name'] or 'unknown')}</a>"
-            f"{_human_ts(r['created_at'])}{decided}{url_part}{dupes}{comments}{fix}{sol}{claimed}{bounty}{stale}"
+            f"{_human_ts(r['created_at'])}{decided}{url_part}{dupes}{comments}{fix}{sol}{claimed}{work}{bounty}{stale}"
             f"</div></div>"
         )
 
@@ -506,6 +533,19 @@ def bug_detail_page(request):
             f'style="color:{report.get("claimed_by_color") or "var(--accent)"}">'
             f"{esc(report['claimed_by_name'] or 'unknown')}</a>"
             f" {_human_ts(report['claimed_at'])}{bound}</td></tr>"
+        )
+
+    # The claim row above is `if report.get("claimed_by")` - which the detail
+    # projection CLEARS on a lapsed claim - so on this page a lapsed claim
+    # and no claim look identical. The state row is the one place a reader
+    # is told the difference (#867).
+    work_state = report.get("work_state")
+    work_state_row = ""
+    if work_state:
+        work_state_row = (
+            f"<tr><th>Work state</th>"
+            f'<td title="{esc(_WORK_STATE_HELP.get(work_state, ""))}">'
+            f"{esc(work_state)}</td></tr>"
         )
 
     decided_row = ""
@@ -697,6 +737,7 @@ def bug_detail_page(request):
         f"{dup_of}"
         f"{fix_row}"
         f"{claim_row}"
+        f"{work_state_row}"
         f"{bounty_row}"
         f"{decided_row}"
         f"{updated_row}"
