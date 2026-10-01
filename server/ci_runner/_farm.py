@@ -23,6 +23,7 @@ branch (pr_number) and named-tree runs are host-local and never dispatched.
 
 from __future__ import annotations
 
+import concurrent.futures as cf
 import hashlib
 import json
 import re
@@ -262,11 +263,18 @@ def _retry_local(
 # every branch-CI run would write a row claiming the farm declined it.
 SKIP_REASONS = (
     "no_runner_registered",
+    "disabled",
     "unhealthy",
     "at_capacity",
     "busy",
     "ineligible_tree",
 )
+# Probe budget for the admin panel. Concurrency AND a cap, because a serial
+# N-pings-at-CI_FARM_HTTP_TIMEOUT loop (default 8s) on a page that auto-reloads
+# every 5s while CI is in flight stacks overlapping to_thread renders on the
+# default executor - the probe becomes an amplifier of what it reports.
+FARM_PROBE_WORKERS = 8
+FARM_PROBE_MAX = 16
 # The runner's own ceilings, mirrored so a payload that would be rejected
 # after a multi-MB upload is refused before it is sent. The gate's own comment
 # records paying that upload "to learn the cap" as owed; this is the pre-check.
@@ -342,11 +350,15 @@ def tree_payload(
     sides run "current base + stored + incoming", and the payload that makes
     them equal is the UNION - not the request's newest delta alone.
 
-    The caller passes base_ref so try_dispatch's existing verification runs:
-    it checks the runner echoed the same ref and that executed_base_sha is a
-    40-hex equal to the reported base_sha. That is a post-dispatch check on
-    the real tree the runner used, and it costs no new machinery - it is the
-    same check #667 already relies on for stacked rehearsals.
+    base_ref is a TRUTHINESS PRE-CHECK ONLY. The caller passes it and this
+    function returns it in no form: it is not sent to the runner and it does
+    not build the payload, so the union's parity rests on the runner's own
+    default clone ref coinciding with github.base_branch() - a property nothing
+    here verifies. try_dispatch's executed_base_sha check does NOT run for this
+    lane either, because the caller passes base_ref=None: the runner's base_ref
+    echo is unverified on the live box, and guessing it makes every tree
+    dispatch fall back local, i.e. P2 silently delivering nothing. _runs.py
+    carries the authoritative statement of that gap and its residual exposure.
 
     Refuses rather than guesses. A tree is ineligible when it has no incoming
     delta to ship, or when the union would exceed the runner's ceilings -
@@ -414,7 +426,16 @@ def classify_no_pick() -> tuple[str, int]:
     if not rows:
         return "no_runner_registered", 0
     cap = max(0, int(config.CI_FARM_RUNNER_MAX_ACTIVE))
-    if cap and any(_ACTIVE_RUNS.get(r["id"], 0) >= cap for r in rows):
+    if cap == 0:
+        # pick_runner returns None at this same knob BEFORE it reads the
+        # registry or pings anything, so the recorded state says nothing about
+        # why. Falling through reported a deliberately switched-off farm as
+        # `unhealthy` - every runner down - which is the one confusion this
+        # whole feature exists to remove, produced by the operator's own
+        # off-switch. Tested before capacity: `cap and ...` skipped the check
+        # entirely at zero and dropped to the fall-through.
+        return "disabled", len(rows)
+    if any(_ACTIVE_RUNS.get(r["id"], 0) >= cap for r in rows):
         return "at_capacity", len(rows)
     if any(str(r.get("status") or "") == "busy" for r in rows):
         return "busy", len(rows)
@@ -430,9 +451,26 @@ def probe_runners() -> list[dict]:
     would destroy the one thing that column means. A failed ping here reports
     reachable=False and writes nothing, so viewing the panel can never change
     what it reports.
+
+    Probed CONCURRENTLY and capped at FARM_PROBE_MAX - see
+    FARM_PROBE_WORKERS for why the serial version was an amplifier rather than
+    a probe. Returns one entry per probed runner and nothing else; a caller
+    that renders a cap must disclose it, because showing 16 of 20 registered
+    runners and saying nothing reads as "those are all of them".
     """
+    rows = list_runners()
+    if not rows:
+        return []
+    shown = rows[:FARM_PROBE_MAX]
+
+    def _ping_row(row: dict) -> dict | None:
+        return _ping(row.get("url") or "", row.get("token") or "")
+
+    workers = min(FARM_PROBE_WORKERS, len(shown))
+    with cf.ThreadPoolExecutor(max_workers=workers) as pool:
+        pings = list(pool.map(_ping_row, shown))
     out: list[dict] = []
-    for row in list_runners():
+    for row, ping in zip(shown, pings, strict=True):
         entry: dict = {
             "id": row.get("id"),
             "name": str(row.get("name") or ""),
@@ -442,14 +480,17 @@ def probe_runners() -> list[dict]:
         }
         if str(row.get("status") or "") == "removed":
             entry["reachable"] = None
-            out.append(entry)
-            continue
-        ping = _ping(row.get("url") or "", row.get("token") or "")
-        entry["reachable"] = ping is not None
-        if ping is not None:
-            entry["busy"] = bool(ping.get("busy"))
-            entry["head_sha"] = _runner_head_sha(ping)
+        else:
+            entry["reachable"] = ping is not None
+            if ping is not None:
+                entry["busy"] = bool(ping.get("busy"))
+                entry["head_sha"] = _runner_head_sha(ping)
         out.append(entry)
+    # No sentinel row for the overflow. The panel keys its lookup on
+    # int(p["id"]), so an id=None entry would raise inside that comprehension
+    # and degrade EVERY runner to "not probed" - trading a disclosed cap for a
+    # silent false negative. The caller discloses the cap instead, which is
+    # where the disclosure has to be rendered anyway.
     return out
 
 
@@ -544,6 +585,24 @@ def dispatch_to_runner(runner: dict, payload: dict) -> dict | None:
     rid = runner.get("id")
     url = (runner.get("url") or "").rstrip("/") + "/run"
     if rid is None or not runner.get("url"):
+        # Release explicitly: the finally below is the normal release path, but
+        # this return sits BEFORE the try, so it stranded the slot pick_runner
+        # had already reserved. A stranded _ACTIVE_RUNS entry holds that
+        # runner at its cap until remove_runner - the one failure here with no
+        # self-clearing path. Unreachable today (registration rejects an empty
+        # or non-http url, and pick_runner cannot ping one), so this is a guard
+        # on a latent leak rather than a live one.
+        if rid is not None:
+            _release(rid)
+        runner["_dispatch_reason"] = DISPATCH_REJECTED
+        return None
+    try:
+        body = json.dumps(payload).encode("utf-8")
+    except Exception:
+        # domain: degrade-silently - a payload we cannot serialise was never
+        # sent, so nothing ran remotely: release the slot and say rejected, not
+        # may_have_executed. Same reason the build sits inside its own try.
+        _release(rid)
         runner["_dispatch_reason"] = DISPATCH_REJECTED
         return None
     headers = {"Content-Type": "application/json"}
@@ -552,7 +611,7 @@ def dispatch_to_runner(runner: dict, payload: dict) -> dict | None:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(
         url,
-        data=json.dumps(payload).encode("utf-8"),
+        data=body,
         headers=headers,
         method="POST",
     )

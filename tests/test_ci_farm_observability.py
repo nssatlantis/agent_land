@@ -104,10 +104,10 @@ def test_skip_reason_vocabulary_is_closed():
     )
 
 
-def test_classify_no_pick_tells_four_populations_apart():
-    """An empty pick must be attributable: no runner, all unhealthy, all at
-    the server cap, or all busy - decided from the registry state the failed
-    attempt already wrote.
+def test_classify_no_pick_tells_five_populations_apart():
+    """An empty pick must be attributable: no runner, dispatch disabled, all
+    unhealthy, all at the server cap, or all busy - decided from the registry
+    state the failed attempt already wrote.
 
     Each arm builds a real row, so none is a population the code cannot reach.
     The precedence arm matters too: with two runners, one at cap and one
@@ -142,17 +142,40 @@ def test_classify_no_pick_tells_four_populations_apart():
                 with farm._ACTIVE_LOCK:
                     farm._ACTIVE_RUNS.pop(a["id"], None)
 
-        # A cap of zero admits nothing, so "at capacity" is vacuous and the
-        # answer must fall through to recorded state rather than claim a
-        # capacity problem that cannot exist.
+        # A cap of zero admits nothing, so "at capacity" cannot exist.
+        # pick_runner returns at that knob BEFORE it reads the registry, so
+        # the recorded state says nothing about the reason and the only honest
+        # answer is that dispatch is switched off.
+        #
+        # Both runners are marked healthy first. The previous version of this
+        # arm left runner b marked busy from the arm above, so it asserted
+        # "busy" and was satisfied by the status branch - it never reached the
+        # fall-through it claimed to test, and would have passed against code
+        # that reported a switched-off farm as unhealthy. The arm has to build
+        # the population it names.
+        farm._mark(b["id"], "healthy")
+        farm._mark(a["id"], "healthy")
         with mock.patch.object(config, "CI_FARM_RUNNER_MAX_ACTIVE", 0):
             with farm._ACTIVE_LOCK:
                 farm._ACTIVE_RUNS[a["id"]] = 99
             try:
-                assert farm.classify_no_pick()[0] == "busy"
+                reason, count = farm.classify_no_pick()
+                assert reason == "disabled", (
+                    f"a zero cap is the operator switching dispatch off, not "
+                    f"runners being down; got {reason!r}"
+                )
+                assert reason != "unhealthy", (
+                    "reporting 'unhealthy' for a deliberately disabled farm is "
+                    "the exact confusion this vocabulary exists to remove"
+                )
+                assert count == 2, f"got {count}"
             finally:
                 with farm._ACTIVE_LOCK:
                     farm._ACTIVE_RUNS.pop(a["id"], None)
+        assert "disabled" in farm.SKIP_REASONS, (
+            "a reason the classifier can return must be in the closed "
+            "vocabulary, or log_skip coerces it to 'unhealthy' on the way out"
+        )
     finally:
         farm.remove_runner(a["id"])
         farm.remove_runner(b["id"])
@@ -572,7 +595,73 @@ def test_a_tree_with_no_store_at_all_is_empty_not_indeterminate():
         trees_mod._retire_dir(tree)
 
 
+def test_the_tree_payload_and_its_skip_are_gated_on_farm_eligibility():
+    """Declared SOURCE-SHAPE pin, because driving run_checks end-to-end is not
+    cheap: it acquires slots and can execute a suite. Everything it asserts is
+    a decision run_checks itself makes before touching the farm.
+
+    The block that built the tree payload and logged `ineligible_tree` used to
+    sit ABOVE the farm gate. With CI_FARM_ENABLED at its default of 0 that
+    wrote a public ci_farm_skipped row on every named-tree run - asserting the
+    farm declined a dispatch it was never offered, which is the precise
+    contract SKIP_REASONS' own comment forbids ("never a shape the gate refused
+    by design"). It also paid the whole payload read to produce that row.
+
+    Two arms, because the ordering alone is not the property: the gate must be
+    evaluated first AND the tree block must be conditioned on it.
+    """
+    import inspect
+
+    import server.ci_runner._runs as runs_mod
+
+    src = inspect.getsource(runs_mod.run_checks)
+    gate_at = src.index("farm_eligible = (")
+    tree_at = src.index("_farm_mod.tree_payload(")
+    assert gate_at < tree_at, (
+        "eligibility must be decided before the payload is built; with the "
+        "farm off, an ungated build writes a skip row claiming a farm "
+        "interaction that never happened"
+    )
+    assert "if farm_eligible and tree is not None:" in src, (
+        "the tree payload block must be gated on farm_eligible, not on `tree` "
+        "alone - `tree is not None` is true for every named rehearsal"
+    )
+    assert "if farm_eligible and (tree is None or farm_files is not None):" in src, (
+        "the dispatch guard must carry the same predicate, or a refused tree "
+        "still reaches try_dispatch"
+    )
+
+
+def test_a_runner_without_a_url_releases_the_slot_pick_runner_took():
+    """Latent-leak guard. pick_runner reserves the active-run slot BEFORE
+    dispatch, and dispatch_to_runner's rid/url guard used to return before the
+    try/finally that releases it - so a runner dict that got past registration
+    with no url would sit at its cap until remove_runner cleared it, the one
+    failure in this module with no self-clearing path.
+
+    Unreachable through register_runner (it refuses an empty or non-http url),
+    which is exactly why it needs a pin: the state cannot be produced by the
+    public surface, so nothing else would notice the guard going away.
+    """
+    released: list = []
+    runner = {"id": 7, "url": "", "name": "no-url"}
+    with mock.patch.object(farm, "_release", side_effect=released.append):
+        assert (
+            farm.dispatch_to_runner(runner, {"checks": "tests", "mode": "main"}) is None
+        )
+    assert released == [7], (
+        f"the slot pick_runner reserved must be released on this path, got {released}"
+    )
+    assert runner["_dispatch_reason"] == farm.DISPATCH_REJECTED, (
+        "a runner with no url was never sent a request, so it is rejected - "
+        "not may_have_executed"
+    )
+
+
 def main() -> None:
+    test_classify_no_pick_tells_five_populations_apart()
+    test_the_tree_payload_and_its_skip_are_gated_on_farm_eligibility()
+    test_a_runner_without_a_url_releases_the_slot_pick_runner_took()
     test_tree_payload_ships_the_union_not_just_the_newest_delta()
     test_a_corrupt_stored_delta_makes_the_tree_indeterminate()
     test_a_tree_with_no_store_at_all_is_empty_not_indeterminate()
@@ -580,7 +669,6 @@ def main() -> None:
     test_named_tree_deltas_is_read_only_and_absent_safe()
     test_the_test_lane_consults_the_payload_decision()
     test_skip_reason_vocabulary_is_closed()
-    test_classify_no_pick_tells_four_populations_apart()
     test_probe_runners_is_read_only()
     test_dispatch_to_runner_splits_rejected_from_may_have_run()
     test_try_dispatch_409_is_a_skip_and_not_a_failure()

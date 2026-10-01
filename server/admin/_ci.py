@@ -769,6 +769,18 @@ def _render_ci_dashboard(request) -> str:
             f'<input type="hidden" name="runner_id" value="{esc(str(_fr.get("id")))}">'
             f'<button type="submit">Remove</button></form></td></tr>'
         )
+    # The probe is capped (FARM_PROBE_MAX) and probed concurrently, so
+    # disclose the shortfall instead of letting a truncated table read as the
+    # whole registry - the same false all-clear this panel exists to remove.
+    # Counted off _farm_probe, so a failed probe (degraded to {}) reports as
+    # "not probed" honestly rather than being counted as absent runners.
+    _probed = len(_farm_probe)
+    if _probed and _probed < len(_farm_rows):
+        _farm_trs += (
+            f'<tr><td colspan=6 style="color:var(--muted)">'
+            f"{len(_farm_rows) - _probed} more registered, not probed "
+            f"(probe cap {_farm_mod.FARM_PROBE_MAX})</td></tr>"
+        )
     # NOTE: "last successful dispatch" is stamped only by a successful
     # pick_runner dispatch, so on an idle farm it reads "-" whether the box is
     # off or simply unused. The `live` column is the honest one: it pings now.
@@ -781,7 +793,7 @@ def _render_ci_dashboard(request) -> str:
         "bearer token: <code>CIFARM_TOKEN=&lt;token&gt; ci_farm/install.sh</code>.</p>"
         '<div class="table-wrap"><table><tr><th>name</th><th>url</th>'
         "<th>status</th><th>live</th><th>last successful dispatch</th><th></th></tr>"
-        + (_farm_trs or "<tr><td colspan=5>no runners registered</td></tr>")
+        + (_farm_trs or "<tr><td colspan=6>no runners registered</td></tr>")
         + "</table></div>"
         + (
             "<p style=color:var(--muted)>" + esc(_farm_error) + "</p>"
