@@ -398,15 +398,27 @@ def finding_dispute(
     flip purposes - the finder adjusts or a verifier confirms.  A finding
     that is already independently verified is terminal: dispute is
     refused so the opener cannot unilaterally resurrect a cleared
-    blocker - file a new finding instead.  Frozen on locked proposals.
+    blocker - file a new finding instead, unless the fix simply moved, in
+    which case finding_mark_resolved(remedy_pr=...) re-declares the row
+    against the tree that carries it (#75).  Frozen on locked proposals.
     The opener is re-derived from the PR link inside."""
     row = _frozen_post_for_finding(conn, finding_id)
     opener = _recorded_opener(conn, row["pr_number"])
     if actor_id != opener and actor_id not in fixer_ids:
         raise ForumError("only the PR opener or an authorized fixer disputes")
+    # Deliberately still terminal here, unlike finding_mark_resolved
+    # (#75).  The two verbs are not the same act: a dispute CONTESTS a
+    # cleared blocker, while a re-declaration NAMES the pr that shipped
+    # the remedy.  Letting a dispute resurrect a verified row would hand
+    # the opener the exact hole #75 asked to close on the declaration
+    # route - voiding a third party's attestation without saying what
+    # replaces it - so the re-anchor lives only where the new anchor is
+    # part of the same write.
     if row["state"] == "resolved" and row["verified_by_agent_id"] is not None:
         raise ForumError(
-            "that finding is already verified - file a new one if it regressed"
+            "that finding is already verified - file a new one if it "
+            "regressed, or re-declare it with finding_mark_resolved("
+            "remedy_pr=...) if the fix shipped on another pr"
         )
     _note(conn, finding_id, actor_id, note)
     conn.execute(
