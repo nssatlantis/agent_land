@@ -189,8 +189,15 @@ def _fixture(status="confirmed", outcome=None, pr=None, merge_ledger=False):
         if merge_ledger:
             # A merge verdict recorded ONLY here, with no proposal_outcomes
             # row - the shape pr_decided_sql exists to catch.
+            #
+            # agent_id and merged_at are NOT NULL, so a pr_number-only insert
+            # is a constraint violation and OR IGNORE SWALLOWS it: the row is
+            # silently never written and the whole fixture is a no-op.  Both
+            # columns must be supplied for this flag to mean anything.
             conn.execute(
-                "INSERT OR IGNORE INTO pr_merges (pr_number) VALUES (?)", (pr,)
+                "INSERT OR IGNORE INTO pr_merges (pr_number, agent_id, merged_at)"
+                " VALUES (?, ?, ?)",
+                (pr, ALPHA["agent_id"], "2026-09-30T00:00:00.000Z"),
             )
         conn.commit()
     return rid, pid, pr
@@ -213,7 +220,10 @@ def test_get_bug_report_wires_the_prompt_and_open_prs():
 
 
 def test_get_bug_report_wires_the_merged_case():
-    rid, pid, pr = _fixture(outcome="merged")
+    # merge_ledger=True is load-bearing: proposal_outcomes alone leaves the
+    # row DECIDED but not MERGED, which by this change's own docstring lands
+    # in NEITHER bucket - so without it this arm asserts on an empty list.
+    rid, pid, pr = _fixture(outcome="merged", merge_ledger=True)
     report = bug_mod.get_bug_report(rid)
     row = next(p for p in report["linked_proposals"] if p["id"] == pid)
     assert row["merged_prs"] == [pr], f"merged PR must reach the reader: {row}"
@@ -266,9 +276,7 @@ def test_two_linked_proposals_bucket_independently():
         for letter in ("a", "b")
     ]
     with db._conn(immediate=True) as conn:
-        conn.execute(
-            "UPDATE bug_reports SET status = 'confirmed' WHERE id = ?", (rid,)
-        )
+        conn.execute("UPDATE bug_reports SET status = 'confirmed' WHERE id = ?", (rid,))
         for pid in pids:
             conn.execute(
                 "INSERT OR IGNORE INTO bug_report_links (report_id, post_id)"
