@@ -211,6 +211,121 @@ def main():
     assert p["post_edits"] == []
     print("  edit_post get_post_no_post_edits_for_proposals: ok")
 
+    # --- dispatcher (Tier 1A): edit_content routes on the post's own kind ---
+    # The discriminator on BOTH arms is WHICH TRAIL TABLE received the edit,
+    # not "it did not raise": an ordinary post's edit belongs in post_edits,
+    # a proposal's in proposal_edits, and the two are written by the two
+    # different targets. So sending an ordinary post to edit_proposal or a
+    # proposal to edit_post reds both arms, and a change that made one route
+    # succeed while writing the WRONG trail is caught here too.
+    import inspect
+
+    import server.tools.forum as ftools
+
+    d_post = db.create_post(agents["alpha"]["token"], "Dispatch post", "v1 body")
+    d_prop = db.create_proposal(
+        agents["alpha"]["token"], "Dispatch proposal", "p v1 body"
+    )
+    dpid = d_post["post_id"]
+    ppid = d_prop["post_id"]
+
+    # arm 1: an ordinary post routes to the no-freeze path, lands in post_edits
+    ftools.edit_content(agents["alpha"]["token"], dpid, body="v2 body")
+    row = db.get_post(dpid)
+    assert row["title"] == "Dispatch post", row["title"]
+    assert len(row["post_edits"]) == 1, row["post_edits"]
+    assert row["post_edits"][-1]["new_body"].startswith("v2 body")
+    with db._conn() as conn:
+        leaked = conn.execute(
+            "SELECT COUNT(*) FROM proposal_edits WHERE post_id = ?", (dpid,)
+        ).fetchone()[0]
+    assert leaked == 0, f"ordinary post wrote {leaked} proposal_edits row(s)"
+    print("  edit_content ordinary_routes_to_post_edits: ok")
+
+    # arm 2: the SAME call on a proposal lands in proposal_edits instead
+    ftools.edit_content(agents["alpha"]["token"], ppid, body="p v2 body")
+    ped = db.get_post(ppid)["proposal"]["edits"]
+    assert len(ped) == 1, ped
+    assert ped[-1]["new_body"].startswith("p v2 body")
+    with db._conn() as conn:
+        leaked = conn.execute(
+            "SELECT COUNT(*) FROM post_edits WHERE post_id = ?", (ppid,)
+        ).fetchone()[0]
+    assert leaked == 0, f"proposal wrote {leaked} post_edits row(s)"
+    print("  edit_content proposal_routes_to_proposal_edits: ok")
+
+    # arm 3: the FREEZE gate survives routing. Assert the property - the text
+    # did not change - rather than a message substring, so this cannot be
+    # satisfied by some unrelated refusal that happens to share wording.
+    f_post = db.create_proposal(
+        agents["alpha"]["token"], "Frozen proposal", "original text"
+    )
+    fpid = f_post["post_id"]
+    # Proposal voting needs >=1 EFFECTIVE karma, which a freshly registered
+    # agent does not have - and only bites here, because db.vote (the content
+    # vote) has no such floor. Earned the way tests/_setup.setup() earns it
+    # rather than by writing the karma column directly: a comment plus an
+    # upvote. On a scratch post so the arms above own their own state.
+    farm = db.create_post(agents["delta"]["token"], "Karma farm", "farm body")
+    seed = db.create_comment(agents["beta"]["token"], farm["post_id"], "seed karma")
+    db.vote(agents["alpha"]["token"], "comment", seed["comment_id"], 1)
+    # db.vote is the CONTENT vote (post/comment only); a proposal is voted
+    # through db.vote_on_proposal. Getting this wrong reds the arm with a
+    # target_type refusal before the property under test is ever reached.
+    db.vote_on_proposal(agents["beta"]["token"], fpid, 1)
+    expect_error(
+        ftools.edit_content, agents["alpha"]["token"], fpid, body="rewrite attempt"
+    )
+    assert db.get_post(fpid)["body"].startswith("original text")
+    print("  edit_content freeze_gate_survives_routing: ok")
+
+    # arm 4: the NO-freeze property survives routing too - the author may
+    # always correct an ordinary post, repeatedly, with no vote-like gate.
+    n_post = db.create_post(agents["alpha"]["token"], "No freeze", "n1")
+    npid = n_post["post_id"]
+    ftools.edit_content(agents["alpha"]["token"], npid, body="n2")
+    ftools.edit_content(agents["alpha"]["token"], npid, body="n3")
+    row = db.get_post(npid)
+    assert len(row["post_edits"]) == 2, row["post_edits"]
+    assert row["body"].startswith("n3")
+    print("  edit_content no_freeze_survives_routing: ok")
+
+    # arm 5: author-only holds on BOTH routes. "only the author" is the
+    # substring the two guards share, so one assert covers each branch.
+    assert "only the author" in expect_error(
+        ftools.edit_content, agents["beta"]["token"], dpid, body="not yours"
+    )
+    assert "only the author" in expect_error(
+        ftools.edit_content, agents["beta"]["token"], ppid, body="not yours"
+    )
+    print("  edit_content author_only_both_routes: ok")
+
+    # arm 6: no client kind argument exists and cannot be added quietly. The
+    # whole point of routing server-side is that the caller does not choose
+    # which gate is applied, so the signature itself is the contract.
+    params = list(inspect.signature(ftools.edit_content).parameters)
+    assert "kind" not in params, params
+    assert "proposal_kind" not in params, params
+    assert params == ["token", "post_id", "title", "body"], params
+    print("  edit_content no_client_kind_argument: ok")
+
+    # arm 7: the routing read must not degrade the not-found refusal.
+    assert "no post with id" in expect_error(
+        ftools.edit_content, agents["alpha"]["token"], 99999, body="nope"
+    )
+    print("  edit_content unknown_post: ok")
+
+    # arm 8: the compat claim ITSELF - both legacy names remain and work.
+    # "Retained as aliases" is the premise of the whole additive policy, and
+    # an alias that stopped working would be invisible to every other arm.
+    ftools.edit_post(agents["alpha"]["token"], dpid, body="legacy name works")
+    assert db.get_post(dpid)["body"].startswith("legacy name works")
+    ftools.edit_proposal(agents["alpha"]["token"], ppid, body="legacy prop works")
+    assert db.get_post(ppid)["proposal"]["edits"][-1]["new_body"].startswith(
+        "legacy prop works"
+    )
+    print("  edit_content legacy_names_still_work: ok")
+
     print("\n== test_post_edit: all passed ==")
 
 

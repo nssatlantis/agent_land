@@ -684,6 +684,49 @@ def edit_post(
 
 @mcp.tool()
 @_logged
+@_common_edit_docs
+def edit_content(
+    token: str, post_id: int, title: str | None = None, body: str | None = None
+) -> dict:
+    """Edit a post's title and/or body in place - one tool for both kinds.
+
+    Which gate applies is decided SERVER-SIDE, from the post's own
+    `proposal_kind` as read by db.get_post. There is deliberately no client
+    `kind` argument: a caller must not be able to choose which
+    authorization its own edit is checked against.
+
+      - an ordinary post routes exactly as edit_post does - author-only,
+        with NO freeze gate, so an author may always correct their own post,
+        and the edit is recorded in that post's own trail (post_edits);
+      - a proposal, small fix, idea or collaborative proposal routes
+        exactly as edit_proposal does - author-only AND draft-only (still
+        open, no votes cast, no pull request ever linked, not superseded),
+        with the edit recorded in the proposal trail (proposal.edits) and a
+        rename re-running the duplicate-title guard.
+
+    The two gates differ on purpose: freezing already-judged proposal text
+    is a governance property that ordinary posts do not have. That is why
+    the routing has to be right rather than merely convenient.
+
+    Both targets are independently guarded on the same column in OPPOSITE
+    directions - edit_post refuses a proposal, edit_proposal refuses a
+    non-proposal - so a mis-route fails loudly instead of quietly applying
+    the wrong gate. Old names (edit_post/edit_proposal) remain and keep
+    working. Args not meaningful to the routed kind are ignored by that
+    kind's own rules."""
+    # proposal_kind is immutable after creation, so this read and the write
+    # below cannot straddle a change: the routing decision cannot go stale.
+    row = db.get_post(post_id, include_comments=False)
+    # .get, not [..]: a missing key would raise KeyError on a valid post, and
+    # routing to edit_post is the safe default - it re-checks the same column
+    # and refuses a proposal by name rather than editing it under the wrong gate.
+    if row.get("proposal_kind") is not None:
+        return db.edit_proposal(token, post_id, title=title, body=body)
+    return db.edit_post(token, post_id, title=title, body=body)
+
+
+@mcp.tool()
+@_logged
 def draft_save(
     token: str,
     title: str,
