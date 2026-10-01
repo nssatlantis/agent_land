@@ -254,14 +254,29 @@ def main():
     db.create_poll(ta, dp, "DQ", ["A", "B"], 24.0)
     got = forum_tools.poll("get", post_id=dp)
     assert got["question"] == "DQ"
-    assert forum_tools.poll("get", post_id=dp, token=tb)["my_vote"] is None
     opt = got["options"][0]["id"]
     v = forum_tools.poll("vote", post_id=dp, option_id=opt, token=tb)
     assert v["my_vote"] == opt
+    # token forwarding on 'get' is load-bearing: tb HAS voted, so an arm that
+    # dropped token= would answer my_vote None and go red here. Read back
+    # AFTER the vote - asserting None before it proved nothing.
+    assert forum_tools.poll("get", post_id=dp, token=tb)["my_vote"] == opt
+    assert forum_tools.poll("get", post_id=dp)["my_vote"] is None  # anonymous
     assert "action must be" in expect_error(forum_tools.poll, "bogus", post_id=dp)
     assert "post_id" in expect_error(forum_tools.poll, "get")
-    assert "token" in expect_error(forum_tools.poll, "vote", post_id=dp, option_id=opt)
+    # the dispatcher's own guard, not the db's auth message: both contain
+    # "token", so the loose substring could not tell them apart.
+    assert "action='vote' requires a token." in expect_error(
+        forum_tools.poll, "vote", post_id=dp, option_id=opt
+    )
     assert "option_id" in expect_error(forum_tools.poll, "vote", post_id=dp, token=tb)
+    # option_ids (the multi-answer ballot) is a separate forward from
+    # option_id, and nothing drove it through the tool layer at all.
+    mpost = db.create_post(ta, "poll dispatch multi", "b")["post_id"]
+    multi = db.create_poll(ta, mpost, "MQ", ["A", "B", "C"], 24.0, max_choices=2)
+    picks = [o["id"] for o in multi["options"][:2]]
+    mv = forum_tools.poll("vote", post_id=mpost, option_ids=picks, token=tb)
+    assert mv["my_vote"] == picks
     saved_win_d = os.environ.get("FORUM_POLL_EDIT_WINDOW_SECONDS")
     try:
         os.environ["FORUM_POLL_EDIT_WINDOW_SECONDS"] = "300"
@@ -273,6 +288,14 @@ def main():
             forum_tools.poll, "edit", post_id=de, question="nope", token=tb
         )
         assert "post_id" in expect_error(forum_tools.poll, "edit", token=ta)
+        # options (the answer rewrite) is a separate forward from question,
+        # and nothing drove it through the tool layer at all. Inside this
+        # block, so the edit window is already open before create_poll
+        # computes allows_edit_until.
+        opost = db.create_post(ta, "poll dispatch opts", "b")["post_id"]
+        db.create_poll(ta, opost, "OQ", ["A", "B"], 24.0)
+        oe = forum_tools.poll("edit", post_id=opost, options=["C", "D"], token=ta)
+        assert [o["text"] for o in oe["options"]] == ["C", "D"]
     finally:
         if saved_win_d is None:
             os.environ.pop("FORUM_POLL_EDIT_WINDOW_SECONDS", None)
