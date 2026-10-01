@@ -6,6 +6,8 @@ modules), and the HTTP surface (health + 401 auth). No docker, no
 network beyond 127.0.0.1.
 """
 
+import importlib.util
+import inspect
 import os
 import sys
 import tempfile
@@ -223,6 +225,12 @@ def test_dispatch_parity_ignores_run_specific_summary_keys():
 
 
 def test_http_health_and_auth():
+    # An installed node carries the requirements stamp ci_farm/install.sh
+    # writes after pip install. Establish that precondition, or the runner's
+    # dependency guard answers 503 and the Content-Length arm below would be
+    # testing the guard rather than the body cap it names. Also a real
+    # assertion: the writer must work against the actual checkout.
+    assert runner._write_deps_stamp(data_dir=str(_TMP), root=str(_REPO_ROOT)) is True
     farm = runner.FarmRunner("127.0.0.1", 0, token="farm-test-token")
     t = threading.Thread(target=farm.serve_forever, daemon=True)
     t.start()
@@ -289,16 +297,82 @@ def test_repo_head_shape():
     assert head is None or runner._BASE_SHA_RE.fullmatch(head) is not None
 
 
-def test_deps_freshness():
-    """_deps_fresh: older requirements are fresh, newer-or-missing are stale."""
+def _seed_requirements(root: str, text: str = "x\n") -> None:
+    for name in ("requirements.txt", "requirements-dev.txt"):
+        Path(root, name).write_text(text, encoding="utf-8")
+
+
+def _fresh_runner_module():
+    """A second, independent module object from the same source file.
+
+    This is what os.execv produces, without disturbing the module object
+    the rest of this file holds - a plain importlib.reload would rebind
+    the functions other pins captured in their own finally blocks.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "ci_farm_runner_fresh", runner.__file__
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_deps_stamp_contract():
+    """_deps_fresh keys on the installer's stamp, not a process clock.
+
+    A stamp matching the current requirements passes; editing either file
+    fails; restoring the exact bytes passes again (content, not mtime); a
+    missing stamp, a missing root and an unwritable data dir all read stale.
+    """
     with tempfile.TemporaryDirectory() as tmp:
-        for name in ("requirements.txt", "requirements-dev.txt"):
-            Path(tmp, name).write_text("x\n", encoding="utf-8")
-        assert runner._deps_fresh(time.time() + 60, root=tmp) is True
-        Path(tmp, "requirements.txt").write_text("y\n", encoding="utf-8")
-        os.utime(Path(tmp, "requirements.txt"), (time.time() + 120,) * 2)
-        assert runner._deps_fresh(time.time(), root=tmp) is False
-        assert runner._deps_fresh(time.time(), root=str(Path(tmp, "nope"))) is False
+        root = os.path.join(tmp, "repo")
+        data = os.path.join(tmp, "data")
+        os.makedirs(root)
+        os.makedirs(data)
+        _seed_requirements(root)
+        # No stamp yet: a node carrying new code but an uninstalled venv.
+        assert runner._deps_fresh(root=root, data_dir=data) is False
+        assert runner._write_deps_stamp(data_dir=data, root=root) is True
+        assert runner._deps_fresh(root=root, data_dir=data) is True, (
+            "the stamp install.sh writes must satisfy the guard it exists for"
+        )
+        Path(root, "requirements-dev.txt").write_text("y\n", encoding="utf-8")
+        assert runner._deps_fresh(root=root, data_dir=data) is False
+        Path(root, "requirements-dev.txt").write_text("x\n", encoding="utf-8")
+        assert runner._deps_fresh(root=root, data_dir=data) is True
+        assert (
+            runner._deps_fresh(root=os.path.join(tmp, "nope"), data_dir=data) is False
+        )
+        assert (
+            runner._deps_fresh(root=root, data_dir=os.path.join(tmp, "nodir")) is False
+        )
+        assert (
+            runner._write_deps_stamp(data_dir=os.path.join(tmp, "nodir"), root=root)
+            is False
+        )
+
+
+def test_deps_guard_survives_a_fresh_import():
+    """The regression this change exists for (#B189).
+
+    A guard keyed on a process clock is disarmed by the very re-exec that
+    fixes stale code: os.execv re-imports the module, the baseline moves to
+    now, and the stale venv passes. There must be no input through which a
+    fresh import can re-arm it.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "repo")
+        data = os.path.join(tmp, "data")
+        os.makedirs(root)
+        os.makedirs(data)
+        _seed_requirements(root)
+        assert runner._write_deps_stamp(data_dir=data, root=root) is True
+        Path(root, "requirements.txt").write_text("new-dep\n", encoding="utf-8")
+        fresh = _fresh_runner_module()
+        assert fresh._deps_fresh(root=root, data_dir=data) is False, (
+            "a fresh import must not re-arm a stale venv"
+        )
+        assert "since" not in inspect.signature(fresh._deps_fresh).parameters
 
 
 def test_repo_moved_predicate():
@@ -353,11 +427,11 @@ def test_stale_gates_release_lock():
     orig_moved = runner._repo_moved
     orig_execv = _os.execv
     try:
-        runner._deps_fresh = lambda since: False
+        runner._deps_fresh = lambda *a, **k: False
         status, _ = _post(b"{}")
         assert status == 503, f"stale venv must fail loud, got {status}"
         _assert_lock_free()
-        runner._deps_fresh = lambda since: True
+        runner._deps_fresh = lambda *a, **k: True
         status, body = _post(
             json.dumps({"checks": "nope", "mode": "main"}).encode("utf-8")
         )
@@ -602,6 +676,141 @@ def test_last_error_tracks_runner_refusals():
     assert runner._result_error({"ok": False, "summary": {}}) is None
 
 
+class _FakeFarmConn:
+    """Minimal db._conn stand-in so pick_runner can be driven without a DB.
+
+    This file sets FORUM_DB_PATH but never calls tests/_setup.setup(), so the
+    real registry is not available here. Seeding a fixture larger than the fix
+    would be the wrong trade; the seam is still driven through the REAL
+    pick_runner, _runner_head_sha and _map_and_log.
+    """
+
+    ROW = {"id": 7, "name": "node-1", "url": "http://node", "token": ""}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, _sql, _params=()):
+        return self
+
+    def fetchall(self):
+        return [dict(self.ROW)]
+
+    def fetchone(self):
+        return dict(self.ROW)
+
+
+def test_runner_head_sha_validation():
+    """A runner that will not name its tree must not get a plausible one.
+
+    Uppercase hex is REJECTED, deliberately. _farm's own _COMMIT_RE is
+    lowercase-anchored, so an uppercase sha is dropped rather than written to
+    the ledger. Dropping is the safe direction: absence reads as "unknown",
+    never as "current". The runner emits lowercase anyway (git rev-parse), and
+    loosening _COMMIT_RE would widen a check try_dispatch also applies to
+    executed_base_sha - not this fix's business.
+    """
+    import server.ci_runner._farm as farm
+
+    good = "b" * 40
+    assert farm._runner_head_sha({"head_sha": good}) == good
+    for bad in (
+        "A" * 40,
+        "deadbeef",
+        "b" * 39,
+        "b" * 41,
+        "Z" * 40,
+        7,
+        None,
+        [],
+        {"a": 1},
+        True,
+    ):
+        assert farm._runner_head_sha({"head_sha": bad}) is None, bad
+    assert farm._runner_head_sha({}) is None
+
+
+def test_runner_head_sha_reaches_ledger():
+    """#B190's payload key must reach the ledger, and must NOT be conflated
+    with the ledger's existing `head_sha` - that one is the freshly-fetched
+    TESTED TREE, this one is the runner's pinned ORCHESTRATION checkout. Two
+    different facts; an empty run must write neither as the other.
+    """
+    import server.ci_runner._farm as farm
+
+    captured: dict = {}
+
+    def _capture(*_a, **k):
+        captured.clear()
+        captured.update(k.get("detail") or {})
+
+    remote = {
+        "ok": True,
+        "checks": "tests",
+        "mode": "main",
+        "local": False,
+        "head_sha": "a" * 40,
+    }
+    with mock.patch.object(farm.events, "log_event", side_effect=_capture):
+        farm._map_and_log(
+            remote,
+            "tests",
+            1,
+            "tester",
+            "ci_run",
+            None,
+            {"name": "node-1", "_runner_head_sha": "b" * 40},
+        )
+    assert captured.get("runner_head_sha") == "b" * 40
+    assert captured.get("head_sha") == "a" * 40, "tree sha must survive unchanged"
+    assert captured["runner_head_sha"] != captured["head_sha"]
+
+    # Nothing is written when the runner would not say - absence must not read
+    # as "current".
+    with mock.patch.object(farm.events, "log_event", side_effect=_capture):
+        farm._map_and_log(
+            remote,
+            "tests",
+            1,
+            "tester",
+            "ci_run",
+            None,
+            {"name": "node-1"},
+        )
+    assert "runner_head_sha" not in captured
+    assert captured.get("head_sha") == "a" * 40
+
+
+def test_pick_runner_carries_checkout_sha():
+    """The seam #B190 names: pick_runner holds the ping and must carry the
+    runner's own checkout sha onto the row it returns, so it reaches both the
+    success ledger and the dropped-dispatch audit.
+    """
+    import server.ci_runner._farm as farm
+
+    sha = "c" * 40
+    picked = None
+    try:
+        with (
+            mock.patch.object(farm.config, "CI_FARM_RUNNER_MAX_ACTIVE", 4),
+            mock.patch.object(farm.db, "_conn", return_value=_FakeFarmConn()),
+            mock.patch.object(
+                farm,
+                "_ping",
+                return_value={"ok": True, "busy": False, "head_sha": sha},
+            ),
+        ):
+            picked = farm.pick_runner()
+        assert picked is not None, "a healthy runner must still be picked"
+        assert picked.get("_runner_head_sha") == sha
+    finally:
+        if picked is not None and picked.get("id") is not None:
+            farm._release(picked["id"])
+
+
 def _run_all_tests() -> int:
     """Run all test functions, print PASS/FAIL per test, return exit code."""
     tests = [
@@ -634,7 +843,17 @@ def _run_all_tests() -> int:
         ("test_http_health_and_auth", test_http_health_and_auth),
         ("test_import_side_effect_safety", test_import_side_effect_safety),
         ("test_repo_head_shape", test_repo_head_shape),
-        ("test_deps_freshness", test_deps_freshness),
+        ("test_deps_stamp_contract", test_deps_stamp_contract),
+        (
+            "test_deps_guard_survives_a_fresh_import",
+            test_deps_guard_survives_a_fresh_import,
+        ),
+        ("test_runner_head_sha_validation", test_runner_head_sha_validation),
+        ("test_runner_head_sha_reaches_ledger", test_runner_head_sha_reaches_ledger),
+        (
+            "test_pick_runner_carries_checkout_sha",
+            test_pick_runner_carries_checkout_sha,
+        ),
         ("test_repo_moved_predicate", test_repo_moved_predicate),
         ("test_stale_gates_release_lock", test_stale_gates_release_lock),
         (

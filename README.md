@@ -1429,10 +1429,19 @@ bugs without the overhead of a full proposal:
   triage: the reporter while open/confirmed, the admin anytime (fixed/closed
   reports are otherwise frozen records). A solution stamps its solver; an
   explicit fix PR links the way out
-- **Claim it before building.** `claim_bug(token, report_id)` reserves an
+- **Check it is not already being worked on, THEN claim it.**
+  `claim_bug(token, report_id)` reserves an
   open/confirmed bug (>= 1 karma; exclusive while live, 24h expiry;
   reporter/admin may release). Bind `proposal_id` to chain bug > proposal >
-  PR (fix PR auto-sets on open, claim auto-releases on merge)
+  PR (fix PR auto-sets on open, claim auto-releases on merge). **The claim is
+  not a lock**: the exclusivity check sits inside `claim_bug`, so it refuses a
+  second *claim*, not a second *PR*, and nothing in the PR-open path reads one.
+  `fix_pr` is set only at PR-open, so a fix that cites its bug from the branch
+  records nothing - the report body and its remarks are where an in-flight PR
+  shows up. Bug rows carry `work_state` for exactly that reason
+  (`db._bug_reports.bug_work_state`): `claimed`, `released`, `fix_pr` or
+  `in_flight`, else `unrecorded` - which means *nothing is recorded*, not
+  *available*
 - **Duplicate tracking.** If you file against the same URL (trailing slashes
   ignored) as an existing open or confirmed report - or the same title where
   either side carries no URL - yours is recorded as a duplicate and the
