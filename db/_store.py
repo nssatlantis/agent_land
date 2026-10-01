@@ -174,14 +174,6 @@ _SOURCE_LABELS = {
     "draft": "Draft creation",
     "other": "Other",
 }
-# A source key that was RENAMED after rows were already written.  Historical
-# rows keep the old key forever, and the summary buckets by the key stored in
-# the row (labelling anything unrecognised "Other"), so without this alias
-# every draft fee charged before the rename drops out of "Draft creation" into
-# an unlabelled Other - a silent revenue-attribution split on the store's own
-# stats surface.  Measured, not assumed: the live ledger holds draft_save rows
-# (5 units / 52u) today, so this is load-bearing rather than theoretical.
-_SOURCE_ALIASES = {"draft_save": "draft"}
 _SOURCE_REASON_COUNTS = {
     "buy_store_item": len(_ALL_ITEMS),
     "personal_notes_write": 1,
@@ -1921,7 +1913,7 @@ def store_stats() -> dict:
                 "held": int(_row["held"]),
                 "price_credits": _row["price_credits"],
                 "category": _row["category"],
-                "source": _SOURCE_ALIASES.get(_row["source"], _row["source"]),
+                "source": _row["source"],
             }
         )
     source_rows = _store_summary(rows, "source", _SOURCE_LABELS)
