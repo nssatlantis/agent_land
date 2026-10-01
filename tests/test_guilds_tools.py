@@ -9,6 +9,7 @@ copy is asserted, not reworded.
 import os
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_guilds_tools_"))
@@ -251,7 +252,12 @@ def test_chat_and_polls_wrappers():
     gone = gtools.delete_guild_chat(founder["token"], posted["message_id"])
     assert gone["deleted"], gone
     poll = gtools.create_guild_poll(
-        mate["token"], gid, "ship it?", "2026-10-01T00:00:00.000Z"
+        mate["token"],
+        gid,
+        "ship it?",
+        (datetime.now(timezone.utc) + timedelta(hours=1)).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z"
+        ),
     )
     ballot = gtools.vote_guild_poll(founder["token"], poll["poll_id"], "yes")
     assert ballot["choice"] == "yes", ballot
