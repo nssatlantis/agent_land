@@ -146,6 +146,25 @@ def _ping(url: str, token: str) -> dict | None:
         return None
 
 
+def _runner_head_sha(ping: dict) -> str | None:
+    """The runner's OWN checkout sha from /health, validated, or None.
+
+    Deliberately NOT folded into the ledger's `head_sha`: that field is
+    the tested TREE's sha (origin/main, fetched fresh per run), while
+    this is the pinned ORCHESTRATION code the runner imported at startup -
+    the half that can actually go stale, and the half the parity claim in
+    this module's header rests on (#B190).
+
+    A value that is not a 40-hex sha is dropped rather than laundered,
+    matching how output_sha256 is handled in _map_and_log below: a runner
+    that will not name its tree must not get a plausible-looking one.
+    """
+    sha = ping.get("head_sha")
+    if isinstance(sha, str) and _COMMIT_RE.fullmatch(sha) is not None:
+        return sha
+    return None
+
+
 def _release(runner_id: int) -> None:
     """Release one reserved active-run slot, never retaining a negative count."""
     with _ACTIVE_LOCK:
@@ -188,6 +207,7 @@ def _audit_dispatch_failed(
                 "checks": checks,
                 "lane": lane,
                 "error": reason[:200],
+                "runner_head_sha": runner.get("_runner_head_sha"),
             },
         )
     except Exception:
@@ -260,7 +280,12 @@ def pick_runner() -> dict | None:
             fresh = conn.execute(
                 "SELECT * FROM ci_runners WHERE id = ?", (row["id"],)
             ).fetchone()
-        return _row_to_dict(fresh)
+        picked = _row_to_dict(fresh)
+        # /health publishes this and pick_runner used to read only
+        # `ping is None` and `ping.get("busy")`, so the one field that could
+        # falsify the parity claim crossed the wire and was discarded.
+        picked["_runner_head_sha"] = _runner_head_sha(ping)
+        return picked
     return None
 
 
@@ -389,6 +414,9 @@ def _map_and_log(
         "head_sha": result.get("head_sha"),
         "runner": runner["name"],
     }
+    runner_sha = runner.get("_runner_head_sha")
+    if runner_sha is not None:
+        detail["runner_head_sha"] = runner_sha
     if result.get("local"):
         detail["local"] = True
         for key in ("base_ref", "base_sha", "executed_base_sha"):

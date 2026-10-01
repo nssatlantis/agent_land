@@ -856,6 +856,151 @@ def test_merge_base_requires_owner():
     print("  repo_merge_base refuses a non-owner before any git work: ok")
 
 
+def test_branch_refs_reads_nested_and_flat_payloads():
+    """_branch_refs reads head/base off a caller-supplied PR payload. Two
+    shapes reach it: the raw API's nested form and get_pr's flattened one
+    (#B184). A payload with no usable ref must refuse rather than fall back
+    to a default branch that may not be this PR's base."""
+    from github._gitops import _branch_refs
+
+    nested = {"state": "open", "head": {"ref": "feature"}, "base": {"ref": "main"}}
+    flat = {"state": "open", "head": "feature", "base": "main"}
+    assert _branch_refs(nested) == ("feature", "main")
+    assert _branch_refs(flat) == ("feature", "main")
+    # A ref that passes the guard must come back stripped: the contract is
+    # "resolves a ref, or raises", true of the VALUE returned and not only of
+    # the test applied to it. Both shapes - the padding must survive the
+    # nested .get("ref") hop as well as the flat read.
+    padded_nested = {
+        "state": "open",
+        "head": {"ref": " feature\n"},
+        "base": {"ref": " main "},
+    }
+    padded_flat = {"state": "open", "head": "\tfeature", "base": "main "}
+    assert _branch_refs(padded_nested) == ("feature", "main")
+    assert _branch_refs(padded_flat) == ("feature", "main")
+
+    for bad, label in (
+        ({"state": "open", "head": None, "base": "main"}, "head=None"),
+        ({"state": "open", "head": {"ref": None}, "base": "main"}, "ref=None"),
+        ({"state": "open", "head": "", "base": "main"}, "empty head"),
+        ({"state": "open", "head": "feature", "base": ""}, "empty base"),
+        ({"state": "open", "base": "main"}, "no head key"),
+        ({"state": "open", "head": "feature"}, "no base key"),
+    ):
+        try:
+            _branch_refs(bad)
+            assert False, f"should have raised RepoError on {label}"
+        except github.RepoError:
+            pass
+    print("  _branch_refs reads both shapes and refuses an absent ref: ok")
+
+
+def test_repo_merge_base_accepts_the_get_pr_shape():
+    """The seam #B184 lives on: repo_merge_base passes get_pr's flattened
+    payload into merge_base_clean, which read pr["head"]["ref"] and raised
+    TypeError before the fix. Drives the real tool and the real merge."""
+    import config as _config
+    import server.tools.repo._findings as findings
+    import server.tools.repo._pr_ops as pr_ops
+
+    tmp, bare = _mk_rebase_fixture()
+    # get_pr's shape - head/base flattened to bare strings (github/_reads.py).
+    pr_data = {
+        "number": 42,
+        "title": "a pr",
+        "body": "",
+        "head": "feature",
+        "base": "main",
+        "author": "alice",
+        "state": "open",
+        "outcome": "open",
+        "mergeable": None,
+        "mergeable_state": "behind",
+        "commits": 1,
+        "created_at": "2026-01-01T00:00:00Z",
+        "html_url": "https://example.invalid/pr/42",
+        "checks": {},
+        "comments": [],
+        "files": [],
+    }
+    _advance_main(tmp, bare, "behind.txt", "behind\n", "move main ahead")
+    try:
+        with (
+            _force_temp_workspace(),
+            patch("github._core._ensure_token"),
+            patch("github._gitops._repo_url", return_value=bare),
+            patch("github._core._invalidate_pr"),
+            patch.object(_config, "DATA_DIR", tmp),
+            patch.object(pr_ops.db, "require_active_agent"),
+            patch.object(pr_ops.db, "require_active"),
+            patch.object(pr_ops.db, "_conn", return_value=MagicMock()),
+            patch.object(
+                pr_ops.db, "whoami", return_value={"name": "alice", "agent_id": 1}
+            ),
+            patch.object(
+                pr_ops.db, "pr_opener", return_value={"name": "alice", "agent_id": 1}
+            ),
+            patch.object(pr_ops.db, "agent_id_for_token", return_value=None),
+            patch.object(pr_ops.db, "record_tool_call"),
+            patch.object(pr_ops.github, "aget_pr", new=AsyncMock(return_value=pr_data)),
+            patch.object(findings, "_stale_and_refresh", new=AsyncMock()),
+        ):
+            res = asyncio.run(pr_ops.repo_merge_base("tok", 42))
+        assert res["status"] == "merged", res
+        assert res["head"] == "feature" and res["base"] == "main", res
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("  repo_merge_base survives get_pr's flattened payload: ok")
+
+
+def test_get_pr_flattens_head_and_base():
+    """Ties the flat fixture above to the reader that produces it, by DRIVING
+    that reader. A text-over-file pin cannot do this job: ``_reads.py``
+    carries the same ``"head": pr["head"]["ref"],`` line in ``pr_diff`` and
+    ``pr_commits`` too, so a substring check stays green even when ``get_pr``
+    alone reverts to nested - which is precisely when the fixture the seam pin
+    feeds in becomes fiction."""
+    import github._checks as checks
+    import github._reads as reads
+
+    raw = {
+        "number": 42,
+        "title": "a pr",
+        "body": "",
+        "head": {"ref": "feature", "sha": "a" * 40},
+        "base": {"ref": "main", "sha": "b" * 40},
+        "user": {"login": "alice"},
+        "state": "open",
+        "mergeable": None,
+        "mergeable_state": "behind",
+        "commits": 1,
+        "created_at": "2026-01-01T00:00:00Z",
+        "html_url": "https://example.invalid/pr/42",
+    }
+
+    class _NoCache:
+        """get_pr caches on a TTLCache whose methods are read-only
+        attributes, so the cache object itself is replaced, not its .get."""
+
+        def get(self, key, default=None):
+            return None
+
+        def set(self, key, value):
+            pass
+
+    with (
+        patch.object(reads._core, "_pr_cache", _NoCache()),
+        patch.object(checks, "_checks_for_head", return_value={}),
+        patch.object(reads, "pr_comments", return_value=[]),
+        patch.object(reads, "pr_files", return_value=[]),
+    ):
+        res = reads.get_pr(42, _pr=raw)
+    assert res["head"] == "feature" and isinstance(res["head"], str), res
+    assert res["base"] == "main" and isinstance(res["base"], str), res
+    print("  get_pr returns flattened head/base strings: ok")
+
+
 # ---- runner ---------------------------------------------------------------
 
 
@@ -899,6 +1044,9 @@ def main():
     test_merge_base_clean_up_to_date()
     test_merge_base_clean_conflicts_points_at_resolve()
     test_merge_base_requires_owner()
+    test_branch_refs_reads_nested_and_flat_payloads()
+    test_repo_merge_base_accepts_the_get_pr_shape()
+    test_get_pr_flattens_head_and_base()
     print("test_merge_conflict: all assertions passed")
 
 

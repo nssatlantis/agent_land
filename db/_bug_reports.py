@@ -652,6 +652,61 @@ def _release_bug_claim(conn, report_id, force=False) -> bool:
     return True
 
 
+def bug_work_state(claimed_by, claimed_at, fix_pr) -> str:
+    """One honest answer to "is work on this bug recorded?" (proposal #867).
+
+    Five states, and the axis is LIVENESS x fix_pr rather than the two raw
+    columns - the claim a reader sees is not the claim in the row:
+
+      ``unrecorded``  nothing is recorded. This is NOT "available": the
+                      bug>fix linkage is written only at PR-open, so a fix
+                      that cites its bug from the branch records neither
+                      column (#B176), and nothing in these columns can tell
+                      that apart from an untouched bug
+      ``released``    a claim is still stored but has lapsed - unheld again,
+                      and that is a fact the reader can act on
+      ``claimed``     a live claim, no recorded fix
+      ``fix_pr``      a recorded fix PR, no live claim
+      ``in_flight``   a live claim AND a recorded fix PR - the window every
+                      correctly-wired in-flight fix passes through
+
+    There is deliberately no ``free`` state. ``free`` and ``unrecorded`` are
+    indistinguishable from the columns available here, and that
+    indistinguishability IS bug #176 - so a ``free`` state would manufacture
+    the exact false confidence this predicate exists to prevent. The same
+    argument is why ``released`` is split out of ``unrecorded``: a lapsed
+    claim is a fact a reader can act on, and collapsing it into either
+    neighbour loses it.
+
+    Takes the three column values rather than a conn/row so it is pure and
+    trivially pinnable, and so every consumer asks it the identical question.
+    ONE definition, consumed by the list projection, the detail projection,
+    the bug nudge and the viewer: when four surfaces answer "is this being
+    worked on?", a shared predicate is the only thing that stops them drifting
+    into four private answers.
+
+    Callers pass the RAW claimed_by/claimed_at, never the ``if live else
+    None`` values the projections emit. Handing it a pre-cleared claim makes
+    a lapsed claim indistinguishable from no claim by construction, which is
+    the disagreement this predicate exists to remove.
+
+    ``fix_pr`` of 0 would be a bug's own falsy-id, not a missing fix, so the
+    None test is explicit rather than truthiness.
+    """
+    live = _bug_claim_live(claimed_by, claimed_at)
+    if live:
+        return "in_flight" if fix_pr is not None else "claimed"
+    if fix_pr is not None:
+        return "fix_pr"
+    # A claim still stored but past its window. Only _release_bug_claim
+    # clears these columns, so a lapsed row is distinguishable from one
+    # nobody ever touched - and "the claim on this expired" is the fact a
+    # reader most needs and can least infer from a null.
+    if claimed_by:
+        return "released"
+    return "unrecorded"
+
+
 def claim_bug(token, report_id, action="claim", proposal_id=None, admin="") -> dict:
     """Reserve a bug report before building the fix (or let go early).
     action is 'claim' (the default) or 'release' - anything else raises.
@@ -1854,6 +1909,12 @@ def get_bug_report(report_id: int) -> dict:
             "solved_by_name": row["solved_by_name"],
             "solved_at": row["solved_at"],
             "fix_pr": row["fix_pr"],
+            # Raw columns, for the reason the predicate's docstring gives:
+            # the `if claim_live else None` keys below CLEAR a lapsed claim,
+            # so feeding those in would make `released` unreachable here.
+            "work_state": bug_work_state(
+                row["claimed_by"], row["claimed_at"], row["fix_pr"]
+            ),
             "claimed_by": row["claimed_by"] if claim_live else None,
             "claimed_by_name": row["claimed_by_name"] if claim_live else None,
             "claimed_by_color": row["claimed_by_color"] if claim_live else None,
@@ -2101,6 +2162,13 @@ def list_bug_reports(
                     "claimed_by": r["claimed_by"] if live else None,
                     "claimed_by_name": r["claimed_by_name"] if live else None,
                     "claimed_proposal_id": r["claimed_proposal_id"] if live else None,
+                    # The RAW columns, not the `live`-cleared ones above:
+                    # the predicate owns its own liveness question, and
+                    # handing it pre-cleared values would make a lapsed
+                    # claim indistinguishable from no claim by construction.
+                    "work_state": bug_work_state(
+                        r["claimed_by"], r["claimed_at"], r["fix_pr"]
+                    ),
                     "stale": _bug_stale(r["status"], r["created_at"]),
                 }
             )
@@ -2696,18 +2764,42 @@ def notify_bug_fix_landed(conn, pr_number, proposal_post_id):
     for bid in bug_ids:
         row = conn.execute(
             "SELECT id, status, agent_id, title, claimed_by, claimed_at,"
-            " claimed_proposal_id FROM bug_reports WHERE id = ?",
+            " claimed_proposal_id, fix_pr FROM bug_reports WHERE id = ?",
             (bid,),
         ).fetchone()
         if row is None or row["status"] not in ("open", "confirmed"):
             continue
-        # A live claim ends only where its own fix lands: unbound
-        # scoping-claims release on any citing fix, bound ones wait for
-        # their own proposal's PR. Evaluate + release before the reporter
-        # dedup below so a replay never strands a live claim (m3).
+        # A live claim ends only where its own fix lands.
+        #
+        # A bound claim waits for its own proposal's PR: that is the
+        # proposal it was claimed against, so its merge IS the fix landing.
+        # An unbound scoping-claim has no proposal to wait for, so a bare
+        # `#B<n>` mention is not sufficient evidence - a mention is a
+        # CITATION, and force-releasing an exclusive reservation on one
+        # destroys the very thing that prevents duplicate work (#B191).
+        # fix_pr has THREE writers and only two are bound-gated:
+        # claim_bug's B85 backfill and _autofix_claims_on_pr_link, both
+        # of which require a bound claim. The third is update_bug_report,
+        # whose authority is reporter-while-open or admin with NO binding
+        # requirement - so an unbound claim CAN carry a fix_pr and the arm
+        # below is LIVE, not defensive. (It is invisible to a `SET fix_pr`
+        # search because that clause is assembled dynamically via
+        # sets.append.) Do not "simplify" own_fix_landed to the bound
+        # disjunct alone: that silently deletes the reporter-recorded
+        # release path this fix creates.
+        #
+        # The remaining loss is therefore narrower than "no release path":
+        # an unbound claim with NO recorded fix holds to the expiry sweep
+        # instead of being stripped by the next unrelated merge.
+        #
+        # Evaluate + release before the reporter dedup below so a replay
+        # never strands a live claim (m3).
         bound = row["claimed_proposal_id"]
-        scoped = _bug_claim_live(row["claimed_by"], row["claimed_at"]) and (
-            bound is None or bound == proposal_post_id
+        own_fix_landed = bound == proposal_post_id or (
+            bound is None and row["fix_pr"] == pr_number
+        )
+        scoped = (
+            _bug_claim_live(row["claimed_by"], row["claimed_at"]) and own_fix_landed
         )
         claimer_id = row["claimed_by"]
         if scoped:
