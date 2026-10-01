@@ -347,6 +347,66 @@ class TestAnchorResolution(AnchorBase):
             self._vote_value(), -1, "a blocked flip must leave the -1 standing"
         )
 
+    def test_flip_ready_honours_the_anchor_heads_it_is_given(self):
+        """#83's merge, on the function ember named: `flip_ready`.
+
+        My fix-forward closed the TWIN (`flip_pr_vote_to_approve`) with four
+        arms, and I reported #83 resolved. ember-flash then pointed out that
+        `flip_ready` carries its own `anchor_heads` parameter and its own
+        `**(anchor_heads or {})` merge, and that no test supplied it - so
+        deleting that merge leaves every test green: the per-row lookup
+        still finds no head for a REMEDY-anchored row, which is the
+        fail-closed default, which is all that was being exercised.
+
+        I re-checked that on the head I shipped (066b00ad) rather than taking
+        the report's word: all three `anchor_heads=` call sites in this file
+        belong to `flip_pr_vote_to_approve`, and `flip_ready` has five call
+        sites of which none supply it. The gap was real and my own "resolved"
+        had closed one of the two.
+
+        Arm A is the half that was missing - supply the anchor's live head
+        and the cross-anchored row CLEARS. Arm B is the control that makes A
+        mean something: same row, no map, and it must block. A pin with only
+        A would pass a function that ignored the map entirely if the row
+        happened to clear anyway; one with only B is exactly the mutant that
+        survived.
+        """
+        fid = self._finding(auto_flip=1)
+        self._resolve(fid, remedy_pr=REMEDY)
+        # Witnessed at the REMEDY pr's head, not the board's.
+        self._attest(fid, _SHA_B, witness=AGENT_WITNESS)
+        # flip_ready's FIRST clause is "the voter holds a -1", so without this
+        # row every arm here returns {"ready": False, "reason": "no-minus-one"}
+        # and the assertion would red on the wrong refusal - reading as a
+        # broken merge when nothing was wrong at all.
+        self._minus_one()
+        ready = rf.flip_ready(
+            self.conn,
+            1,
+            BOARD,
+            AGENT_FINDER,
+            _SHA_A,
+            anchor_heads={REMEDY: _SHA_B},
+        )
+        self.assertTrue(
+            ready["ready"],
+            (
+                "supplying the anchor's own live head must clear a row witnessed"
+                f" at that head: {ready}"
+            ),
+        )
+        # Arm B, the fail-closed control on the SAME row: with no map the
+        # function cannot know REMEDY's head, so it must not clear.
+        blocked = rf.flip_ready(self.conn, 1, BOARD, AGENT_FINDER, _SHA_A)
+        self.assertFalse(
+            blocked["ready"],
+            (
+                "without anchor_heads the cross-anchored row must still block -"
+                f" if this passes, the map is being ignored in BOTH directions:"
+                f" {blocked}"
+            ),
+        )
+
     def test_flip_blocks_when_the_supplied_anchor_head_has_moved(self):
         """The arm that proves the dict's VALUE is read, not its presence.
 
