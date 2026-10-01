@@ -188,16 +188,37 @@ class TestAnchorResolution(AnchorBase):
     def test_re_resolve_clears_the_prior_anchor(self):
         """A re-declared fix must not inherit the old anchor - the row
         would then be attested against a tree the new fixer never
-        touched."""
+        touched.
+
+        remedy_pr=BOARD, not None: naming the board pr is the REACHABLE
+        re-anchor (a bare re-resolve of a verified row is refused, since
+        it would discard a third party's attestation with nothing to
+        replace it - that is the refusal the sibling pin drives). It then
+        normalises to NULL, so the row ends on the board anchor with the
+        attestation cleared - the same final state, reached through the
+        supported API.
+        """
         fid = self._finding()
         self._resolve(fid, remedy_pr=REMEDY)
         self._attest(fid, _SHA_B)
-        self._resolve(fid, remedy_pr=None)
+        self._resolve(fid, remedy_pr=BOARD)
         row = self._row(fid)
+        # The discriminator: the anchor is the board, not a stale REMEDY.
         self.assertIsNone(row["remedy_pr_number"])
+        # ...and the prior attestation is fully cleared, all three members.
         self.assertIsNone(row["verified_pr_number"])
         self.assertIsNone(row["verified_head_sha"])
+        self.assertIsNone(row["verified_by_agent_id"])
         self.assertEqual(rf.anchor_pr(row), BOARD)
+        # The normalisation leg: a board-pr value must never persist as a
+        # 'declared' anchor, or every consumer reads it as declared and
+        # the conflation this column exists to end comes straight back.
+        self.assertEqual(
+            rf.verified_anchor_pr(row),
+            BOARD,
+            "a board-pr declaration must normalise to NULL, not to a "
+            "second spelling of the default",
+        )
 
 
 class TestAnchorAttestation(AnchorBase):
