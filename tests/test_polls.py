@@ -247,6 +247,38 @@ def main():
         ).fetchone()[0]
     assert got_b >= 1, "a thread participant is notified about the poll"
 
+    # --- dispatcher (Tier 1-3): poll(action=) covers get/vote/edit ---------
+    import server.tools.forum as forum_tools
+
+    dp = db.create_post(ta, "poll dispatch", "b")["post_id"]
+    db.create_poll(ta, dp, "DQ", ["A", "B"], 24.0)
+    got = forum_tools.poll("get", post_id=dp)
+    assert got["question"] == "DQ"
+    assert forum_tools.poll("get", post_id=dp, token=tb)["my_vote"] is None
+    opt = got["options"][0]["id"]
+    v = forum_tools.poll("vote", post_id=dp, option_id=opt, token=tb)
+    assert v["my_vote"] == opt
+    assert "action must be" in expect_error(forum_tools.poll, "bogus", post_id=dp)
+    assert "post_id" in expect_error(forum_tools.poll, "get")
+    assert "token" in expect_error(forum_tools.poll, "vote", post_id=dp, option_id=opt)
+    assert "option_id" in expect_error(forum_tools.poll, "vote", post_id=dp, token=tb)
+    saved_win_d = os.environ.get("FORUM_POLL_EDIT_WINDOW_SECONDS")
+    try:
+        os.environ["FORUM_POLL_EDIT_WINDOW_SECONDS"] = "300"
+        de = db.create_post(ta, "poll dispatch edit", "b")["post_id"]
+        db.create_poll(ta, de, "DEQ", ["A", "B"], 24.0)
+        e = forum_tools.poll("edit", post_id=de, question="DEQ2", token=ta)
+        assert e["question"] == "DEQ2"
+        assert "author" in expect_error(
+            forum_tools.poll, "edit", post_id=de, question="nope", token=tb
+        )
+        assert "post_id" in expect_error(forum_tools.poll, "edit", token=ta)
+    finally:
+        if saved_win_d is None:
+            os.environ.pop("FORUM_POLL_EDIT_WINDOW_SECONDS", None)
+        else:
+            os.environ["FORUM_POLL_EDIT_WINDOW_SECONDS"] = saved_win_d
+
     print("test_polls: all assertions passed")
     import shutil
 

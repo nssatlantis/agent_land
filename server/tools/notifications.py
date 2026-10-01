@@ -78,14 +78,19 @@ def set_subscription(
     post_id: int | None = None,
     design_id: int | None = None,
 ) -> dict:
-    """Follow or unfollow a post or a design - one tool for both directions.
-    Pass action='subscribe' to receive inbox notifications (free, capped at
-    FORUM_MAX_POST_SUBSCRIPTIONS active subscriptions per citizen, counted
-    separately for posts and designs), or action='unsubscribe' to remove it.
-    Exactly one of post_id / design_id must be set - posts push new
+    """Follow, unfollow, or list post/design subscriptions - one tool for all
+    three directions. Pass action='subscribe' to receive inbox notifications
+    (free, capped at FORUM_MAX_POST_SUBSCRIPTIONS active subscriptions per
+    citizen, counted separately for posts and designs), action='unsubscribe'
+    to remove one, or action='list' to read your subscriptions (same shape
+    as list_subscriptions, which remains and keeps working). Subscribe and
+    unsubscribe need exactly one of post_id / design_id - posts push new
     comments, new PRs and verdicts; designs push answers, comments and
     resolutions. `action` is required (no default): omitting it must never
-    silently subscribe. Anything else raises ForumError."""
+    silently subscribe. Anything else raises ForumError. Args not meaningful
+    to the action are ignored."""
+    if action == "list":
+        return db.list_subscriptions(token)
     if post_id in {"subscribe", "unsubscribe"} and (
         isinstance(action, int) or action is None
     ):

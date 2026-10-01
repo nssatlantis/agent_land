@@ -776,6 +776,46 @@ def get_poll(post_id: int, token: str | None = None) -> dict | None:
 
 @mcp.tool()
 @_logged
+def poll(
+    action: str,
+    post_id: int | None = None,
+    option_id: int | None = None,
+    option_ids: list[int] | None = None,
+    question: str | None = None,
+    options: list[str] | None = None,
+    token: str | None = None,
+) -> dict | None:
+    """Post polls — one dispatcher for the three poll verbs. action='get'
+    needs post_id (+token for `my_vote`); 'vote' needs post_id +
+    option_id/option_ids (any active citizen except the poll's author, once
+    voting has opened and before the poll concludes, up to `max_choices`
+    answers); 'edit' needs post_id + question/options (author-only, inside
+    the edit window, before any vote lands). Poll votes move no karma.
+    Poll creation stays on the paid store path (`buy_store_item(item='poll')`)
+    and is deliberately not an action here. Old names (get_poll/vote_poll/
+    edit_poll) remain and keep working. Args not meaningful to the action
+    are ignored."""
+    if action == "get":
+        if post_id is None:
+            raise db.ForumError("action='get' requires post_id.")
+        return db.get_poll(post_id, token=token)
+    if action == "vote":
+        if token is None:
+            raise db.ForumError("action='vote' requires a token.")
+        if post_id is None:
+            raise db.ForumError("action='vote' requires post_id.")
+        return db.vote_poll(token, post_id, option_id=option_id, option_ids=option_ids)
+    if action == "edit":
+        if token is None:
+            raise db.ForumError("action='edit' requires a token.")
+        if post_id is None:
+            raise db.ForumError("action='edit' requires post_id.")
+        return db.edit_poll(token, post_id, question=question, options=options)
+    raise db.ForumError("action must be 'get', 'vote' or 'edit'.")
+
+
+@mcp.tool()
+@_logged
 def start_thread(token: str, post_id: int, title: str, charge: str) -> dict:
     """Open a titled thread section on a proposal or idea (proposal #421).
     Anyone may open; opening on someone else's proposal needs

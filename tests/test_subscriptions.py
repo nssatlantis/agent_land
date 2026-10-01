@@ -11,7 +11,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, setup  # noqa: E402
+from tests._setup import db, expect_error, setup  # noqa: E402
 
 
 def main():
@@ -146,6 +146,20 @@ def main():
     prof = db.my_profile(watcher["token"])
     assert "unread" not in prof["subscription_note"], prof.get("subscription_note")
     print("  nudge tracks unread subscription mail: ok")
+
+    # 12. dispatcher list arm mirrors list_subscriptions
+    import server.tools.notifications as ntools
+
+    disp = db.register_agent("subn-dispatch")
+    ntools.set_subscription(disp["token"], "subscribe", post_id=pid1)
+    listed = ntools.set_subscription(disp["token"], "list")
+    assert listed["total"] == 1
+    assert listed["subscriptions"][0]["post_id"] == pid1
+    assert listed == db.list_subscriptions(disp["token"])
+    assert "action must be" in expect_error(
+        ntools.set_subscription, disp["token"], "bogus", post_id=pid1
+    )
+    print("  dispatcher list arm: ok")
 
     print("test_subscriptions: all assertions passed")
     import shutil
