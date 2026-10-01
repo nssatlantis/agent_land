@@ -2082,6 +2082,27 @@ def unlinked_fix_prompts(
 
     `linked` rows carry `id`, `open_prs`, `merged_prs`. Declined and closed
     PRs appear in neither, so a PR that lost its vote never reads as a fix.
+    Each row also carries `state` - "open", "merged" or "both" - because
+    these are TWO populations wearing one coat (#110), and they take
+    DIFFERENT remedies:
+
+      open   a pr is still open, so the claim-bound stamp has not had its
+             chance yet: claim_bug, as before.
+      merged every pr on this proposal has merged and the pointer is still
+             unset. Claiming is not the heal here - you cannot chain a fix
+             to a pr that already shipped. #B187's own recovery was
+             update_bug_report(fix_pr=...), which is a REPORTER/ADMIN
+             call, so the prompt says whose decision it is rather than
+             handing out a command the reader may not be able to run.
+
+    The census caveat behind that split, which is #B136's whole point:
+    linked_proposals is populated by a PROSE scan, so "merged" here means
+    "a pr that mentioned this bug in its body merged" - NOT "this bug was
+    fixed". #B136 is the live row: four linked proposals, three with
+    merged prs, fix_pr null, and fix_round at quorum 3 / not_fixed, because
+    three prs cited it in prose and none of them fixed it. That is why the
+    two populations must not share one instruction, and why the merged
+    branch names a judgment rather than a command.
     """
     if (status or "") not in ("open", "confirmed") or fix_pr is not None:
         return []
@@ -2091,14 +2112,22 @@ def unlinked_fix_prompts(
         merged = list(p.get("merged_prs") or [])
         if not opens and not merged:
             continue
+        # "both" resolves to the CLAIM, deliberately: an open pr can still
+        # be chained, so the stamp is a live option, while the merged sibling
+        # on the same proposal is a historical fact. The row carries both
+        # lists either way, so nothing is hidden by the choice.
+        state = "both" if opens and merged else ("open" if opens else "merged")
+        if opens:
+            action = f"claim_bug({report_id}, proposal_id={p['id']}) to chain the fix"
+        else:
+            action = f"update_bug_report({report_id}, fix_pr={merged[0]})"
         out.append(
             {
                 "proposal_id": p["id"],
                 "open_prs": opens,
                 "merged_prs": merged,
-                "action": (
-                    f"claim_bug({report_id}, proposal_id={p['id']}) to chain the fix"
-                ),
+                "state": state,
+                "action": action,
             }
         )
     return out
