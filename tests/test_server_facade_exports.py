@@ -80,6 +80,7 @@ EXPECTED = [
     "repo_workflow_status",
     "repo_workflow_step",
     "repo_restart_workflow",
+    "finding_signal",
     # economy tools
     "credit_history",
     "transfer_credits",

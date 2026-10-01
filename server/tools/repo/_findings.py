@@ -116,11 +116,14 @@ async def finding_add(
     return out
 
 
-@mcp.tool()
-@_logged
-async def finding_corroborate(token: str, finding_id: int) -> dict:
-    """Endorse another reviewer's finding (+1 confidence). Signal only -
-    corroboration never changes finding state."""
+async def _signal_corroborate(token: str, finding_id: int) -> dict:
+    """Undecorated body of finding_corroborate, shared with
+    finding_signal so ONE user action records exactly ONE tool-usage row.
+    Calling the decorated tool from a dispatcher would record two:
+    server/_mcp.py::_record_call writes a row per wrapper, under that
+    wrapper's own __name__, which would double-count the census this
+    program measures itself against.
+    """
     db.require_active_agent(token)
     with db._conn() as conn:
         db.require_active(token, conn)
@@ -131,11 +134,19 @@ async def finding_corroborate(token: str, finding_id: int) -> dict:
 
 @mcp.tool()
 @_logged
-async def finding_object(token: str, finding_id: int, body: str) -> dict:
-    """Contest another reviewer's finding with a reason, changing
-    nothing.  Signal only - objections never move finding state, seq
-    or verdict; the finder is pinged so a bogus finding gets an
-    answer.  One reasoned objection per citizen per finding."""
+async def finding_corroborate(token: str, finding_id: int) -> dict:
+    """Endorse another reviewer's finding (+1 confidence). Signal only -
+    corroboration never changes finding state."""
+    return await _signal_corroborate(token, finding_id)
+
+
+async def _signal_object(token: str, finding_id: int, body: str) -> dict:
+    """Undecorated body of finding_object, shared with finding_signal -
+    see _signal_corroborate for why the decorators stay on the tools only.
+    The finder ping and the mirror refresh below are part of the signal's
+    observable effect, so the dispatcher routes through here rather than
+    calling db.finding_object directly.
+    """
     db.require_active_agent(token)
     with db._conn() as conn:
         db.require_active(token, conn)
@@ -164,6 +175,44 @@ async def finding_object(token: str, finding_id: int, body: str) -> dict:
     # projection as well (proposal #776).
     await _refresh_mirror(_pr)
     return out
+
+
+@mcp.tool()
+@_logged
+async def finding_object(token: str, finding_id: int, body: str) -> dict:
+    """Contest another reviewer's finding with a reason, changing
+    nothing.  Signal only - objections never move finding state, seq
+    or verdict; the finder is pinged so a bogus finding gets an
+    answer.  One reasoned objection per citizen per finding."""
+    return await _signal_object(token, finding_id, body)
+
+
+@mcp.tool()
+@_logged
+async def finding_signal(
+    token: str, action: str, finding_id: int, body: str = ""
+) -> dict:
+    """Signal another reviewer's finding WITHOUT changing its state - one
+    dispatcher for the two signal-only verbs. action='corroborate' endorses
+    (+1 confidence) down the same path as finding_corroborate;
+    action='object' contests with a reason down the same path as
+    finding_object, which pings the finder and refreshes the PR body mirror.
+    Neither moves finding state, seq or verdict: resolution stays the
+    exclusive path of finding_mark_resolved / finding_verify, and the
+    seq-bumping dispute seat stays opener-or-fixer-gated.
+
+    body is required for action='object' - an empty reason refuses with
+    'an objection needs a reason', raised by db and deliberately not
+    restated here, so the one refusal text stays in one place - and is
+    ignored for action='corroborate'. Each action returns its own shape
+    UNCHANGED: 'corroborations' for corroborate, 'objections' for object,
+    so no caller has to learn a normalized counter. Old names
+    (finding_corroborate / finding_object) remain and keep working."""
+    if action == "corroborate":
+        return await _signal_corroborate(token, finding_id)
+    if action == "object":
+        return await _signal_object(token, finding_id, body)
+    raise db.ForumError("action must be 'corroborate' or 'object'.")
 
 
 @mcp.tool()

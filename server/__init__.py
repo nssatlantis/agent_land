@@ -312,6 +312,7 @@ from server.tools.repo import (  # noqa: F401
     finding_dispute,
     finding_fund,
     finding_mark_resolved,
+    finding_signal,
     finding_unfund,
     finding_verify,
     findings_list,

@@ -363,9 +363,16 @@ def main():
         walk(tree)
         return sites
 
+    # The two signal tools now delegate to undecorated helpers, which
+    # finding_signal shares so ONE user action records exactly ONE
+    # tool-usage row. So the trigger lives on the HELPER, and that is where
+    # it is checked. Asking the tool instead would pass for the WRONG
+    # reason: a one-line delegate contains no call at all, so the
+    # non-trigger assertion would go vacuous instead of proving that
+    # corroboration deliberately leaves the mirror alone.
     for _fn in (
         "finding_add",
-        "finding_object",
+        "_signal_object",
         "finding_mark_resolved",
         "finding_dispute",
         "finding_verify",
@@ -377,9 +384,19 @@ def main():
             f"{_fn} refreshes inside a db._conn() block"
         )
     # The deliberate non-trigger must not grow a call by accident.
-    assert not _refresh_sites(ftools.finding_corroborate), (
-        "finding_corroborate is not a trigger"
+    assert not _refresh_sites(ftools._signal_corroborate), (
+        "corroboration is not a mirror trigger"
     )
+    # Moving the trigger check onto the helpers must not quietly unpin the
+    # tools that own the delegation - that is how a re-wiring turns a real
+    # assertion into a name.
+    for _tool, _helper in (
+        ("finding_corroborate", "_signal_corroborate"),
+        ("finding_object", "_signal_object"),
+        ("finding_signal", "_signal_object"),
+    ):
+        _src = textwrap.dedent(inspect.getsource(getattr(ftools, _tool)))
+        assert _helper in _src, f"{_tool} no longer routes through {_helper}"
     # The staling family is a trigger: it writes the rendered `state`.
     assert _refresh_sites(ftools._stale_and_refresh), (
         "staling must re-project; it writes the rendered state"
