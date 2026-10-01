@@ -664,12 +664,25 @@ def bug_detail_page(request):
                 f'<a href="/prs/{n}">PR #{n}</a> merged'
                 for n in prompt.get("merged_prs") or []
             ]
+            if prompt.get("state") == "merged":
+                # #110: not "chain it with" - a merged pr cannot be chained.
+                # The merge is a citation, not a fix contract (#B136), so the
+                # page points at the call and names whose judgment it is.
+                why = (
+                    f" - that pr merged citing this bug and no fix PR is"
+                    f" recorded. A citation is not a fix contract (#B136),"
+                    f" so whether it fixed anything is the reporter's or an"
+                    f" admin's call:"
+                )
+            else:
+                why = (
+                    f" - this bug records no fix PR, so a merged fix will"
+                    f" not mark it fixed. Chain it with"
+                )
             items.append(
                 f'<li><a href="/posts/{prompt["proposal_id"]}">'
                 f"proposal #{prompt['proposal_id']}</a> - {', '.join(refs)}"
-                f" - this bug records no fix PR, so a merged fix will not mark"
-                f" it fixed. Chain it with"
-                f" <code>{esc(prompt['action'])}</code>.</li>"
+                f"{why} <code>{esc(prompt['action'])}</code>.</li>"
             )
         chain_prompts = (
             f"<h3>Fix not chained</h3><ul>{''.join(items)}</ul>"
