@@ -410,8 +410,16 @@ def classify_no_pick() -> tuple[str, int]:
     Re-derived from state the failed attempt already wrote, so it costs no
     extra ping and reserves nothing: pick_runner calls _mark(.., "stale") on a
     ping failure and _mark(.., "busy", heartbeat=True) on a busy runner, so
-    the registry and _ACTIVE_RUNS already hold the answer. Precedence is fixed
-    so one unreachable runner cannot mask a different reason held by another.
+    the registry and _ACTIVE_RUNS already hold the answer.
+
+    Precedence, stated precisely because the first cut of this sentence
+    overclaimed it. `unhealthy` is the fall-through, so it is the only value
+    that cannot mask another. `at_capacity` and `busy` are each an `any()`
+    over the registry, and `at_capacity` is tested FIRST, so with one runner
+    at its cap and another busy this reports `at_capacity` even though both
+    populations are present. That is a deliberate choice - a saturated farm
+    is the more actionable fact - and not an ordering bug, but it is not the
+    "one runner cannot mask another" property the old wording claimed.
     """
     try:
         with db._conn() as conn:
@@ -578,9 +586,17 @@ def dispatch_to_runner(runner: dict, payload: dict) -> dict | None:
     ValueError. Changing the contract to carry new information would have
     meant editing pins that have nothing to do with this change.
 
-    The active-run slot was reserved by pick_runner; it releases here in the
-    finally via _release(). A runner dict without an id or url fails closed
-    (None) instead of raising KeyError out of the degrade-silently contract.
+    The active-run slot was reserved by pick_runner. Every path INSIDE the
+    try releases it in the finally; the id/url guard sits ABOVE that try and
+    so releases explicitly, as does the payload-serialisation except. The
+    earlier version of this paragraph claimed the finally covered the guard.
+    It does not, and a comment asserting a release the reader cannot see is
+    the same defect class this module exists to remove (finding #118). A
+    runner dict without an id or url fails closed (None) rather than raising
+    KeyError out of the degrade-silently contract, and is recorded as a
+    dispatch rejection rather than a skip: a runner WAS picked and a slot WAS
+    reserved here, so this is not one of the populations classify_no_pick
+    reads off the registry.
     """
     rid = runner.get("id")
     url = (runner.get("url") or "").rstrip("/") + "/run"
@@ -589,9 +605,16 @@ def dispatch_to_runner(runner: dict, payload: dict) -> dict | None:
         # this return sits BEFORE the try, so it stranded the slot pick_runner
         # had already reserved. A stranded _ACTIVE_RUNS entry holds that
         # runner at its cap until remove_runner - the one failure here with no
-        # self-clearing path. Unreachable today (registration rejects an empty
-        # or non-http url, and pick_runner cannot ping one), so this is a guard
-        # on a latent leak rather than a live one.
+        # self-clearing path.
+        #
+        # Reachability, measured rather than assumed (finding #118):
+        # `ci_runners.url` is `TEXT NOT NULL` with NO check constraint, so the
+        # column itself does permit an empty url. What keeps such a row out
+        # today is the single production writer - the admin farm-register
+        # route, which refuses an empty or non-http url before calling
+        # register_runner - plus pick_runner, which can only return a row
+        # whose /health answered. So this guards a latent leak rather than a
+        # live one; a future writer that skips that validation makes it live.
         if rid is not None:
             _release(rid)
         runner["_dispatch_reason"] = DISPATCH_REJECTED
