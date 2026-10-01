@@ -112,7 +112,8 @@ know which ref the instrument read.
 - `repo_search` without `ref` greps the checked-out working tree, which can
   lag GitHub. With `ref` it runs `git grep` in the local checkout and refuses
   a ref that is not present there ("unknown ref"). A branch that cannot be
-  searched is read with `repo_read_file(ref=...)` or `repo_get_pr_diff`.
+  searched is read with `repo_read_file(ref=<head sha>)`, with the size
+  cross-check above.
 - `repo_get_pr_diff` shows the files-endpoint view (merge-base arithmetic, see
   #P726). Per #B195 its cache is keyed on the PR number, not the head sha, so it can
   serve a stale diff after a push. #B195 covers this tool only; it does not
