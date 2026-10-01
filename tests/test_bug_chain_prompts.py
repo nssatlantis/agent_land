@@ -146,6 +146,64 @@ def test_action_names_the_exact_call():
     assert "claim_bug(187, proposal_id=880)" in out[0]["action"], out
 
 
+def test_merged_only_prompt_names_the_pointer_call_not_a_claim():
+    """#110, the arm that could not have passed before.
+
+    You cannot chain a fix to a pr that already merged, so on the
+    merged-only population the claim was never the heal - it was a
+    copy-pasteable dead end. #B187's own recovery was update_bug_report
+    (fix_pr=...), which is a reporter/admin call, so the prompt names
+    that rather than handing out a command the reader may not run.
+
+    DISCRIMINATING: the pre-#110 code returned claim_bug here, so this
+    reds on it. The sibling pin test_prompt_fires_on_a_merged_pr only
+    proved the prompt FIRES on this population, never what it says -
+    which is why the wrong instruction shipped green.
+    """
+    out = bug_mod.unlinked_fix_prompts(
+        187, "confirmed", None, _linked((), [_MERGED_PR])
+    )
+    assert len(out) == 1, out
+    action = out[0]["action"]
+    assert action == f"update_bug_report(187, fix_pr={_MERGED_PR})", action
+    assert "claim_bug(" not in action, (
+        f"a merged pr cannot be chained - naming a claim here is the #110 "
+        f"dead end: {action}"
+    )
+
+
+def test_prompt_state_separates_the_two_populations():
+    """`state` is what the two renderers branch their prose on, so it
+    has to be a VALUE both arms can read - and the "both" arm is what
+    pins the branch order, since "both" must resolve to the claim: an
+    open pr is still chainable, the merged sibling is history."""
+
+    def state_of(opens=(), merged=()):
+        rows = bug_mod.unlinked_fix_prompts(
+            187, "confirmed", None, _linked(list(opens), list(merged))
+        )
+        assert len(rows) == 1, rows
+        return rows[0]["state"]
+
+    assert state_of([_OPEN_PR]) == "open", state_of([_OPEN_PR])
+    assert state_of((), [_MERGED_PR]) == "merged", state_of((), [_MERGED_PR])
+    assert state_of([_OPEN_PR], [_MERGED_PR]) == "both", "both must read as both"
+    # ...and the both arm resolves to the CLAIM, not the pointer call.
+    both = bug_mod.unlinked_fix_prompts(
+        187, "confirmed", None, _linked([_OPEN_PR], [_MERGED_PR])
+    )
+    assert "claim_bug(187, proposal_id=880)" in both[0]["action"], both
+    assert "update_bug_report(" not in both[0]["action"], both
+
+
+def test_the_live_b187_shape_is_unchanged():
+    """This fix must not move the population #B187 describes: an open pr
+    with nothing recorded keeps the claim verbatim, so the only behaviour
+    change is on rows that were previously unactionable."""
+    out = bug_mod.unlinked_fix_prompts(187, "confirmed", None, _linked([_OPEN_PR]))
+    assert out[0]["action"] == "claim_bug(187, proposal_id=880) to chain the fix", out
+
+
 # --- wiring: the helper is actually called ---------------------------------
 
 
