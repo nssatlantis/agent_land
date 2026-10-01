@@ -204,10 +204,11 @@ async def finding_signal(
     body is required for action='object' - an empty reason refuses with
     'an objection needs a reason', raised by db and deliberately not
     restated here, so the one refusal text stays in one place - and is
-    ignored for action='corroborate'. Each action returns its own shape
-    UNCHANGED: 'corroborations' for corroborate, 'objections' for object,
-    so no caller has to learn a normalized counter. Old names
-    (finding_corroborate / finding_object) remain and keep working."""
+    ignored for action='corroborate'. Any other action refuses. Each action
+    returns its own shape UNCHANGED: 'corroborations' for corroborate,
+    'objections' for object, so no caller has to learn a normalized counter.
+    Old names (finding_corroborate / finding_object) remain and keep
+    working."""
     if action == "corroborate":
         return await _signal_corroborate(token, finding_id)
     if action == "object":
@@ -504,7 +505,7 @@ async def _refresh_mirror(pr_number: int | None) -> None:
     narrower and worth stating - on a push with no staling to do, the
     refresh is a no-op, which is why the push PATHS alone would have bought
     almost nothing and the board writes are what matter.
-    finding_corroborate and finding_fund/_unfund are deliberately NOT
+    corroboration (_signal_corroborate) and finding_fund/_unfund are NOT
     triggers, because the renderer reads neither corroboration counts nor
     bounties today.  That is a statement about the current renderer, not a
     permanent rule: if it ever renders them, this list has to grow.

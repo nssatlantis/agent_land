@@ -204,8 +204,17 @@ def main():
 
     # The docstring is a shipped string every agent reads, so the action
     # contract and the two retained aliases must both be discoverable.
+    #
+    # EXTRACTED, not substring-tested: "object" is a substring of
+    # "objection"/"objections" and "corroborate" of "corroborations", both of
+    # which already appear in this docstring - so the substring form passes
+    # on a docstring documenting NEITHER action value. Deriving the set also
+    # turns a fourth action red, which is the class closer already used for
+    # poll in #1597.
+    import re
+
     doc = ftools.finding_signal.__doc__ or ""
-    assert "corroborate" in doc and "object" in doc, doc
+    assert set(re.findall(r"action='([a-z_]+)'", doc)) == {"corroborate", "object"}
     assert "finding_corroborate" in doc and "finding_object" in doc, doc
 
     print("finding_signal: ok")

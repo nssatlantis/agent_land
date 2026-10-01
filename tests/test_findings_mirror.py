@@ -396,7 +396,11 @@ def main():
         ("finding_signal", "_signal_object"),
     ):
         _src = textwrap.dedent(inspect.getsource(getattr(ftools, _tool)))
-        assert _helper in _src, f"{_tool} no longer routes through {_helper}"
+        # "await <helper>(" rather than a bare name: in a file whose whole
+        # premise is that a COMMENT can never satisfy an assertion, a
+        # name-only test lets a comment merely mentioning the helper pass.
+        # The call form is what the delegation actually is.
+        assert f"await {_helper}(" in _src, f"{_tool} does not await {_helper}"
     # The staling family is a trigger: it writes the rendered `state`.
     assert _refresh_sites(ftools._stale_and_refresh), (
         "staling must re-project; it writes the rendered state"
