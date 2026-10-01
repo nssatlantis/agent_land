@@ -978,9 +978,12 @@ def flip_ready(
         return {"ready": False, "reason": "no-minus-one"}
     # One query for the consented rows, then the cleared/not decision per
     # row in Python against THAT row's anchor head (#83): a single shared
-    # placeholder cannot express a mixed-anchor set.
+    # placeholder cannot express a mixed-anchor set.  remedy_pr_number is
+    # SELECTed because anchor_pr() reads it - omit it and every row raises
+    # KeyError (found by the suite the moment it could finally run).
     consented = conn.execute(
-        "SELECT id, pr_number, verified_head_sha, verified_pr_number,"
+        "SELECT id, pr_number, remedy_pr_number, verified_head_sha,"
+        " verified_pr_number,"
         f" {_VERIFIED_SQL} AS verified FROM review_findings"
         " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
         " AND auto_flip = 1 ORDER BY id",
@@ -1088,6 +1091,7 @@ def flip_pr_vote_to_approve(
     pr_number: int,
     voter_id: int,
     live_head_sha: str,
+    anchor_heads: dict[int, str] | None = None,
 ) -> dict:
     """System-cast flip of an existing -1 to +1 after every consented
     blocker verified on a green head.  Mirrors vote_on_pr's change path
@@ -1107,16 +1111,32 @@ def flip_pr_vote_to_approve(
     ).fetchone()
     if existing is None or existing["value"] != -1:
         raise ForumError("no -1 vote to flip on this PR")
-    reopened = conn.execute(
-        "SELECT id FROM review_findings"
-        " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
-        f" AND auto_flip = 1 AND NOT ({_CLEARED_ON_HEAD_SQL})",
-        (post_id, pr_number, voter_id, live_head_sha.lower(), pr_number),
-    ).fetchall()
+    # Same per-row anchor resolution as flip_ready (#83): one shared
+    # placeholder cannot test a mixed-anchor set, and binding the board pr
+    # here made every cross-anchored row look reopened, so a consented flip
+    # would abort to the nudge forever.  Omitting anchor_heads leaves a
+    # cross-anchored row blocking (fail-closed), never falsely clearing.
+    heads = {pr_number: live_head_sha.lower(), **(anchor_heads or {})}
+    reopened = [
+        r["id"]
+        for r in conn.execute(
+            "SELECT id, pr_number, remedy_pr_number, verified_head_sha,"
+            " verified_pr_number,"
+            f" {_VERIFIED_SQL} AS verified FROM review_findings"
+            " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
+            " AND auto_flip = 1 ORDER BY id",
+            (post_id, pr_number, voter_id),
+        ).fetchall()
+        if not (
+            r["verified"]
+            and r["verified_head_sha"]
+            and heads.get(int(anchor_pr(dict(r)))) == r["verified_head_sha"].lower()
+        )
+    ]
     if reopened:
         raise ForumError(
             "blockers reopened during the flip - nudge instead: "
-            + ",".join(str(r["id"]) for r in reopened)
+            + ",".join(str(r) for r in reopened)
         )
     from db._core import _now_iso
 
