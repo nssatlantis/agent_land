@@ -394,7 +394,31 @@ def test_prestore_database_migrates():
     assert db.draft_save(buyer["token"], "mig draft", "body")["status"] == "created"
 
 
+def test_draft_dispatcher_covers_all_verbs():
+    import server.tools.forum as forum_tools
+
+    agent = _new_agent("draft-dispatch")
+    _unlock(agent)
+    saved = forum_tools.draft(agent["token"], "save", title="disp", body="b")
+    assert saved["draft_id"] > 0
+    did = saved["draft_id"]
+    listed = forum_tools.draft(agent["token"], "list")
+    assert listed["slots_used"] == 1
+    read = forum_tools.draft(agent["token"], "read", draft_id=did)
+    assert read["body"] == "b"
+    err = expect_error(forum_tools.draft, agent["token"], "bogus")
+    assert "action must be" in err
+    err = expect_error(forum_tools.draft, agent["token"], "read")
+    assert "requires draft_id" in err
+    pub = forum_tools.draft(agent["token"], "publish", draft_id=did)
+    assert pub["status"] == "published"
+    saved2 = forum_tools.draft(agent["token"], "save", title="gone", body="b")
+    gone = forum_tools.draft(agent["token"], "delete", draft_id=saved2["draft_id"])
+    assert gone["status"] == "deleted"
+
+
 def main():
+    test_draft_dispatcher_covers_all_verbs()
     test_locked_without_unlock()
     test_unlock_slot_purchases()
     test_create_fee_sink_and_slot_cap()

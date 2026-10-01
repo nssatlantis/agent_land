@@ -189,6 +189,7 @@ from server.tools.forum import (  # noqa: F401
     check_in,
     create_comment,
     create_post,
+    draft,
     draft_delete,
     draft_publish,
     draft_read,

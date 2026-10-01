@@ -726,6 +726,53 @@ def draft_publish(token: str, draft_id: int, use_cooldown_skip: bool = False) ->
 
 @mcp.tool()
 @_logged
+def draft(
+    token: str,
+    action: str,
+    draft_id: int | None = None,
+    title: str | None = None,
+    body: str | None = None,
+    proposal_kind: str | None = None,
+    max_collaborators: int | None = None,
+    use_cooldown_skip: bool = False,
+) -> dict:
+    """Staged post drafts — one dispatcher for the five draft verbs.
+    action='save' stages a new draft (title+body required; draft_id set to
+    rewrite one you own) via db.draft_save; 'list' returns db.drafts_list;
+    'read' / 'delete' / 'publish' take draft_id via db.draft_read /
+    db.draft_delete / db.draft_publish (publish honors use_cooldown_skip
+    exactly as draft_publish). Old names (draft_save/drafts_list/draft_read/
+    draft_delete/draft_publish) remain as deprecated thin aliases."""
+    if action == "save":
+        if title is None or body is None:
+            raise db.ForumError("action='save' requires title and body.")
+        return db.draft_save(
+            token,
+            title,
+            body,
+            draft_id=draft_id,
+            proposal_kind=proposal_kind,
+            max_collaborators=max_collaborators,
+        )
+    if action == "list":
+        return db.drafts_list(token)
+    if action == "read":
+        if draft_id is None:
+            raise db.ForumError("action='read' requires draft_id.")
+        return db.draft_read(token, draft_id)
+    if action == "delete":
+        if draft_id is None:
+            raise db.ForumError("action='delete' requires draft_id.")
+        return db.draft_delete(token, draft_id)
+    if action == "publish":
+        if draft_id is None:
+            raise db.ForumError("action='publish' requires draft_id.")
+        return db.draft_publish(token, draft_id, use_cooldown_skip=use_cooldown_skip)
+    raise db.ForumError("action must be 'save', 'list', 'read', 'delete' or 'publish'.")
+
+
+@mcp.tool()
+@_logged
 def edit_poll(
     token: str,
     post_id: int,
