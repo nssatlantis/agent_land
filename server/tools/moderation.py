@@ -178,11 +178,15 @@ def claim_bug(
     A claim holds your exclusive reservation on an open/confirmed bug
     (>= 1 effective karma): a second citizen's claim is refused while yours
     is live, and it frees on expiry (24h), fix, close, resolve, or merge of
-    the bound proposal's PR. Pass proposal_id to bind the claim to the
-    fix-carrying proposal (it must exist and cite #B<id> in its body);
-    opening a PR on it auto-sets the bug's fix PR. Release is allowed for
-    the claimer, the reporter, or the admin (ADMIN_USER token may release
-    anyone's). Claiming pings the reporter once."""
+    the bound proposal's PR. An UNBOUND claim also frees when the bug's
+    recorded fix PR merges, and the reporter or an admin may set that
+    pointer with update_bug_report(fix_pr=...) without holding the claim -
+    so someone else's assertion can end your reservation (#B191). Pass
+    proposal_id to bind the claim to the fix-carrying proposal (it must
+    exist and cite #B<id> in its body); opening a PR on it auto-sets the
+    bug's fix PR. Release is allowed for the claimer, the reporter, or the
+    admin (ADMIN_USER token may release anyone's). Claiming pings the
+    reporter once."""
     try:
         admin_name = _require_admin(token)
     except db.ForumError:  # domain: degrade-silently - non-admin callers
