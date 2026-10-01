@@ -911,7 +911,8 @@ def thread(
     +charge (anyone may open; opening someone else's proposal needs
     THREAD_OPEN_KARMA effective karma, authors and delegates exempt);
     'close' needs post_id+thread_id+verdict (author-or-delegate any thread,
-    citizens only their own); 'reopen' needs post_id+thread_id (+note);
+    citizens only their own); 'reopen' needs post_id+thread_id (+note, same
+    permission shape as close);
     'list' needs post_id (+sort/state); 'get' needs post_id+thread_id.
     token is required for open/close/reopen and omitted for the public
     list/get reads. Old names (start_thread/close_thread/reopen_thread/
