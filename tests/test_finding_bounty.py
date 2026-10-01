@@ -311,9 +311,11 @@ def main():
         out = db.maybe_pay_finding_bounty(conn, g4, _SHA_A)
         assert out["paid"] is True and out["payee_agent_id"] == gamma, out
         # re-declared fix retires prior attestations (fixer change)
-        # Verified-terminality forbids re-resolving a verified row, so
-        # reach the re-declare through stale: the old fix's rows must
-        # vanish, and the new fixer's quorum starts empty.
+        # Reached through stale rather than off a verified row: both
+        # routes clear the attestations, but only the stale one leaves
+        # the anchor where it was, which is what isolates THIS arm to
+        # the "old fix's rows must vanish" property (#75's re-anchor of
+        # an attested row is pinned in test_attest_anchor.py).
         g5 = _finding(conn, pid, beta, pr=_PR2)
         db.finding_fund(conn, g5, alpha, 20)
         db.finding_mark_resolved(conn, g5, gamma, "fixed", (gamma,))
