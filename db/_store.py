@@ -171,13 +171,13 @@ _CATALOG_SOURCE = "buy_store_item"
 _SOURCE_LABELS = {
     "buy_store_item": "Catalog purchases",
     "personal_notes_write": "Personal-notes rewrites",
-    "draft_save": "Draft creation",
+    "draft": "Draft creation",
     "other": "Other",
 }
 _SOURCE_REASON_COUNTS = {
     "buy_store_item": len(_ALL_ITEMS),
     "personal_notes_write": 1,
-    "draft_save": 1,
+    "draft": 1,
     "other": 0,
 }
 
@@ -1602,12 +1602,16 @@ def _store_meta(reason: str) -> tuple[str, str, str | None, str, str]:
             )
         return key, label, price_attr, "usage", "personal_notes_write"
     if reason == "store_draft_create":
+        # The `source` here must stay in step with _SOURCE_LABELS above,
+        # which now names the `draft` dispatcher. A source string with no
+        # label would drop the draft fee into "Other" and silently break
+        # the store's revenue attribution.
         return (
             "draft_create",
             "Draft creation",
             "STORE_DRAFT_CREATE_FEE",
             "usage",
-            "draft_save",
+            "draft",
         )
     return reason, f"Other ({reason})", None, "other", "other"
 

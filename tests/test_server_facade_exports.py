@@ -61,8 +61,6 @@ EXPECTED = [
     "list_posts",
     "create_post",
     "vote",
-    "draft_save",
-    "draft_publish",
     "draft",
     "edit_poll",
     "vote_poll",

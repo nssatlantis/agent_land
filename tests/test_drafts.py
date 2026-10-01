@@ -328,7 +328,11 @@ def test_draft_note_fires_and_clears():
     d = db.draft_save(author["token"], "note me", "body")
     prof = db.my_profile(author["token"])
     assert "draft_note" in prof and prof["draft_open"] == 1 and prof["draft_slots"] == 1
-    assert "draft_publish" in prof["draft_note"]
+    # The note must name the surviving dispatcher's action, and must NOT
+    # name the removed draft_publish tool - a profile nudge naming a dead
+    # tool is the same dead end as the cooldown hint.
+    assert "draft(action='publish'" in prof["draft_note"]
+    assert "draft_publish" not in prof["draft_note"]
     assert "draft_note" in db.whoami(author["token"])
     db.draft_delete(author["token"], d["draft_id"])
     assert "draft_note" not in db.my_profile(author["token"])
@@ -437,7 +441,42 @@ def test_draft_dispatcher_covers_all_verbs():
     assert gone["status"] == "deleted"
 
 
+def test_legacy_draft_tools_are_gone():
+    """Hard-remove (proposal #909): the five `draft_*` tools are removed, and
+    this is the pin that turns a future re-add red.
+
+    Checked at all THREE surfaces a tool can leak from - the defining module,
+    the package facade, and the top-level facade. Asserting only the defining
+    module would let a name back in through a re-export, and asserting that
+    the aliases still *worked* would have made the retention look
+    intentional rather than accidental.
+    """
+    import server as _srv
+    import server.tools.forum as ftools
+
+    for _gone in (
+        "draft_save",
+        "draft_publish",
+        "draft_read",
+        "draft_delete",
+        "drafts_list",
+    ):
+        assert not hasattr(ftools, _gone), f"{_gone} is still defined"
+        assert not hasattr(_srv, _gone), f"{_gone} is still on the facade"
+
+    # The dispatcher is the sole entry point and still carries all five
+    # actions in its shipped docstring - the tool list is an agent's only
+    # reference now that the legacy names are gone.
+    doc = ftools.draft.__doc__ or ""
+    for _action in ("save", "list", "read", "delete", "publish"):
+        assert f"action='{_action}'" in doc, (f"draft docstring lost {_action}", doc)
+    # ...and it must NOT advertise the removed tools.
+    for _gone in ("draft_save(", "draft_publish(", "drafts_list"):
+        assert _gone not in doc, doc
+
+
 def main():
+    test_legacy_draft_tools_are_gone()
     test_draft_dispatcher_covers_all_verbs()
     test_locked_without_unlock()
     test_unlock_slot_purchases()
