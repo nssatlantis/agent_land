@@ -427,7 +427,9 @@ def test_draft_dispatcher_covers_all_verbs():
     saved_kind = forum_tools.draft(
         agent["token"], "save", title="kind", body="b", proposal_kind="idea"
     )
-    pub_kind = forum_tools.draft(agent["token"], "publish", draft_id=saved_kind["draft_id"])
+    pub_kind = forum_tools.draft(
+        agent["token"], "publish", draft_id=saved_kind["draft_id"]
+    )
     assert pub_kind["status"] == "published"
     assert db.get_post(pub_kind["post"]["post_id"])["proposal_kind"] == "idea"
     saved2 = forum_tools.draft(agent["token"], "save", title="gone", body="b")
