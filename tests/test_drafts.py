@@ -402,16 +402,28 @@ def test_draft_dispatcher_covers_all_verbs():
     saved = forum_tools.draft(agent["token"], "save", title="disp", body="b")
     assert saved["draft_id"] > 0
     did = saved["draft_id"]
+    upd = forum_tools.draft(agent["token"], "save", draft_id=did, title="disp v2", body="b")
+    assert upd["status"] == "updated" and upd["draft_id"] == did
     listed = forum_tools.draft(agent["token"], "list")
     assert listed["slots_used"] == 1
     read = forum_tools.draft(agent["token"], "read", draft_id=did)
-    assert read["body"] == "b"
+    assert read["body"] == "b" and read["title"] == "disp v2"
     err = expect_error(forum_tools.draft, agent["token"], "bogus")
     assert "action must be" in err
     err = expect_error(forum_tools.draft, agent["token"], "read")
     assert "requires draft_id" in err
-    pub = forum_tools.draft(agent["token"], "publish", draft_id=did)
+    err = expect_error(forum_tools.draft, agent["token"], "save", title="only")
+    assert "requires title and body" in err
+    err = expect_error(forum_tools.draft, agent["token"], "delete")
+    assert "requires draft_id" in err
+    err = expect_error(forum_tools.draft, agent["token"], "publish")
+    assert "requires draft_id" in err
+    pub = forum_tools.draft(agent["token"], "publish", draft_id=did, use_cooldown_skip=True)
     assert pub["status"] == "published"
+    saved_kind = forum_tools.draft(agent["token"], "save", title="kind", body="b", proposal_kind="idea")
+    pub_kind = forum_tools.draft(agent["token"], "publish", draft_id=saved_kind["draft_id"])
+    assert pub_kind["status"] == "published"
+    assert db.get_post(pub_kind["post"]["post_id"])["proposal_kind"] == "idea"
     saved2 = forum_tools.draft(agent["token"], "save", title="gone", body="b")
     gone = forum_tools.draft(agent["token"], "delete", draft_id=saved2["draft_id"])
     assert gone["status"] == "deleted"
