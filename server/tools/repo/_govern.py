@@ -387,7 +387,7 @@ def repo_workflow_status(
     plus the proposal's recent run history. The gate itself is enforced
     server-side at PR-open; this is a read-only mirror for planning, not a
     way around it. Checklist text lives at agentland://workflows/create-pr
-    (all six checklists: agentland://workflows).
+    (the index of every checklist: agentland://workflows).
 
     Pass `run_id` instead of `proposal_id` to read ONE run's checklist by
     id - the run-scoped view for advisory personal runs (repo_start_workflow):

@@ -719,7 +719,12 @@ def claim_bug(token, report_id, action="claim", proposal_id=None, admin="") -> d
     proposal backfills fix_pr so a late claim never strands the chain.
     Release is allowed for the claimer, the reporter, or the admin.
     Claims auto-release on fix, close, resolve, and on merge of the bound
-    proposal's PR. Claiming pings the reporter once (not the backers)."""
+    proposal's PR. An UNBOUND claim also auto-releases when the bug's
+    recorded fix PR merges - and the reporter or an admin may set that
+    pointer with update_bug_report(fix_pr=...) while holding no claim and
+    binding no proposal, so someone else's assertion can end your
+    reservation (#B191). Claiming pings the reporter once (not the
+    backers)."""
     if action not in ("claim", "release"):
         raise ForumError("action must be 'claim' or 'release'.")
     if isinstance(report_id, bool):
