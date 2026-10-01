@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import server  # noqa: F401, E402 - full registration side effect
 import server.tool_directory as td  # noqa: E402
+from db._workflow import _parse_workflow_steps  # noqa: E402
 from tests._setup import db  # noqa: E402, I001
 
 db.init_db()
@@ -253,6 +254,66 @@ def test_removed_tools_absent_sees_call_forms():
     )
 
 
+def test_create_pr_quality_pass_step_is_a_real_step():
+    """Step 9 exists, is tickable, and says the three things that make it a
+    pass rather than a vibe (proposal #902).
+
+    The guidance already existed as a trailing sentence in two workflows and
+    could not work: "if needed" with no criterion, no output shape, no
+    record. This pins the properties that fix that, so a later edit that
+    strips the substance reds here instead of silently reducing the step to
+    "review your own code".
+
+    Membership in the parser output is the load-bearing half - a step the
+    parser cannot see is a step that does not exist, and the parser silently
+    drops a duplicate key, so a copy-paste that collided with another key
+    would yield 9 keys with the wrong one.
+    """
+    # Repo-relative, not an absolute path: `_validate_workflow_path` refuses
+    # anything but `workflows/<name>.md` (no backslashes, no drive letters) -
+    # the same form `test_workflow.py` parses with.
+    steps = _parse_workflow_steps("workflows/create-pr.md")
+    keys = [s["key"] for s in steps]
+    assert "quality-pass" in keys, f"step 9 missing from the checklist: {keys}"
+    idx = keys.index("quality-pass")
+    assert keys.count("quality-pass") == 1, "the key must be unique to parse"
+    # Appended after `rebase-while-open`, which is the ordering the prose
+    # depends on: the pass covers a tree, so it must ride AFTER the rebase
+    # that moves the head, not before it.
+    assert keys.index("rebase-while-open") < idx, f"step 9 out of order: {keys}"
+    # The snapshot stores the whole numbered line, so a wrapped step line
+    # would be silently truncated to its first physical line - and these
+    # clauses live late in the sentence. Assert the text actually carries
+    # them rather than asserting the key exists.
+    text = steps[idx]["text"]
+    for clause, why in (
+        ("head SHA", "must scope the pass to a tree, not a PR number"),
+        ("hypothesis", "must say findings arrive unverified"),
+        ("rebase", "must say a rebase invalidates the receipt"),
+        ("repo_workflow_step", "must be tickable"),
+        (
+            "not gate-enforced",
+            "an unenforced step must say so, or a reader assumes enforcement",
+        ),
+    ):
+        assert clause in text, f"step 9 lost {clause!r}: {why}"
+    # One home for the guidance, asserted on its SUBSTANCE rather than on the
+    # pointer. A presence-only check cannot see a restatement: injecting the
+    # whole pass back into full-visit while keeping the pointer passed it.
+    # `subagent` cannot be the discriminator - the pointer legitimately names
+    # it - so pin the distinctive clauses instead. One per distinctive phrase,
+    # so each has a single intended meaning.
+    fv = _TEXTS["full-visit.md"]
+    assert "quality-pass" in fv, (
+        "full-visit should point at the step rather than drop the reminder"
+    )
+    for clause in ("hypothesis", "file:line", "not gate-enforced"):
+        assert clause not in fv, (
+            f"full-visit restates the quality-pass guidance ({clause!r}) - the "
+            "step is its one home; point at it instead of repeating it"
+        )
+
+
 def test_spans_ascii_audit():
     targets = dict(_TEXTS)
     try:
@@ -285,3 +346,5 @@ if __name__ == "__main__":
     print("ok - test_removed_tools_absent_sees_call_forms")
     test_spans_ascii_audit()
     print("ok - test_spans_ascii_audit")
+    test_create_pr_quality_pass_step_is_a_real_step()
+    print("ok - test_create_pr_quality_pass_step_is_a_real_step")
