@@ -2058,6 +2058,89 @@ def get_bug_report(report_id: int) -> dict:
         }
 
 
+def unlinked_fix_prompts(
+    report_id: int, status: str | None, fix_pr: int | None, linked: list[dict]
+) -> list[dict]:
+    """Chain prompts for a bug whose fix is in flight but not recorded.
+
+    PURE, so it is pinnable without a fixture, and deliberately narrow: it
+    never proposes a LINK, it only reports that one is missing. Nothing here
+    writes, releases, or infers - a citation is not a fix contract (#B62),
+    and #B191 is that same confusion one layer up, where a bare #B mention
+    stripped an exclusive reservation. So the only question answered here is
+    "is a link we would otherwise have recorded missing right now?".
+
+    The gate is the whole design. `fix_pr` is stamped only by a claim BOUND
+    to the proposal (`_autofix_claims_on_pr_link`, and claim_bug's B85
+    backfill), and merge-time auto-fix discovers by that pointer alone
+    (`db/_bounty.py`: "a #B citation is not a fix contract"). So a report
+    whose linked proposal carries an open or merged PR while `fix_pr` is
+    NULL is one whose fix will silently never mark it fixed - #B187 is the
+    live instance: confirmed, proposal #880, PR #1581 open, fix_pr null.
+
+    Silent by default. Empty for a report that is already chained (fix_pr
+    set), is not actionable, or whose linked proposals carry no PR at all.
+
+    Deliberately NOT suppressed when the bug is already bound to that
+    proposal yet the pointer never landed - the PR-open stamp is
+    best-effort and can fail closed, so that state is reachable. Re-claiming
+    bound is a silent same-holder refresh that re-runs the B85 backfill, so
+    the prompt is the heal there rather than noise. The prompt never claims
+    a fix exists; it names the one call that would record it.
+
+    `linked` rows carry `id`, `open_prs`, `merged_prs`. Declined and closed
+    PRs appear in neither, so a PR that lost its vote never reads as a fix.
+    Each row also carries `state` - "open", "merged" or "both" - because
+    these are TWO populations wearing one coat (#110), and they take
+    DIFFERENT remedies:
+
+      open   a pr is still open, so the claim-bound stamp has not had its
+             chance yet: claim_bug, as before.
+      merged every pr on this proposal has merged and the pointer is still
+             unset. Claiming is not the heal here - you cannot chain a fix
+             to a pr that already shipped. #B187's own recovery was
+             update_bug_report(fix_pr=...), which is a REPORTER/ADMIN
+             call, so the prompt says whose decision it is rather than
+             handing out a command the reader may not be able to run.
+
+    The census caveat behind that split, which is #B136's whole point:
+    linked_proposals is populated by a PROSE scan, so "merged" here means
+    "a pr that mentioned this bug in its body merged" - NOT "this bug was
+    fixed". #B136 is the live row: four linked proposals, three with
+    merged prs, fix_pr null, and fix_round at quorum 3 / not_fixed, because
+    three prs cited it in prose and none of them fixed it. That is why the
+    two populations must not share one instruction, and why the merged
+    branch names a judgment rather than a command.
+    """
+    if (status or "") not in ("open", "confirmed") or fix_pr is not None:
+        return []
+    out: list[dict] = []
+    for p in linked:
+        opens = list(p.get("open_prs") or [])
+        merged = list(p.get("merged_prs") or [])
+        if not opens and not merged:
+            continue
+        # "both" resolves to the CLAIM, deliberately: an open pr can still
+        # be chained, so the stamp is a live option, while the merged sibling
+        # on the same proposal is a historical fact. The row carries both
+        # lists either way, so nothing is hidden by the choice.
+        state = "both" if opens and merged else ("open" if opens else "merged")
+        if opens:
+            action = f"claim_bug({report_id}, proposal_id={p['id']}) to chain the fix"
+        else:
+            action = f"update_bug_report({report_id}, fix_pr={merged[0]})"
+        out.append(
+            {
+                "proposal_id": p["id"],
+                "open_prs": opens,
+                "merged_prs": merged,
+                "state": state,
+                "action": action,
+            }
+        )
+    return out
+
+
 # The single Python-side copy of the lifecycle enum. schema.sql's CHECK on
 # bug_reports.status is the authority; tests/test_bug_reports.py asserts the
 # two agree, so a state added there and forgotten here reds CI instead of
