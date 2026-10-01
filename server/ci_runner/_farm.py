@@ -364,6 +364,16 @@ def tree_payload(
         # domain: degrade-silently - if we cannot read the store we cannot
         # prove the union is complete, so the tree stays local
         return None, "ineligible_tree"
+    if stored is None:
+        # The store EXISTS but cannot be read whole - a corrupt blob makes the
+        # private reader stop and hand back only the prefix it managed to read.
+        # That is NOT the same answer as a tree holding no deltas, and it is
+        # not visible here: without this arm the loop below would happily
+        # concatenate a truncated prefix with the incoming delta and ship it,
+        # so the runner would reset to base, apply a SUBSET of the tree, and
+        # return its green as this run's verdict. That is the one direction
+        # that reports success for a tree nobody tested. Refuse instead.
+        return None, "ineligible_tree"
     payload: list[dict] = []
     for blob in stored:
         payload.extend(f for f in blob if isinstance(f, dict))

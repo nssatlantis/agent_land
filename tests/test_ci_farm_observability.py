@@ -11,6 +11,7 @@ residue to later siblings) and because every arm here is cheap.
 """
 
 import faulthandler
+import json
 import os
 import sys
 import tempfile
@@ -477,8 +478,104 @@ def test_the_test_lane_consults_the_payload_decision():
     )
 
 
+def test_a_corrupt_stored_delta_makes_the_tree_indeterminate():
+    """The population the truncation defect actually lives in.
+
+    _stored_deltas stops scanning at a corrupt blob and returns the PREFIX it
+    managed to read. A prefix is indistinguishable from a short tree, so a
+    warm tree whose second blob is unreadable would ship only the incoming
+    delta: the runner resets to base, applies a SUBSET, and returns green -
+    a receipt for a tree nobody tested. named_tree_deltas must return None
+    (indeterminate) rather than [] ("genuinely empty"), and tree_payload must
+    refuse.
+
+    The earlier `refuses_rather_than_ships_a_partial_tree` arm covered only the
+    COUNT and BYTE ceilings, never an unreadable store, which is why the
+    truncation shipped past it. This is the census lesson: the arm you add
+    passes on the case you just fixed, so the census is the thing nobody
+    re-reads.
+    """
+    name = "corrupt-delta-tree"
+    tree = trees_mod._named_dir(7, name)
+    os.makedirs(os.path.join(tree, ".git"), exist_ok=True)
+    trees_mod._write_manifest(
+        tree, {"agent_id": 7, "base_sha": "a" * 40, "base_ref": "main"}
+    )
+    store = os.path.join(tree, ".ci-deltas")
+    os.makedirs(store, exist_ok=True)
+    incoming = [{"path": "incoming.py", "content": "two"}]
+    try:
+        with open(os.path.join(store, "0000.json"), "w", encoding="utf-8") as fh:
+            json.dump([{"path": "first.py", "content": "one"}], fh)
+        with open(os.path.join(store, "0001.json"), "w", encoding="utf-8") as fh:
+            fh.write("{ this is not json")
+
+        assert trees_mod.named_tree_deltas(7, name) is None, (
+            "a store that cannot be read whole must read as None (indeterminate), "
+            "never as a truncated list - [] means 'no deltas' and a prefix means "
+            "'some deltas are unreadable', and only the second may refuse"
+        )
+        payload, reason = farm.tree_payload(7, name, incoming, "main")
+        assert payload is None and reason == "ineligible_tree", (
+            "tree_payload must refuse a tree whose stored deltas cannot be read "
+            f"whole, got payload={payload!r} reason={reason!r}"
+        )
+
+        # POSITIVE CONTROL, directly under the absence arm: the very same tree
+        # with a readable store must dispatch, in stored-then-incoming order.
+        # Without this the arm above would also pass if tree_payload refused
+        # everything.
+        with open(os.path.join(store, "0001.json"), "w", encoding="utf-8") as fh:
+            json.dump([{"path": "second.py", "content": "three"}], fh)
+        stored = trees_mod.named_tree_deltas(7, name)
+        assert stored is not None and len(stored) == 2, (
+            f"a fully readable store must read as both blobs, got {stored!r}"
+        )
+        payload, reason = farm.tree_payload(7, name, incoming, "main")
+        assert payload is not None and reason == "", (
+            f"a readable tree must still dispatch, got {reason!r}"
+        )
+        paths = [f["path"] for f in payload]
+        assert paths == ["first.py", "second.py", "incoming.py"], (
+            f"stored blobs then the incoming delta, in that order, got {paths}"
+        )
+    finally:
+        trees_mod._retire_dir(tree)
+
+
+def test_a_tree_with_no_store_at_all_is_empty_not_indeterminate():
+    """The other half of the sentinel: absent must stay [].
+
+    Pinning only the None arm would let a future edit collapse the two and
+    make every cold tree look indeterminate - which would silently push all
+    cold-tree rehearsals back to local.
+    """
+    name = "no-store-tree"
+    tree = trees_mod._named_dir(7, name)
+    os.makedirs(os.path.join(tree, ".git"), exist_ok=True)
+    trees_mod._write_manifest(
+        tree, {"agent_id": 7, "base_sha": "a" * 40, "base_ref": "main"}
+    )
+    try:
+        assert trees_mod.named_tree_deltas(7, name) == [], (
+            "a tree whose .ci-deltas directory does not exist holds no deltas; "
+            "that is [] (empty), not None (indeterminate)"
+        )
+        payload, reason = farm.tree_payload(
+            7, name, [{"path": "only.py", "content": "x"}], "main"
+        )
+        assert payload is not None and reason == "", (
+            f"a cold tree must dispatch on its incoming delta alone, got {reason!r}"
+        )
+        assert [f["path"] for f in payload] == ["only.py"]
+    finally:
+        trees_mod._retire_dir(tree)
+
+
 def main() -> None:
     test_tree_payload_ships_the_union_not_just_the_newest_delta()
+    test_a_corrupt_stored_delta_makes_the_tree_indeterminate()
+    test_a_tree_with_no_store_at_all_is_empty_not_indeterminate()
     test_tree_payload_refuses_rather_than_ships_a_partial_tree()
     test_named_tree_deltas_is_read_only_and_absent_safe()
     test_the_test_lane_consults_the_payload_decision()
