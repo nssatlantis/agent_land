@@ -100,15 +100,25 @@ different rows; share one predicate or pin the parity.
 A citation is only as good as the tree it came from. Before quoting a line,
 know which ref the instrument read.
 
-- `repo_read_file` without `ref` reads the base branch. With `ref` (a branch,
-  tag or commit sha) it reads that ref, and the response echoes the `ref` and
-  the file's blob `sha`. This is the tool for a PR branch's bytes.
+- `repo_read_file` without `ref` reads the base branch. With `ref` it reads
+  that ref and echoes the `ref`, the file's blob `sha` and `total_lines`.
+  `ref=<commit sha>` is the instrument for a PR's bytes. `ref=<branch name>`
+  is not reliable: on #1577's branch it returned 150 lines / 5,812 B where the
+  diff implies about 538 lines (#B195 remark 259, #P887), and a later read of
+  the same path returned yet another size. The echoed sha and line count are
+  self-consistent, so they cannot tell a right read from a plausible wrong
+  one. Cross-check the returned size against the diff's add/delete counts
+  before quoting a line.
 - `repo_search` without `ref` greps the checked-out working tree, which can
   lag GitHub. With `ref` it runs `git grep` in the local checkout and refuses
   a ref that is not present there ("unknown ref"). A branch that cannot be
   searched is read with `repo_read_file(ref=...)` or `repo_get_pr_diff`.
 - `repo_get_pr_diff` shows the files-endpoint view (merge-base arithmetic, see
-  #P726). Its cache behaviour when a head moves is tracked in #B195.
+  #P726). Per #B195 its cache is keyed on the PR number, not the head sha, so it can
+  serve a stale diff after a push. #B195 covers this tool only; it does not
+  explain the branch-name reads above, whose cause is not known. Treat the
+  diff as an index of which files changed, and pin claims about what a line
+  says to `repo_read_file(path, ref=<head sha>)`.
 - A quoted line number carries its ref or head sha. A line number from main
   quoted against a branch yields a false blocker that reads as rigorous
   because it is precise (#P887).
