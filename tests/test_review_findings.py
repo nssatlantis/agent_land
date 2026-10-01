@@ -1555,6 +1555,52 @@ def main():
         "must stay immune to new states"
     )
 
+    # (d) The GUARD CENSUS, membership-exact over the named sites.  This is
+    # the second half of #105 (arm 2) and the instrument #97's clause 3
+    # defers to, so there is one census rather than two.
+    #
+    # Membership-exact, NOT a literal count, and the reason is the whole
+    # point: a reader added later must EXTEND this list rather than redden
+    # a `== N`, so a seventh guard site is a one-line edit here and not a
+    # false alarm that gets the ratchet deleted.  A ratchet that cries wolf
+    # gets deleted, and deleting it takes the real guard with it.
+    #
+    # Source-shape by the #793 carve-out: the subject here IS the bytes, and
+    # no runtime observation can tell a query that filters withdrawn rows
+    # from one that does not.  Each entry is named explicitly, so a site that
+    # silently loses its guard is named in the failure.
+    import inspect as _inspect
+
+    from db import _review_findings as _rf
+
+    _GUARD_SITES = {
+        "reviewer_blockers": _rf.reviewer_blockers,
+        "findings_queue": _rf.findings_queue,
+        "flip_ready": _rf.flip_ready,
+        "flip_pr_vote_to_approve": _rf.flip_pr_vote_to_approve,
+    }
+    for _name, _fn in _GUARD_SITES.items():
+        _src = _inspect.getsource(_fn)
+        assert "state != 'withdrawn'" in _src, (
+            f"{_name} lost its withdrawn guard - every reader that DECIDES "
+            "must exclude a retracted row, or the display and the predicate "
+            "disagree about the same fact"
+        )
+    # The rendering readers are named too, so the census covers the whole
+    # family rather than only the half that was already guarded.
+    for _name, _fn in (("finding_verdict", _rf.finding_verdict),):
+        assert "state != 'withdrawn'" in _inspect.getsource(_fn), (
+            f"{_name} lost its withdrawn guard - a retracted row must not be "
+            "counted as an open auto-flip blocker by its own finder"
+        )
+    assert "state != 'withdrawn'" in _inspect.getsource(
+        _rf._findings_summary_for_posts
+    ), (
+        "_findings_summary_for_posts lost its withdrawn guard - the docket chip counts it"
+    )
+    # _FINDINGS_UPHELD_WHERE lives in a different module and is a fragment,
+    # not a function body - asserted above on the fragment itself.
+
     # --- #105: the two flip guards, pinned BEHAVIOURALLY -----------------
     # #88 shipped `AND state != 'withdrawn'` on both flip predicates with
     # no pin, and Axiom's mutation battery proved both survive deletion
