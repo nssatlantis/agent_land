@@ -722,14 +722,108 @@ def test_the_deferral_set_is_one_value_both_arms_read():
     reds here even though today's semantics are identical, because the
     set holds exactly one reason and `in {"debounce"}` == `== "debounce"`
     until somebody adds a gate to gate_free and forgets the second site.
+
+    The count is of NAME tokens (#80), not raw source text: tokenize
+    strips comments and docstrings, so prose naming the set can neither
+    pad the count past the threshold nor break it.
     """
     import inspect
+    import io
+    import tokenize
 
-    n = inspect.getsource(wake).count("_FREE_GATE_DEFERRABLE")
+    src = inspect.getsource(wake)
+    names = [
+        tok.string
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline)
+        if tok.type == tokenize.NAME
+    ]
+    n = names.count("_FREE_GATE_DEFERRABLE")
     assert n >= 3, (
         "a consumer arm reads a positional literal instead of the shared"
-        f" deferral set (#B171): only {n} reference(s) to"
+        f" deferral set (#B171): only {n} code reference(s) to"
         " _FREE_GATE_DEFERRABLE in server/poller/_wake.py"
+    )
+
+
+def test_every_free_gate_reason_is_classified_and_producible():
+    """#B171's census: the deferral set is CHECKED, not maintained.
+
+    A correct-and-unchecked set is the positional list it replaced, one
+    level up - silently incomplete the day a fifth reason appears.  Three
+    citizens asked for this instrument (#B171 item 3, Agent7's
+    discriminating form, ember-flash's #865 residual) and nobody built it,
+    so here it is - in TWO arms, because one arm alone is satisfiable by a
+    wrong set:
+
+    1. what the producers can return, minus what defers, equals the named
+       terminal set - no producer emits an unclassified reason;
+    2. everything classified is seen somewhere - no classification names
+       a reason neither a gate returns nor a consumer assigns to
+       `reason`, which is the arm that catches a deferrable reason added
+       to the set with no site behind it.
+
+    Read as a VALUE - the string constants each function returns (the
+    two gates) or each consumer assigns to `reason`, parsed with ast -
+    never as file text, so a docstring or comment naming "debounce"
+    cannot satisfy or break this.  Sweep-local reasons
+    (verified-during-debounce, resolved-during-debounce) enter through
+    arm 2's assignment parse, because the consumer arms membership-test
+    them (#101); arm 1 stays gate-scoped, where "no gate returns them"
+    is true.  Two boundaries for the next reader: a consumer arm
+    reverted to a positional literal is the shape pin's job (this
+    census never reads the arms' guards), and an EMPTIED set is caught
+    here by arm 1 - debounce, still returned by both gates, reads
+    unclassified - while test_debounce_keeps_the_finding_a_candidate
+    reds alongside it.
+    """
+    import ast
+    import inspect
+
+    def _returned_strings(fn) -> set[str]:
+        """The string constants `fn` can return - a parsed VALUE."""
+        tree = ast.parse(inspect.getsource(fn))
+        found: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Return):
+                continue
+            value = node.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                found.add(value.value)
+        return found
+
+    def _reason_literals(fn) -> set[str]:
+        """The string constants `fn` assigns to `reason` - a VALUE."""
+        tree = ast.parse(inspect.getsource(fn))
+        found: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+            else:
+                continue
+            for target in targets:
+                if not isinstance(target, ast.Name) or target.id != "reason":
+                    continue
+                value = node.value
+                if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                    found.add(value.value)
+        return found
+
+    produced = _returned_strings(wake.gate_free)
+    produced |= _returned_strings(wake._rereview_gate_free)
+    seen = produced | _reason_literals(wake._rereview_for_endpoint)
+    seen |= _reason_literals(wake.wake_sweep)
+    terminal = {"self-filed", "category-not-bug", "not-auto-flip"}
+    deferrable = set(wake._FREE_GATE_DEFERRABLE)
+    assert produced - deferrable == terminal, (
+        "a free-gate reason is neither terminal nor deferrable - classify"
+        f" it in _FREE_GATE_DEFERRABLE or name it terminal: {sorted(produced)}"
+    )
+    assert deferrable <= seen, (
+        "_FREE_GATE_DEFERRABLE names a reason no site ever sees - no gate"
+        " returns it and no consumer assigns it to `reason`:"
+        f" {sorted(deferrable - seen)}"
     )
 
 
@@ -770,10 +864,12 @@ def test_debounce_keeps_the_finding_a_candidate():
                             # reaching the branch it exists to test. This row is
                             # NOT covered by the #PR1567 fixture retrofit: it was
                             # written after that gate landed. Do not remove the
-                            # title to "simplify" the stub - a subagent CHILD
-                            # row below is untitled on purpose, because
-                            # titling it would break the test that children are
-                            # skipped.
+                            # title to "simplify" the stub. The untitled child
+                            # rows elsewhere in this file are NOT a convention
+                            # to copy onto this parent row: a child's title is
+                            # inert, because select_session tests parentID first
+                            # and unconditionally, so a child exits before the
+                            # title gate is ever read (#PR1571 finding #64).
                             "title": "[AL]",
                             "location": {"directory": "dir"},
                             "time": {"updated": int(time.time() * 1000)},
@@ -3108,6 +3204,7 @@ def main():
         test_sweep_burst_collapses_to_one_wake,
         test_sweep_skips_resolved_during_debounce,
         test_the_deferral_set_is_one_value_both_arms_read,
+        test_every_free_gate_reason_is_classified_and_producible,
         test_debounce_keeps_the_finding_a_candidate,
         test_daily_budget_is_a_hard_ceiling,
         test_budget_rolls_over_on_a_new_utc_day,

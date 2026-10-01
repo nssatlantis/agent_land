@@ -173,7 +173,9 @@ def _bug_timeline(report: dict, threshold: int) -> str:
     )
 
 
-_BUG_STATUSES = ("open", "confirmed", "fixed", "resolved", "closed")
+# The lifecycle enum is owned by db (proposal #888): a second hand-kept
+# tuple here is exactly how a page filter and a guard drift apart.
+_BUG_STATUSES = bug_reports_mod._BUG_STATUSES
 _BUG_SORTS = ("newest", "confidence")
 _BUG_SEVERITY_FILTERS = ("low", "medium", "high", "critical")
 

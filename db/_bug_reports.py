@@ -1051,7 +1051,7 @@ def bug_fix_round(conn: sqlite3.Connection, report_id: int) -> dict:
     resolve_q = max(1, int(config.BUG_FIX_VERIFY_VOTES))
     reopen_q = max(1, int(config.BUG_FIX_VERIFY_REOPEN_VOTES))
     report = conn.execute(
-        "SELECT fix_pr FROM bug_reports WHERE id = ?", (report_id,)
+        "SELECT fix_pr, verified_at FROM bug_reports WHERE id = ?", (report_id,)
     ).fetchone()
     if report is None:
         raise ForumError(f"Bug report #{report_id} not found.")
@@ -1074,6 +1074,11 @@ def bug_fix_round(conn: sqlite3.Connection, report_id: int) -> dict:
         "state": _fix_round_state(
             report["fix_pr"], confirmed, disputed, resolve_q, reopen_q
         ),
+        # The bar's own completion stamp. Published from the single producer
+        # rather than added downstream, because a pin already holds this
+        # reader and the bulk twin to one shape - adding it to one caller
+        # only is exactly how the two drift apart.
+        "verified_at": report["verified_at"],
     }
 
 
@@ -1106,12 +1111,14 @@ def bug_fix_rounds_bulk(conn: sqlite3.Connection, report_ids: list) -> dict:
     }
     # fix_pr is needed for the same 'not_fixed' branch the single reader
     # applies - without it a report whose bar has not opened would be
-    # indistinguishable from one that is filling.  Still three queries for
-    # any number of reports, so the N+1 this exists to avoid stays avoided.
-    fix_prs = {
-        r["id"]: r["fix_pr"]
+    # indistinguishable from one that is filling.  verified_at rides along
+    # so this twin publishes the same shape as bug_fix_round.  Still three
+    # queries for any number of reports, so the N+1 stays avoided.
+    rows_by_id = {
+        r["id"]: (r["fix_pr"], r["verified_at"])
         for r in conn.execute(
-            f"SELECT id, fix_pr FROM bug_reports WHERE id IN ({marks})", report_ids
+            f"SELECT id, fix_pr, verified_at FROM bug_reports WHERE id IN ({marks})",
+            report_ids,
         ).fetchall()
     }
     resolve_q = max(1, int(config.BUG_FIX_VERIFY_VOTES))
@@ -1124,12 +1131,13 @@ def bug_fix_rounds_bulk(conn: sqlite3.Connection, report_ids: list) -> dict:
             "disputed": disputed.get(rid, 0),
             "pending": max(0, resolve_q - confirmed.get(rid, 0)),
             "state": _fix_round_state(
-                fix_prs.get(rid),
+                rows_by_id.get(rid, (None, None))[0],
                 confirmed.get(rid, 0),
                 disputed.get(rid, 0),
                 resolve_q,
                 reopen_q,
             ),
+            "verified_at": rows_by_id.get(rid, (None, None))[1],
         }
         for rid in report_ids
     }
@@ -2102,11 +2110,42 @@ def list_bug_reports(
 ) -> dict:
     """List bug reports, newest first (or most-confirmed first). Pass `q`
     for a substring match over title + body, `severity` for one triage
-    level, `sort` as 'newest' (default) or 'confidence'. LIKE wildcards in
-    `q` are escaped, so what you type is what matches. Returns
-    {reports, total}."""
+    level, `sort` as 'newest' (default) or 'confidence'. `status` takes a
+    member of _BUG_STATUSES for one state, or None/'' for every state;
+    anything else raises rather than returning an empty page. LIKE wildcards
+    in `q` are escaped, so what you type is what matches.
+
+    Returns {reports, total, offset, has_more}. Each row carries the six
+    fields that decide what a reader should do first - status, severity,
+    claimed_by (null unless the claim is live), fix_pr, fix_round (the
+    second bar, carrying verified_at) and stale - then id,
+    reporter_name/reporter_color, confidence, the duplicate/comment/remark
+    counts, created_at/decided_at/updated_at, a 160-char body_preview, and
+    the closure fields resolution/resolution_note. `has_solution` means a
+    solver recorded a solution TEXT, which is not the same as fix_pr."""
     if sort not in ("newest", "confidence"):
         raise ForumError("sort must be 'newest' or 'confidence'.")
+    # Normalise the FALSY class to None BEFORE the guard, because the two
+    # readers disagreed about it.  _bug_list_clauses tests `if status:`
+    # (truthiness), so '' meant "no filter, every row" on main; an identity
+    # guard reads '' as an unrecognised value and refuses.  On a shipped read
+    # surface that turned /api/bugs?status= from 200 into 400, because
+    # viewer/_api.py forwards the raw query param with no membership filter
+    # (unlike viewer/_bugs.py and server/admin/_bugs.py, which pre-filter).
+    # Collapsing it here is the fix; `if status and ...` would leave the
+    # guard and the builder on different predicates for the next edit to
+    # diverge on again.
+    status = status or None
+    if status is not None and status not in _BUG_STATUSES:
+        # An unrecognised status used to compile to WHERE br.status = '<junk>'
+        # and return an empty page, so a caller asking for (say)
+        # 'actionable' was told there was no work while work existed. Refuse
+        # instead; list_reports already guards its own status the same way.
+        raise ForumError(
+            "status must be one of: "
+            + ", ".join(_BUG_STATUSES)
+            + " (or omit for all; an empty string also means all)."
+        )
     clauses, params = _bug_list_clauses(
         status=status, agent_id=agent_id, q=q, severity=severity
     )
@@ -2125,6 +2164,7 @@ def list_bug_reports(
             f"SELECT br.id, br.agent_id, br.title, br.url, br.status,"
             f" br.confidence, br.created_at, br.decided_at, br.severity,"
             f" br.solution IS NOT NULL AS has_solution, br.fix_pr,"
+            f" br.resolution, br.resolution_note, br.verified_at,"
             f" br.updated_at, SUBSTR(br.body, 1, 160) AS body_preview,"
             f" br.claimed_by, br.claimed_at, br.claimed_proposal_id,"
             f" a.name AS reporter_name,"
@@ -2207,6 +2247,9 @@ def list_bug_reports(
                     "severity": r["severity"],
                     "has_solution": bool(r["has_solution"]),
                     "fix_pr": r["fix_pr"],
+                    "verified_at": r["verified_at"],
+                    "resolution": r["resolution"],
+                    "resolution_note": r["resolution_note"],
                     "fix_round": fix_rounds.get(r["id"]),
                     "body_preview": r["body_preview"],
                     "claimed_by": r["claimed_by"] if live else None,
@@ -2222,7 +2265,12 @@ def list_bug_reports(
                     "stale": _bug_stale(r["status"], r["created_at"]),
                 }
             )
-        return {"reports": reports, "total": total}
+        return {
+            "reports": reports,
+            "total": total,
+            "offset": offset,
+            "has_more": offset + len(rows) < total,
+        }
 
 
 def bug_status_counts(

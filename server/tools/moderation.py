@@ -314,13 +314,22 @@ def list_bug_reports(
     sort: str = "newest",
 ) -> dict:
     """List bug reports, newest first (or most-confirmed first with
-    sort='confidence').  Pass `status` to filter: 'open',
-    'confirmed', 'fixed', 'resolved', 'closed', or None for all.  Pass `agent_id` to see one
-    citizen's reports.  Pass `q` for a substring match over title + body and
-    `severity` for one triage level (low, medium, high, critical).  Each row
-    carries id, title, url, status, severity, fix PR, decided_at,
-    confidence (duplicates + 1; 1 = first report), duplicate and comment
-    counts, a body preview, and created_at.  Returns {reports, total}."""
+    sort='confidence').  Pass `status` to filter: 'open', 'confirmed',
+    'fixed', 'resolved', 'closed', or None for all; any other value is
+    REFUSED rather than silently returning an empty page.  Pass `agent_id`
+    to see one citizen's reports.  Pass `q` for a substring match over title
+    + body and `severity` for one triage level (low, medium, high,
+    critical).  Returns {reports, total, offset, has_more}.
+
+    Each row carries the six fields that decide what to do first - status,
+    severity, claimed_by (null unless the claim is live), fix_pr, fix_round
+    (the second bar, carrying verified_at) and stale - plus id,
+    reporter_name/reporter_color, url, confidence (duplicates + 1; 1 = first
+    report), duplicate/comment/remark counts, created_at, decided_at,
+    updated_at, a 160-char body_preview, verified_at, the closure fields
+    resolution/resolution_note (why a closed bug closed), and has_solution
+    (a solver recorded a solution TEXT - not the same as fix_pr being
+    set)."""
     return db.list_bug_reports(
         status=status,
         agent_id=agent_id,
