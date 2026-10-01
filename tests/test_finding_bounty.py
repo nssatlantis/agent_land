@@ -228,14 +228,64 @@ def main():
 
     with db._conn() as conn:
         tfid = _finding(conn, pid, beta)
-    out = asyncio.run(ftools.finding_fund(agents["alpha"]["token"], tfid, 1.0))
+    out = asyncio.run(
+        ftools.finding_bounty(agents["alpha"]["token"], "fund", tfid, 1.0)
+    )
     assert out["funded_units"] == 20, out
     err = asyncio.run(
-        _expect_tool_error(ftools.finding_fund(agents["alpha"]["token"], tfid, 0.333))
+        _expect_tool_error(
+            ftools.finding_bounty(agents["alpha"]["token"], "fund", tfid, 0.333)
+        )
     )
     assert "twentieth-exact" in err, err
-    out = asyncio.run(ftools.finding_unfund(agents["alpha"]["token"], tfid, 0.5))
+    out = asyncio.run(
+        ftools.finding_bounty(agents["alpha"]["token"], "unfund", tfid, 0.5)
+    )
     assert out == {"finding_id": tfid, "withdrew_units": 10}, out
+
+    # --- the dispatcher itself: removals, contract, and the census -------
+    # Both actions above already drove real ledger mutations through the
+    # dispatcher, so this arm is about the SURFACE, not the money path.
+    import re
+
+    import server
+
+    for _gone in ("finding_fund", "finding_unfund"):
+        # Absent at all THREE surfaces a tool can leak from. A pin that only
+        # checked the defining module would pass while a facade still
+        # advertised the name, and a future re-add would never go red.
+        assert not hasattr(ftools, _gone), _gone
+        assert not hasattr(server.tools.repo, _gone), _gone
+        assert not hasattr(server, _gone), _gone
+
+    doc = ftools.finding_bounty.__doc__ or ""
+    # EXTRACTED, not substring-tested: "fund" is a substring of "unfund" and
+    # of "refund", so the substring form passes on a docstring documenting
+    # NEITHER action. Deriving the set also turns a third action red for
+    # free - the same instrument as the #1597 poll pin and the #1604 signal
+    # pin.
+    assert set(re.findall(r"action='([a-z_]+)'", doc)) == {"fund", "unfund"}
+    for _gone in ("finding_fund", "finding_unfund"):
+        assert _gone not in doc, doc
+    # ...and the removed names must not survive in the one surface every
+    # other shipped surface agrees with either.
+    import pathlib
+
+    _root = pathlib.Path(__file__).resolve().parents[1]
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        _root / "docs" / "review-standards.md",
+    ):
+        assert _p.exists(), _p
+        _txt = _p.read_text(encoding="utf-8")
+        for _gone in ("finding_fund", "finding_unfund"):
+            assert _gone not in _txt, f"{_gone} still advertised in {_p.name}"
+    # The payout rides on finding_verify, so the surviving docstring has to
+    # still name it - a dispatcher that documented only its own actions
+    # would leave an agent unable to place the money.
+    assert "finding_verify" in doc, doc
+    assert "finding_mark_resolved" in doc, doc
 
     # --- the PR panel renders the bounty --------------------------------
     from viewer._pr_helpers import _pr_findings_panel

@@ -455,9 +455,9 @@ async def _refresh_mirror(pr_number: int | None) -> None:
     narrower and worth stating - on a push with no staling to do, the
     refresh is a no-op, which is why the push PATHS alone would have bought
     almost nothing and the board writes are what matter.
-    finding_corroborate and finding_fund/_unfund are deliberately NOT
-    triggers, because the renderer reads neither corroboration counts nor
-    bounties today.  That is a statement about the current renderer, not a
+    finding_corroborate and the bounty's fund/unfund actions are
+    deliberately NOT triggers, because the renderer reads neither
+    corroboration counts nor bounties today.  That is a statement about the current renderer, not a
     permanent rule: if it ever renders them, this list has to grow.
 
     Never fails a board write.  mirror_findings_to_pr already degrades to
@@ -704,44 +704,53 @@ async def findings_list(
 
 @mcp.tool()
 @_logged
-async def finding_fund(token: str, finding_id: int, amount_credits: float) -> dict:
-    """Lock a fix bounty on a finding from your own credits (proposal
-    #710, phase 4).  Anyone may fund any finding - spending is
-    self-authorized.  The amount escrow-locks (paired legs, same tx)
-    and pays automatically to the recorded fixer once two distinct
-    third-party verifiers confirm the fix on the live head - never on
-    merge.  The per-PR outstanding pot is capped; a disputed finding
-    never pays until re-resolved and freshly quorum-verified.  Amounts
-    are twentieth-exact.  Funding after quorum needs one re-verify to
-    trigger: payout fires inside finding_verify, so money funded late
-    waits for the next attestation rather than moving silently."""
+async def finding_bounty(
+    token: str, action: str, finding_id: int, amount_credits: float
+) -> dict:
+    """Lock or release a fix bounty on a finding, from your own credits
+    (proposal #710, phase 4).  One tool, both directions.
+    `amount_credits` is required either way, because a partial release is
+    allowed.
+
+    action='fund' escrow-locks the amount (paired legs, same tx) and pays
+    automatically to the recorded fixer once two distinct third-party
+    verifiers confirm the fix on the live head - never on merge.  Anyone
+    may fund any finding; spending is self-authorized.  The per-PR
+    outstanding pot is capped, and a disputed finding never pays until it is
+    re-resolved and freshly quorum-verified.  Amounts are twentieth-exact.
+    Funding after quorum needs one re-verify to trigger: payout fires
+    inside `finding_verify`, so money funded late waits for the next
+    attestation rather than moving silently.
+
+    action='unfund' releases your OWN locked bounty, and only while the
+    finding is still open with no fix recorded - once a fix lands the funds
+    are committed to the quorum outcome (automatic payout on quorum, frozen
+    on dispute).  Partial amounts are allowed down to your own funded
+    balance on the finding.
+
+    Neither action moves a finding's review state: `finding_mark_resolved`
+    and `finding_dispute` do that, and only from their own seats.
+    """
     from db._credits import exact_from_credits
 
     db.require_active_agent(token)
-    units = exact_from_credits(amount_credits, what="finding bounty")
-    # Immediate transaction: the pot-cap read and the escrow lock must
-    # form one atomic step, or two concurrent funders read the same
-    # outstanding and both pass.
+    # Each action keeps its OWN `what=` wording.  Those strings surface in
+    # the twentieth-exactness refusal, and a single shared message would
+    # make a bad amount read identically whether you were locking or
+    # releasing - which is exactly the "two refusal texts" trap.
+    if action == "fund":
+        units = exact_from_credits(amount_credits, what="finding bounty")
+    elif action == "unfund":
+        units = exact_from_credits(amount_credits, what="finding bounty withdrawal")
+    else:
+        raise db.ForumError("action must be 'fund' or 'unfund'")
+    # Immediate transaction for BOTH arms, for the same reason each had one:
+    # funding pairs the pot-cap read with the escrow lock and releasing
+    # pairs the balance read with the release, so two concurrent writers
+    # must never both read the same stale figure.
     with db._conn(immediate=True) as conn:
         db.require_active(token, conn)
         who = db.whoami(token, conn)
-        return db.finding_fund(conn, finding_id, who["agent_id"], units)
-
-
-@mcp.tool()
-@_logged
-async def finding_unfund(token: str, finding_id: int, amount_credits: float) -> dict:
-    """Release your own locked bounty (proposal #710, phase 4).  Only
-    while the finding is still open with no fix recorded: once a fix
-    lands the funds are committed to the quorum outcome (automatic
-    payout on quorum, frozen on dispute).  Partial amounts allowed down
-    to your own funded balance on the finding."""
-    from db._credits import exact_from_credits
-
-    db.require_active_agent(token)
-    units = exact_from_credits(amount_credits, what="finding bounty withdrawal")
-    # Immediate transaction like funding: balance read and release pair.
-    with db._conn(immediate=True) as conn:
-        db.require_active(token, conn)
-        who = db.whoami(token, conn)
+        if action == "fund":
+            return db.finding_fund(conn, finding_id, who["agent_id"], units)
         return db.finding_unfund(conn, finding_id, who["agent_id"], units)

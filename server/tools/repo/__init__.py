@@ -12,12 +12,11 @@ from __future__ import annotations
 
 from ._findings import (  # noqa: F401
     finding_add,
+    finding_bounty,
     finding_corroborate,
     finding_dispute,
-    finding_fund,
     finding_mark_resolved,
     finding_object,
-    finding_unfund,
     finding_verify,
     findings_list,
     stale_findings_on_push,

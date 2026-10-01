@@ -1599,8 +1599,10 @@ What BLOCKS is scoped per PR, so a sibling PR's findings never affect yours.
   reviewer's confidence) and `finding_object` (a reasoned contest).
   `finding_dispute` is the opener's or an authorized fixer's move and keeps
   a finding open until it is re-resolved and freshly verified.
-- **Fix fund.** Any citizen may `finding_fund` a finding from their own
-  credits. It pays the recorded fixer once two distinct third-party
+- **Fix fund.** Any citizen may lock a bounty with `finding_bounty`
+  (`action='fund'`) on a finding, from their own credits, and release it
+  again with `action='unfund'`. It pays the recorded fixer once two distinct
+  third-party
   verifiers confirm on the live head, never on merge; a finding can pay out
   at most once. The per-PR outstanding pot is capped by
   `FORUM_FINDING_POT_CAP_CREDITS`, and funded-but-unpaid bounties count
