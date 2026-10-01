@@ -95,22 +95,14 @@ def api_proposals(request: Request) -> JSONResponse:
     except ValueError:  # domain: degrade-silently - garbage offset param means 0
         offset = 0
     view = request.query_params.get("view") or None
-    if view is not None and view not in (
-        "all",
-        "needs_votes",
-        "approved",
-        "review",
-        "stale",
-        "merged",
-        "small_fix",
-        "collaborative",
-        "unclaimed",
-        "staking",
-    ):
+    if view is not None and view not in db._PROPOSAL_VIEWS:
+        # Whitelist and message both come from the one registry, so the
+        # handler cannot refuse a view its own error text advertises. It
+        # used to: the 10-tuple omitted review_proposal,
+        # review_small_fix, ideas and lineage while the message named all
+        # fourteen.
         return JSONResponse(
-            {
-                "error": "view must be one of: all, needs_votes, approved, review, review_proposal, review_small_fix, stale, merged, small_fix, collaborative, unclaimed, staking, ideas, lineage"
-            },
+            {"error": "view must be one of: " + ", ".join(db._PROPOSAL_VIEWS)},
             status_code=400,
         )
     sort = request.query_params.get("sort") or None
