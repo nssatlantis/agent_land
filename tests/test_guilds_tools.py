@@ -40,6 +40,26 @@ def _new_agent(prefix: str) -> dict:
     return db.register_agent(f"{prefix}-{_SEQ[0]}")
 
 
+def _closes_in_a_day() -> str:
+    """A poll closes_at one day out, DERIVED from the clock.
+
+    This call is routed through create_guild_poll, which REFUSES a
+    closes_at that is not in the future, so an absolute literal here is a
+    time bomb rather than a fixture: the pinned "2026-10-01" stopped being
+    the future at midnight and turned every open PR's test job red, while
+    the production code was correct the whole time.
+
+    Sibling suites pin '2099-01-01' in raw INSERTs and are fine for
+    decades, because they bypass the validating path - that is the real
+    distinction, not the date. Anything routed through the tool has to be
+    relative. One day sits inside both bounds: future, and well under the
+    14d creator-set cap.
+    """
+    return (datetime.now(timezone.utc) + timedelta(days=1)).strftime(
+        "%Y-%m-%dT%H:%M:%S.000Z"
+    )
+
+
 def _fund(agent_id: int, units: int):
     import db._credits as _cr
 
@@ -251,14 +271,7 @@ def test_chat_and_polls_wrappers():
         assert "member" in str(exc), exc
     gone = gtools.delete_guild_chat(founder["token"], posted["message_id"])
     assert gone["deleted"], gone
-    poll = gtools.create_guild_poll(
-        mate["token"],
-        gid,
-        "ship it?",
-        (datetime.now(timezone.utc) + timedelta(hours=1)).strftime(
-            "%Y-%m-%dT%H:%M:%S.000Z"
-        ),
-    )
+    poll = gtools.create_guild_poll(mate["token"], gid, "ship it?", _closes_in_a_day())
     ballot = gtools.vote_guild_poll(founder["token"], poll["poll_id"], "yes")
     assert ballot["choice"] == "yes", ballot
 
