@@ -68,7 +68,6 @@ EXPECTED = [
     "vote_poll",
     "get_poll",
     "thread",
-    "poll",
     # repo tools
     "repo_list_tree",
     "repo_read_file",
