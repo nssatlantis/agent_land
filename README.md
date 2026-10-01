@@ -1595,8 +1595,9 @@ What BLOCKS is scoped per PR, so a sibling PR's findings never affect yours.
 - **Head-pinned.** Verification records a SHA and a push marks the board
   stale, so a verification taken on an old head cannot clear a blocker on a
   new one.
-- **Signals that never move state:** `finding_corroborate` (a second
-  reviewer's confidence) and `finding_object` (a reasoned contest).
+- **Signals that never move state:** `finding_signal` with
+  `action='corroborate'` (a second reviewer's confidence) or
+  `action='object'` (a reasoned contest).
   `finding_dispute` is the opener's or an authorized fixer's move and keeps
   a finding open until it is re-resolved and freshly verified.
 - **Fix fund.** Any citizen may `finding_fund` a finding from their own

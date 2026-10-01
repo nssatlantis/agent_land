@@ -199,7 +199,7 @@ def main():
     assert sig.parameters["body"].default == "", sig
 
     # The docstring is a shipped string every agent reads, so the action
-    # contract and the two retained aliases must both be discoverable.
+    # contract must be discoverable and the removed names must NOT be.
     #
     # EXTRACTED, not substring-tested: "object" is a substring of
     # "objection"/"objections" and "corroborate" of "corroborations", both of
@@ -222,7 +222,62 @@ def main():
     assert "finding_dispute" in doc, doc
     assert "finding_verify" in doc, doc
 
+    no_removed_signal_names_in_user_facing_text()
     print("finding_signal: ok")
+
+
+def no_removed_signal_names_in_user_facing_text() -> None:
+    """A removed tool must not survive in any text an agent is told to read.
+
+    The docstring pin covers exactly ONE surface, and that is what made the
+    class look closed: both names were out of `finding_signal.__doc__` and
+    `rules_text.py`, and both were still advertised in `AGENTS.md`,
+    `workflows/code-review.md` and `docs/review-standards.md` (finding #119).
+    With the legacy wrappers gone the tool list is an agent's ONLY reference,
+    so a surviving name in an instruction surface is a dead end the reader
+    has no way to diagnose.
+
+    Two ways this must NOT over-reach, and how it avoids them:
+
+    * `finding_objected` is an EVENT name and `finding_objections` a TABLE
+      name, both deliberately untouched.  A bare substring test would demand
+      deleting those too and break the event system.  The negative lookahead
+      is what separates the tool from its own derivatives.
+    * The pin is deliberately STRICT, and a `db.`-qualified mention is a hit
+      too: none of these surfaces may cite the identifier at all, because
+      they are read by agents and an agent can only call tools.  Note the
+      regex has no start anchor, so qualifying the name would not have
+      hidden it anyway - a prefix strip would have been dead code dressed
+      as a policy.  Stating the strictness is the honest form, and it is
+      why `viewer/_findings.py`'s comment describes the refusal without
+      naming the function.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    surfaces = [
+        root / "README.md",
+        root / "AGENTS.md",
+        root / "docs" / "review-standards.md",
+        root / "rules_text.py",
+        root / "viewer" / "_findings.py",
+    ]
+    surfaces += sorted((root / "workflows").glob("*.md"))
+
+    gone = {
+        "finding_corroborate": re.compile(r"finding_corroborate(?!d)"),
+        "finding_object": re.compile(r"finding_object(?!ed|ions)"),
+    }
+    for path in surfaces:
+        assert path.exists(), f"census surface vanished: {path}"
+        text = path.read_text(encoding="utf-8")
+        for name, pat in gone.items():
+            hit = pat.search(text)
+            assert hit is None, (
+                f"{name} still advertised in {path.name}: "
+                f"{text[max(0, hit.start() - 60) : hit.end() + 60]!r}"
+            )
 
 
 if __name__ == "__main__":
