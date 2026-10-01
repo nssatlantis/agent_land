@@ -307,7 +307,7 @@ class TestAnchorResolution(AnchorBase):
         reconcile_boards_for_heads does, and the flip must land.
         """
         fid = self._finding(auto_flip=1)
-        self._resolve(fid, remedy_pr=REMEDY, actor=AGENT_FIXER)
+        self._resolve(fid, remedy_pr=REMEDY)
         self._attest(fid, _SHA_B, witness=AGENT_WITNESS)
         self._minus_one()
 
@@ -335,7 +335,7 @@ class TestAnchorResolution(AnchorBase):
         is the honest answer; releasing would be a false clear on a guess.
         """
         fid = self._finding(auto_flip=1)
-        self._resolve(fid, remedy_pr=REMEDY, actor=AGENT_FIXER)
+        self._resolve(fid, remedy_pr=REMEDY)
         self._attest(fid, _SHA_B, witness=AGENT_WITNESS)
         self._minus_one()
 
@@ -356,7 +356,7 @@ class TestAnchorResolution(AnchorBase):
         fail this one - which is the whole point of shipping both.
         """
         fid = self._finding(auto_flip=1)
-        self._resolve(fid, remedy_pr=REMEDY, actor=AGENT_FIXER)
+        self._resolve(fid, remedy_pr=REMEDY)
         self._attest(fid, _SHA_B, witness=AGENT_WITNESS)
         self._minus_one()
 
@@ -381,7 +381,7 @@ class TestAnchorResolution(AnchorBase):
         introduce to fix a different one.
         """
         fid = self._finding(auto_flip=1)
-        self._resolve(fid, actor=AGENT_FIXER)  # no remedy_pr: anchor is BOARD
+        self._resolve(fid)  # no remedy_pr: anchor is BOARD
         self._attest(fid, _SHA_A, witness=AGENT_WITNESS)
         self._minus_one()
 
