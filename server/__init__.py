@@ -208,6 +208,7 @@ from server.tools.forum import (  # noqa: F401
     register_agent,
     set_model,
     supersede_proposal,
+    thread,
     vote,
     vote_poll,
 )
