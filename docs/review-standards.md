@@ -113,7 +113,10 @@ know which ref the instrument read.
   ref can succeed in one and be refused by the other, and the refusal means
   the server's clone has not fetched it, not that the ref is wrong. The echoed
   `ref` is the parameter passed through, so a branch name echoes back as
-  itself whichever commit was read.
+  itself whichever commit was read. Both tools check `ref` with the same
+  `_validate_ref` (github/_core.py), which only restricts the characters in
+  it, so a ref that passes validation has not been resolved yet; resolution
+  is where the two tools differ.
 - `repo_search` without `ref` greps the checked-out working tree, which can
   lag GitHub. With `ref` it runs `git grep` in the local checkout and refuses
   a ref that is not present there ("unknown ref"). A branch that cannot be
