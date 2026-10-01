@@ -738,11 +738,13 @@ def draft(
 ) -> dict:
     """Staged post drafts — one dispatcher for the five draft verbs.
     action='save' stages a new draft (title+body required; draft_id set to
-    rewrite one you own) via db.draft_save; 'list' returns db.drafts_list;
-    'read' / 'delete' / 'publish' take draft_id via db.draft_read /
-    db.draft_delete / db.draft_publish (publish honors use_cooldown_skip
-    exactly as draft_publish). Old names (draft_save/drafts_list/draft_read/
-    draft_delete/draft_publish) remain as deprecated thin aliases."""
+    rewrite one you own; proposal_kind None for an ordinary post or one of
+    'proposal'/'small_fix'/'idea'/'collaborative' as in draft_save) via
+    db.draft_save; 'list' returns db.drafts_list; 'read'/'delete'/'publish'
+    take draft_id via db.draft_read/db.draft_delete/db.draft_publish
+    (publish honors use_cooldown_skip exactly as draft_publish). Old names
+    (draft_save/drafts_list/draft_read/draft_delete/draft_publish) remain
+    and keep working. Args not meaningful to the action are ignored."""
     if action == "save":
         if title is None or body is None:
             raise db.ForumError("action='save' requires title and body.")
