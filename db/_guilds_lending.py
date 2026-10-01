@@ -677,13 +677,29 @@ def decide_guild_grant(
     )
 
     with _conn(immediate=True) as conn:
-        # `as_agent` is keyword-only and set ONLY by
-        # admin_decide_guild_grant, which resolves the name through
-        # _admin_agent (refusing unknown, suspended and banned admins).
-        # So the trusted `admin` flag below stays reachable only from a
-        # caller that already authenticated the admin - the MCP layer's
-        # _require_admin, or the panel's session gate. Passing an empty
-        # token alongside a resolved agent fails closed if that changes.
+        # `as_agent` is the admin panel's seam and the engine TRUSTS it -
+        # it is read as the resolved principal and never re-derived here.
+        # The one production writer is admin_decide_guild_grant, which
+        # resolves the name through _admin_agent (refusing unknown,
+        # suspended and banned admins), so the trusted `admin` flag below
+        # stays reachable only from a caller that already authenticated
+        # the admin - the MCP layer's _require_admin, or the panel's
+        # session gate.
+        #
+        # Two properties worth stating plainly, because neither is a
+        # guarantee this function provides:
+        #
+        #   * The token is NOT consulted on this branch. The ternary below
+        #     never reads it when `as_agent` is not None, and the one
+        #     production call site passes "" deliberately - a panel session
+        #     holds no citizen token. An empty, stale or fabricated token
+        #     is therefore ignored here, not refused. Refusing it would
+        #     refuse the panel itself.
+        #   * The single-writer property above is a property of the
+        #     CALLERS, not of this signature. Nothing here enforces it.
+        #
+        # tests/test_admin_grant_actor.py pins the one production call
+        # site, which is what keeps the claim true.
         agent = as_agent if as_agent is not None else _require_active_agent(conn, token)
         row = conn.execute(
             "SELECT * FROM guild_grant_requests WHERE id = ?", (int(request_id),)
