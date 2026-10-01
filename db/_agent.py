@@ -88,7 +88,17 @@ _FINDINGS_LANDED_WHERE = (
     f" AND {pr_merged_sql('f.pr_number')}"
 )
 _FINDINGS_UPHELD_WHERE = (
+    # Blacklist, not a whitelist, and that is a recorded asymmetry rather
+    # than an oversight: 'landed' above wants ONE state (resolved + verified
+    # + merged) so a positive test is correct there, while 'upheld' asks
+    # "present at a negative decision" - which every state except a
+    # retired one satisfies.  A new terminal state therefore has to be
+    # EXCLUDED here explicitly, or it counts as upheld by default.  That is
+    # the whole reason 'withdrawn' is named rather than left to the shape of
+    # the query: it is a retraction, and a retracted finding is not a
+    # finding anyone upheld.
     "f.state NOT IN ('stale', 'disputed')"
+    " AND f.state != 'withdrawn'"
     f" AND {pr_negative_before_sql('f.pr_number', 'f.created_at')}"
 )
 _FINDINGS_LIST_CTES = (

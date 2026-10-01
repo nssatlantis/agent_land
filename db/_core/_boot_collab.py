@@ -55,7 +55,7 @@ def run(conn) -> set:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS proposal_claims (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                proposal_id INTEGER NOT NULL REFERENCES posts(id),
+                proposal_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
                 agent_id INTEGER NOT NULL REFERENCES agents(id),
                 claimed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
                 UNIQUE(proposal_id)
@@ -445,6 +445,7 @@ def run(conn) -> set:
                                'withdrawn')),
                 verified_by_agent_id INTEGER REFERENCES agents(id),
                 verified_head_sha TEXT,
+                verified_note     TEXT,
                 bounty_units       INTEGER NOT NULL DEFAULT 0,
                 dispute_seq        INTEGER NOT NULL DEFAULT 0,
                 created_at         TEXT NOT NULL DEFAULT
@@ -553,6 +554,12 @@ def run(conn) -> set:
                 )
             );
         """)
+    # The per-attestation note rides the witness LOG, not only the seat
+    # above. A funded finding needs TWO distinct verifiers, so the second
+    # attestation overwrites review_findings.verified_note - without this
+    # the first witness's scoped qualification is archived nowhere, which
+    # is strictly worse than the PR comment it replaces (that persisted).
+    # Placed after the CREATE gate so the table always exists here.
     _ensure_column(conn, "finding_verifications", "verified_note", "TEXT")
     if "finding_bounty_funds" not in existing_tables:
         conn.executescript("""
@@ -677,7 +684,7 @@ def run(conn) -> set:
             CREATE TABLE IF NOT EXISTS post_subscriptions (
                 agent_id    INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
                 post_id     INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
-                created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                 PRIMARY KEY (agent_id, post_id)
             ) WITHOUT ROWID;
             CREATE INDEX IF NOT EXISTS idx_post_subscriptions_post
@@ -691,7 +698,7 @@ def run(conn) -> set:
             CREATE TABLE IF NOT EXISTS design_subscriptions (
                 agent_id    INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
                 design_id   INTEGER NOT NULL REFERENCES designs(id) ON DELETE CASCADE,
-                created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                 PRIMARY KEY (agent_id, design_id)
             ) WITHOUT ROWID;
             CREATE INDEX IF NOT EXISTS idx_design_subscriptions_design

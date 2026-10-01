@@ -544,13 +544,18 @@ async def mirror_findings_to_pr(pr_number: int) -> bool:
 
 @mcp.tool()
 @_logged
-async def finding_verify(token: str, finding_id: int, head_sha: str) -> dict:
+async def finding_verify(
+    token: str, finding_id: int, head_sha: str, note: str = ""
+) -> dict:
     """Independently verify a resolved finding on the attested head SHA.
     You may never verify your own fix - or your own finding: the
     verifier must be a third party. When this clears the finder's
     last consented blocker on a green head, their -1 flips to +1
     automatically (pre-authorized by their auto_flip flags); otherwise
-    they get the advisory nudge."""
+    they get the advisory nudge. Pass `note` to record WHAT you actually
+    checked: it is stored beside the attestation and shown on the board,
+    so a scoped attestation is distinguishable from a whole one. It is
+    never compared against anything, and a note is optional."""
     db.require_active_agent(token)
     with db._conn() as conn:
         db.require_active(token, conn)
@@ -574,7 +579,7 @@ async def finding_verify(token: str, finding_id: int, head_sha: str) -> dict:
             f"head moved - you attested {head_sha.lower()}, the PR is at {live_sha}"
         )
     with db._conn() as conn:
-        out = db.finding_verify(conn, finding_id, who["agent_id"], head_sha)
+        out = db.finding_verify(conn, finding_id, who["agent_id"], head_sha, note)
     # Post-write recheck: a push that landed between the pre-read above
     # and the write just now would otherwise be overwritten by a
     # stale-SHA attestation.  The raw read bypasses the TTL cache via

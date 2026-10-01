@@ -110,6 +110,23 @@ def _frozen_post_for_finding(conn: sqlite3.Connection, finding_id: int) -> sqlit
     return row
 
 
+def _refuse_withdrawn(row: sqlite3.Row, what: str) -> None:
+    """Refuse a user mutation on a withdrawn finding.
+
+    'withdrawn' is TERMINAL (bug #B172): the finder retracted the claim,
+    so the row is a record of the retraction, never a live blocker.  Every
+    mutator that could still write a withdrawn row has to refuse it here
+    rather than in its own guard, because the failure is not cosmetic -
+    finding_mark_resolved re-resolves the row and maybe_pay_finding_bounty
+    then pays the funder's escrow out to whoever fixed it.  One shared
+    predicate is the point: three call sites each spelling the check is how
+    this class reopened in the first place."""
+    if row["state"] == "withdrawn":
+        raise ForumError(
+            f"that finding is withdrawn - {what} is refused on a retraction"
+        )
+
+
 def finding_add(
     conn: sqlite3.Connection,
     post_id: int,
@@ -278,6 +295,7 @@ def finding_mark_resolved(
     proposals.  The opener is re-derived from the PR link inside -
     callers never supply it, so authority cannot be passed in."""
     row = _frozen_post_for_finding(conn, finding_id)
+    _refuse_withdrawn(row, "resolve")
     opener = _recorded_opener(conn, row["pr_number"])
     if actor_id != opener and actor_id not in fixer_ids:
         raise ForumError("only the PR opener or an authorized fixer resolves")
@@ -324,6 +342,7 @@ def finding_dispute(
     blocker - file a new finding instead.  Frozen on locked proposals.
     The opener is re-derived from the PR link inside."""
     row = _frozen_post_for_finding(conn, finding_id)
+    _refuse_withdrawn(row, "dispute")
     opener = _recorded_opener(conn, row["pr_number"])
     if actor_id != opener and actor_id not in fixer_ids:
         raise ForumError("only the PR opener or an authorized fixer disputes")
@@ -688,8 +707,8 @@ def findings_list(
 
     `finding_id` is a fourth scope, added #816: ONE finding, in any state.
     It is a filter on the SAME query rather than a new reader, because a
-    dedicated `SELECT * FROM review_findings WHERE id = ?` would return 17
-    keys instead of 20 - no post_title, no corroborations, no objections -
+    dedicated `SELECT * FROM review_findings WHERE id = ?` would return 18
+    keys instead of 21 - no post_title, no corroborations, no objections -
     and a per-finding URL is precisely where a reader would reach for that
     one-liner.  A third row shape is how findings_queue and findings_list
     came to disagree in the first place.  Callers want `board_filter="all"`
@@ -775,6 +794,7 @@ def finding_verdict(
     per_voter = conn.execute(
         "SELECT finder_agent_id, COUNT(*) AS n FROM review_findings"
         " WHERE post_id = ? AND auto_flip = 1"
+        " AND state != 'withdrawn'"
         f"{scope} AND NOT ({_VERIFIED_SQL})"
         " GROUP BY finder_agent_id",
         (post_id, *scope_args),
@@ -848,7 +868,17 @@ def flip_ready(
     (that flag is the flip consent - with none, there is nothing they
     consented to); every auto_flip finding is independently verified;
     every verification pins the live head.  Anything else reports why
-    not - the caller falls back to the advisory nudge."""
+    not - the caller falls back to the advisory nudge.
+
+    Which option a withdrawal takes (bug #B172, #88): the blocker SET
+    excludes withdrawn rows, but the "at least one auto_flip finding"
+    existence check deliberately does NOT - so a voter whose consented
+    findings are all withdrawn reads flip-ELIGIBLE.  That is option (b):
+    the retraction discharges the condition it named, which is the whole
+    point of withdrawing a blocker you no longer believe.  The
+    conservative alternative (a) would exclude withdrawn rows from the
+    existence check too, routing an all-withdrawn voter to the advisory
+    nudge and a manual re-vote.  This ships (b), deliberately."""
     vote = conn.execute(
         "SELECT value FROM pr_votes WHERE pr_number = ? AND voter_id = ?",
         (pr_number, voter_id),
@@ -1050,6 +1080,7 @@ def finding_fund(
     from db._credits import spend
 
     row = _frozen_post_for_finding(conn, finding_id)
+    _refuse_withdrawn(row, "funding")
     if amount_units <= 0:
         raise ForumError("a bounty must be positive")
     if conn.execute(
@@ -1424,11 +1455,13 @@ def _findings_summary_for_posts(
         marks = ",".join("?" * len(chunk))
         for r in conn.execute(
             "SELECT post_id,"
-            f" COALESCE(SUM(CASE WHEN NOT ({_VERIFIED_SQL}) THEN 1 ELSE 0 END), 0)"
+            " COALESCE(SUM(CASE WHEN state != 'withdrawn'"
+            f" AND NOT ({_VERIFIED_SQL}) THEN 1 ELSE 0 END), 0)"
             " AS open_findings,"
             f" COALESCE(SUM(CASE WHEN {_VERIFIED_SQL} THEN 1 ELSE 0 END), 0)"
             " AS verified_findings,"
             " COALESCE(SUM(CASE WHEN auto_flip = 1"
+            " AND state != 'withdrawn'"
             f" AND NOT ({_VERIFIED_SQL}) THEN 1 ELSE 0 END), 0)"
             f" AS open_blockers FROM review_findings WHERE post_id IN ({marks})"
             " GROUP BY post_id",

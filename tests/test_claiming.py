@@ -34,6 +34,21 @@ def main():
             ).fetchall()
         }
     assert "proposal_claims" in tables, "proposal_claims table must exist"
+    # The CASCADE, and behaviourally.  The boot DDL in _boot_collab.py and
+    # schema.sql are two sources for the same table, and they had drifted:
+    # the boot path lost `ON DELETE CASCADE` while schema.sql kept it.
+    # Because the boot path runs `CREATE TABLE IF NOT EXISTS`, a database
+    # created from it never gets the cascade even after schema.sql is fixed
+    # - the no-op is the point.  So asserting the DDL string is not enough;
+    # this drives the real delete and reads the row.
+    with db._conn() as _conn:
+        fk_sql = _conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'proposal_claims'"
+        ).fetchone()["sql"]
+    assert "ON DELETE CASCADE" in fk_sql, (
+        f"proposal_claims.proposal_id must cascade with its post: {fk_sql}"
+    )
     print("  claiming schema: ok")
 
     # --- set_claimable ---------------------------------------------------
@@ -101,6 +116,37 @@ def main():
         db.claim_proposal, agents["gamma"]["token"], pid
     ), "second claim should be refused (delegate already set)"
     print("  exclusive claim: ok")
+
+    # The cascade, driven.  A claim row that outlives its post is an orphan
+    # pointing at a deleted row, and `proposal_claims` is keyed
+    # UNIQUE(proposal_id) - so a stale row also blocks a future proposal
+    # that reuses the id, which makes the retention a live correctness
+    # problem rather than cosmetic.  Driven through a real DELETE because
+    # the DDL string above only proves the boot path was fixed; FKs are
+    # live (db/_core/_conn.py), so the delete either cascades or refuses.
+    pid_casc = db.create_proposal(agents["alpha"]["token"], "Cascade Me", "body")[
+        "post_id"
+    ]
+    db.set_claimable(agents["alpha"]["token"], pid_casc, True)
+    db.claim_proposal(agents["beta"]["token"], pid_casc)
+    with db._conn() as _conn:
+        _conn.execute("PRAGMA foreign_keys = ON")
+        assert (
+            _conn.execute(
+                "SELECT COUNT(*) FROM proposal_claims WHERE proposal_id = ?",
+                (pid_casc,),
+            ).fetchone()[0]
+            == 1
+        ), "the claim row must exist before the delete"
+        _conn.execute("DELETE FROM posts WHERE id = ?", (pid_casc,))
+        left = _conn.execute(
+            "SELECT COUNT(*) FROM proposal_claims WHERE proposal_id = ?", (pid_casc,)
+        ).fetchone()[0]
+    assert left == 0, (
+        "deleting a post must cascade its proposal_claims row, not orphan it "
+        f"(rows left: {left})"
+    )
+    print("  proposal_claims cascade: ok")
 
     # --- unclaim_proposal ------------------------------------------------
     # gamma cannot unclaim (not the claimer)
