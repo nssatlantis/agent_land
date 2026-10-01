@@ -269,6 +269,127 @@ class TestAnchorResolution(AnchorBase):
         self.assertEqual(self._row(fid)["verified_head_sha"], _SHA_B)
         self.assertEqual(rf.verified_anchor_pr(self._row(fid)), REMEDY)
 
+    # --- #83: the flip half, driven through its real signature ---------
+    #
+    # flip_pr_vote_to_approve takes an optional `anchor_heads` dict and
+    # resolves each consented row against ITS OWN anchor's head. Omit it
+    # and a cross-anchored row blocks (fail-closed). That is a decision
+    # worth making and it was worth nothing until something executed it:
+    # no test drove this function with a cross-anchored row, so the whole
+    # branch was unexercised code carrying a deliberate policy.
+
+    def _minus_one(self, voter=AGENT_FINDER, pr=BOARD):
+        """A recorded -1 for the flip to move: the function's first gate
+        is `existing["value"] != -1`, so without this row every arm below
+        would raise on the wrong refusal and read as a pass."""
+        self.conn.execute(
+            "INSERT OR IGNORE INTO pr_votes (pr_number, voter_id, value,"
+            " created_at) VALUES (?, ?, -1, '2026-01-01T00:00:00Z')",
+            (pr, voter),
+        )
+        self.conn.commit()
+        return voter
+
+    def _vote_value(self, voter=AGENT_FINDER, pr=BOARD):
+        return self.conn.execute(
+            "SELECT value FROM pr_votes WHERE pr_number = ? AND voter_id = ?",
+            (pr, voter),
+        ).fetchone()["value"]
+
+    def test_flip_clears_a_cross_anchored_blocker_when_its_anchor_head_is_supplied(
+        self,
+    ):
+        """The POSITIVE arm, and the one that makes the dict load-bearing.
+
+        A cross-anchored row attested at REMEDY's head is only releasable
+        if the caller can tell this function what REMEDY's head is. Bind
+        the board head to the BOARD and REMEDY's to REMEDY, exactly as
+        reconcile_boards_for_heads does, and the flip must land.
+        """
+        fid = self._finding(auto_flip=1)
+        self._resolve(fid, remedy_pr=REMEDY, actor=AGENT_FIXER)
+        self._attest(fid, _SHA_B, witness=AGENT_WITNESS)
+        self._minus_one()
+
+        out = rf.flip_pr_vote_to_approve(
+            self.conn,
+            1,
+            BOARD,
+            AGENT_FINDER,
+            _SHA_A,
+            anchor_heads={REMEDY: _SHA_B},
+        )
+        self.conn.commit()
+        # The return is a TALLY {pr_number, up, down, net} - there is no
+        # `value` key, which is the shape I first wrote and which would have
+        # red for a reason that has nothing to do with the fix. Asserting the
+        # tally is the stronger check anyway: it is what a caller reads.
+        self.assertEqual((out["up"], out["down"], out["net"]), (1, 0, 1), out)
+        self.assertEqual(self._vote_value(), 1, "the -1 must actually have moved")
+
+    def test_flip_blocks_a_cross_anchored_blocker_when_no_anchor_head_is_supplied(self):
+        """The fail-closed half, which is the branch nobody exercised.
+
+        Without anchor_heads the function has no head for REMEDY, so it
+        cannot conclude the row is still verified at a live head. Blocking
+        is the honest answer; releasing would be a false clear on a guess.
+        """
+        fid = self._finding(auto_flip=1)
+        self._resolve(fid, remedy_pr=REMEDY, actor=AGENT_FIXER)
+        self._attest(fid, _SHA_B, witness=AGENT_WITNESS)
+        self._minus_one()
+
+        with self.assertRaises(db.ForumError) as ctx:
+            rf.flip_pr_vote_to_approve(self.conn, 1, BOARD, AGENT_FINDER, _SHA_A)
+        self.assertIn("reopened", str(ctx.exception))
+        self.conn.commit()
+        self.assertEqual(
+            self._vote_value(), -1, "a blocked flip must leave the -1 standing"
+        )
+
+    def test_flip_blocks_when_the_supplied_anchor_head_has_moved(self):
+        """The arm that proves the dict's VALUE is read, not its presence.
+
+        anchor_heads={REMEDY: _SHA_B} is what releases the row; the same
+        key carrying a different sha must block. A function that only
+        tested `anchor_heads is not None` would pass the first arm and
+        fail this one - which is the whole point of shipping both.
+        """
+        fid = self._finding(auto_flip=1)
+        self._resolve(fid, remedy_pr=REMEDY, actor=AGENT_FIXER)
+        self._attest(fid, _SHA_B, witness=AGENT_WITNESS)
+        self._minus_one()
+
+        with self.assertRaises(db.ForumError):
+            rf.flip_pr_vote_to_approve(
+                self.conn,
+                1,
+                BOARD,
+                AGENT_FINDER,
+                _SHA_A,
+                anchor_heads={REMEDY: _SHA_C},
+            )
+        self.conn.commit()
+        self.assertEqual(self._vote_value(), -1)
+
+    def test_a_same_anchored_row_needs_no_anchor_heads(self):
+        """The control that keeps the two arms honest: a row on the BOARD
+        anchor is releasable from live_head_sha alone, exactly as before
+        this PR. Without it, an implementation that demanded anchor_heads
+        unconditionally would pass the cross-anchored arm and silently
+        wedge every ordinary blocker flip - a regression this PR must not
+        introduce to fix a different one.
+        """
+        fid = self._finding(auto_flip=1)
+        self._resolve(fid, actor=AGENT_FIXER)  # no remedy_pr: anchor is BOARD
+        self._attest(fid, _SHA_A, witness=AGENT_WITNESS)
+        self._minus_one()
+
+        out = rf.flip_pr_vote_to_approve(self.conn, 1, BOARD, AGENT_FINDER, _SHA_A)
+        self.conn.commit()
+        self.assertEqual((out["up"], out["down"], out["net"]), (1, 0, 1), out)
+        self.assertEqual(self._vote_value(), 1)
+
 
 class TestAnchorAttestation(AnchorBase):
     def test_attestation_is_stamped_with_the_anchor_it_was_read_at(self):
