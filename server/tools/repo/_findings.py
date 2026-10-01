@@ -132,14 +132,6 @@ async def _signal_corroborate(token: str, finding_id: int) -> dict:
         return {"finding_id": finding_id, "corroborations": count}
 
 
-@mcp.tool()
-@_logged
-async def finding_corroborate(token: str, finding_id: int) -> dict:
-    """Endorse another reviewer's finding (+1 confidence). Signal only -
-    corroboration never changes finding state."""
-    return await _signal_corroborate(token, finding_id)
-
-
 async def _signal_object(token: str, finding_id: int, body: str) -> dict:
     """Undecorated body of finding_object, shared with finding_signal -
     see _signal_corroborate for why the decorators stay on the tools only.
@@ -179,36 +171,35 @@ async def _signal_object(token: str, finding_id: int, body: str) -> dict:
 
 @mcp.tool()
 @_logged
-async def finding_object(token: str, finding_id: int, body: str) -> dict:
-    """Contest another reviewer's finding with a reason, changing
-    nothing.  Signal only - objections never move finding state, seq
-    or verdict; the finder is pinged so a bogus finding gets an
-    answer.  One reasoned objection per citizen per finding."""
-    return await _signal_object(token, finding_id, body)
-
-
-@mcp.tool()
-@_logged
 async def finding_signal(
     token: str, action: str, finding_id: int, body: str = ""
 ) -> dict:
-    """Signal another reviewer's finding WITHOUT changing its state - one
-    dispatcher for the two signal-only verbs. action='corroborate' endorses
-    (+1 confidence) down the same path as finding_corroborate;
-    action='object' contests with a reason down the same path as
-    finding_object, which pings the finder and refreshes the PR body mirror.
-    Neither moves finding state, seq or verdict: resolution stays the
-    exclusive path of finding_mark_resolved / finding_verify, and the
-    seq-bumping dispute seat stays opener-or-fixer-gated.
+    """Signal another reviewer's finding WITHOUT changing its state - the
+    two signal-only verbs on the findings board, one call.
 
-    body is required for action='object' - an empty reason refuses with
-    'an objection needs a reason', raised by db and deliberately not
-    restated here, so the one refusal text stays in one place - and is
-    ignored for action='corroborate'. Any other action refuses. Each action
-    returns its own shape UNCHANGED: 'corroborations' for corroborate,
-    'objections' for object, so no caller has to learn a normalized counter.
-    Old names (finding_corroborate / finding_object) remain and keep
-    working."""
+    action='corroborate' endorses another reviewer's finding (+1
+    confidence). Signal only: it never changes the finding's state.
+    Refuses on your own finding, and on a second corroboration by the same
+    citizen.
+
+    action='object' contests a finding with a reason. Also signal only -
+    an objection never moves finding state, seq or verdict; the finder is
+    pinged so a bogus finding gets an answer, and the PR body mirror is
+    re-projected because objections render there. One reasoned objection
+    per citizen per finding; the finder cannot object to their own.
+
+    Resolution stays the EXCLUSIVE path of finding_mark_resolved and
+    finding_verify, and the seq-bumping dispute seat
+    (finding_dispute) stays opener-or-fixer-gated - a signal never does
+    any of that.
+
+    body is REQUIRED for action='object' (an empty reason refuses with 'an
+    objection needs a reason') and ignored for action='corroborate'. Any
+    other action refuses.
+
+    Each action returns its own shape UNCHANGED: 'corroborations' for
+    corroborate, 'objections' for object - so there is no normalized
+    counter to learn."""
     if action == "corroborate":
         return await _signal_corroborate(token, finding_id)
     if action == "object":

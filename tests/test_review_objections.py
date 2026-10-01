@@ -103,7 +103,7 @@ def main():
             conn, pid2, 4243, beta, "bug", "other", "c", "f", ["a.py"], False
         )
     out = asyncio.run(
-        ftools.finding_object(agents["gamma"]["token"], tfid, "stale check")
+        ftools.finding_signal(agents["gamma"]["token"], "object", tfid, "stale check")
     )
     assert out == {"finding_id": tfid, "objections": 1}, out
     with db._conn() as conn:

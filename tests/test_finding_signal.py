@@ -174,26 +174,22 @@ def main():
         except db.ForumError as exc:
             assert msg in str(exc), (act, str(exc))
 
-    # --- compat: the two legacy tools still work, and each logs once ---
-    # gamma, not beta: the ledger allows ONE reasoned objection per citizen
-    # per finding, and beta already spent theirs above. Reusing beta here
-    # tested my own misreading of the dedup, not the compat path.
-    out = asyncio.run(
-        ftools.finding_object(
-            token=agents["gamma"]["token"],
-            finding_id=fid,
-            body="legacy path still works",
-        )
-    )
-    assert out == {"finding_id": fid, "objections": 2}, out
-    led = _ledger()
-    assert led.get("finding_object", (0,))[0] == 1, led
-    # Seven, not two: _record_call lives in the wrapper's finally block and
-    # db/_tool_usage.py counts EVERY call (success rate needs the failures),
-    # so the four refusals above each wrote a row too. Getting this number
-    # right is what proves the refusals went through the same single
-    # wrapper rather than short-circuiting the tool.
-    assert led["finding_signal"][0] == 7, led
+    # --- hard-remove: the legacy tool names are GONE ---------------------
+    # Not "still work" but "no longer exist": the whole point of this
+    # program is a SMALLER tool surface, and `signal` is on
+    # tool_cleanup.md's hard-remove list. A pin that asserted the aliases
+    # worked would have made the retention look intentional - and this is
+    # the assertion that turns a future re-add red.
+    #
+    # Checked at the three surfaces a tool can leak from: the defining
+    # module, the package facade, and the top-level facade.
+    import server as _srv
+    import server.tools.repo as _rp
+
+    for _gone in ("finding_corroborate", "finding_object"):
+        assert not hasattr(ftools, _gone), f"{_gone} is still defined"
+        assert not hasattr(_rp, _gone), f"{_gone} is still re-exported"
+        assert not hasattr(_srv, _gone), f"{_gone} is still on the facade"
 
     # --- the surface: no client-supplied kind, body is action-optional --
     import inspect
@@ -215,7 +211,16 @@ def main():
 
     doc = ftools.finding_signal.__doc__ or ""
     assert set(re.findall(r"action='([a-z_]+)'", doc)) == {"corroborate", "object"}
-    assert "finding_corroborate" in doc and "finding_object" in doc, doc
+    # The removed names must NOT be advertised: an agent reading the tool
+    # list has only this docstring to go on, and a stale mention here is
+    # exactly how a removed tool keeps getting called.
+    assert "finding_corroborate" not in doc, doc
+    assert "finding_object" not in doc, doc
+    # ...and it must name the tools that DID survive, since the signal
+    # verbs are useless without knowing which tools move state.
+    assert "finding_mark_resolved" in doc, doc
+    assert "finding_dispute" in doc, doc
+    assert "finding_verify" in doc, doc
 
     print("finding_signal: ok")
 

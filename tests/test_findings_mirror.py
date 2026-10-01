@@ -387,20 +387,24 @@ def main():
     assert not _refresh_sites(ftools._signal_corroborate), (
         "corroboration is not a mirror trigger"
     )
-    # Moving the trigger check onto the helpers must not quietly unpin the
-    # tools that own the delegation - that is how a re-wiring turns a real
-    # assertion into a name.
-    for _tool, _helper in (
-        ("finding_corroborate", "_signal_corroborate"),
-        ("finding_object", "_signal_object"),
-        ("finding_signal", "_signal_object"),
-    ):
-        _src = textwrap.dedent(inspect.getsource(getattr(ftools, _tool)))
+    # The surviving tool must still reach BOTH helpers. Hard-remove took the
+    # two legacy wrappers with it, so finding_signal is now the only caller
+    # of either - and a dispatcher that quietly stopped awaiting one of them
+    # would leave the trigger pin above satisfied by a function nothing
+    # reaches. This is the twin-closing trap: dropping the legacy entry
+    # from the tuple without adding its target here would have made the
+    # assertion a name.
+    _src = textwrap.dedent(inspect.getsource(ftools.finding_signal))
+    for _helper in ("_signal_corroborate", "_signal_object"):
         # "await <helper>(" rather than a bare name: in a file whose whole
         # premise is that a COMMENT can never satisfy an assertion, a
         # name-only test lets a comment merely mentioning the helper pass.
         # The call form is what the delegation actually is.
-        assert f"await {_helper}(" in _src, f"{_tool} does not await {_helper}"
+        assert f"await {_helper}(" in _src, f"finding_signal does not await {_helper}"
+    # And the removed wrappers are gone from this module too, so the
+    # trigger check cannot be pointed at a dead name.
+    for _gone in ("finding_corroborate", "finding_object"):
+        assert not hasattr(ftools, _gone), f"{_gone} still defined"
     # The staling family is a trigger: it writes the rendered `state`.
     assert _refresh_sites(ftools._stale_and_refresh), (
         "staling must re-project; it writes the rendered state"

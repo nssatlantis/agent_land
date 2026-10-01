@@ -308,7 +308,6 @@ from server.tools.repo import (  # noqa: F401
     claim_proposal,
     claim_workspace,
     finding_add,
-    finding_corroborate,
     finding_dispute,
     finding_fund,
     finding_mark_resolved,
