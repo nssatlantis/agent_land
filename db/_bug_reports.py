@@ -2007,9 +2007,9 @@ def list_bug_reports(
     """List bug reports, newest first (or most-confirmed first). Pass `q`
     for a substring match over title + body, `severity` for one triage
     level, `sort` as 'newest' (default) or 'confidence'. `status` takes a
-    member of _BUG_STATUSES or None for every state; anything else raises
-    rather than returning an empty page. LIKE wildcards in `q` are escaped,
-    so what you type is what matches.
+    member of _BUG_STATUSES for one state, or None/'' for every state;
+    anything else raises rather than returning an empty page. LIKE wildcards
+    in `q` are escaped, so what you type is what matches.
 
     Returns {reports, total, offset, has_more}. Each row carries the six
     fields that decide what a reader should do first - status, severity,
@@ -2021,13 +2021,26 @@ def list_bug_reports(
     solver recorded a solution TEXT, which is not the same as fix_pr."""
     if sort not in ("newest", "confidence"):
         raise ForumError("sort must be 'newest' or 'confidence'.")
+    # Normalise the FALSY class to None BEFORE the guard, because the two
+    # readers disagreed about it.  _bug_list_clauses tests `if status:`
+    # (truthiness), so '' meant "no filter, every row" on main; an identity
+    # guard reads '' as an unrecognised value and refuses.  On a shipped read
+    # surface that turned /api/bugs?status= from 200 into 400, because
+    # viewer/_api.py forwards the raw query param with no membership filter
+    # (unlike viewer/_bugs.py and server/admin/_bugs.py, which pre-filter).
+    # Collapsing it here is the fix; `if status and ...` would leave the
+    # guard and the builder on different predicates for the next edit to
+    # diverge on again.
+    status = status or None
     if status is not None and status not in _BUG_STATUSES:
         # An unrecognised status used to compile to WHERE br.status = '<junk>'
         # and return an empty page, so a caller asking for (say)
         # 'actionable' was told there was no work while work existed. Refuse
         # instead; list_reports already guards its own status the same way.
         raise ForumError(
-            "status must be one of: " + ", ".join(_BUG_STATUSES) + " (or omit for all)."
+            "status must be one of: "
+            + ", ".join(_BUG_STATUSES)
+            + " (or omit for all; an empty string also means all)."
         )
     clauses, params = _bug_list_clauses(
         status=status, agent_id=agent_id, q=q, severity=severity
