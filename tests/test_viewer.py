@@ -2851,6 +2851,81 @@ def test_lineage_mode_renders_and_route_removed():
     assert all(href != "/lineage" for href, _, _ in _NAV_ITEMS), "no /lineage nav"
 
 
+def test_docket_titles_cover_every_view_the_db_counts():
+    """The docket's title dict and the db's view registry cannot drift.
+
+    `proposal_docket_counts` counts every view in `db._PROPOSAL_VIEWS`, and
+    its docstring promises the tab counts and the rows they label can never
+    disagree. A view with a count but no title has no tab, and `?view=` for it
+    was silently rewritten to `all` - which is how the /analytics "unclaimed"
+    chip came to show a correct number over the wrong list.
+    """
+    import db
+    from viewer._proposals import _DOCKET_TITLES
+
+    missing = set(db._PROPOSAL_VIEWS) - set(_DOCKET_TITLES)
+    assert not missing, f"docket views with a count but no title: {sorted(missing)}"
+    extra = set(_DOCKET_TITLES) - set(db._PROPOSAL_VIEWS)
+    assert not extra, f"titles for views the db does not have: {sorted(extra)}"
+
+
+def test_analytics_chips_land_on_a_real_docket_view():
+    """Every chip /analytics links to must name a view the docket can serve.
+
+    A link this file emits must land on a list that exists. `_FUNNEL_CHIP_VIEWS`
+    lives in exactly one file with no test reference, so a chip added for a
+    view the viewer cannot render regresses silently.
+    """
+    from viewer._proposals import _DOCKET_TITLES
+    from viewer._pulse import _FUNNEL_CHIP_VIEWS
+
+    chip_views = {view for view, _label in _FUNNEL_CHIP_VIEWS}
+    orphans = chip_views - set(_DOCKET_TITLES)
+    assert not orphans, f"/analytics links views the docket cannot serve: {orphans}"
+
+
+def test_docket_unclaimed_view_serves_unclaimed_not_all():
+    """`?view=unclaimed` must render the unclaimed list, not the default one.
+
+    The discriminating pin. The two structural pins above both pass while the
+    query-param coercion still swallows the view - a title can exist and a
+    chip can point at it and the fallback can still fire. This drives the real
+    handler and asserts on the rendered <h2>.
+
+    It cannot assert on a bare substring: the `all` tab is labelled
+    "Proposals docket" in the tab bar on EVERY view, so a substring check
+    would pass vacuously.
+    """
+    from viewer._proposals import _DOCKET_TITLES, proposals_page
+
+    html = proposals_page(_Req({"view": "unclaimed"})).body.decode("utf-8")
+    assert f"<h2>{_DOCKET_TITLES['unclaimed']}</h2>" in html, (
+        "the heading follows the requested view, not the coerced default"
+    )
+    assert f"<h2>{_DOCKET_TITLES['all']}</h2>" not in html, (
+        "the `all` heading must not render when another view was asked for"
+    )
+    assert "view=unclaimed" in html, "the tab and pager links keep the view"
+
+
+def test_api_proposals_accepts_every_registered_view():
+    """/api/proposals must not 400 on a view the db registry declares.
+
+    The handler used to whitelist 10 views while its own error message named
+    14, so `review_proposal`, `review_small_fix`, `ideas` and `lineage` were
+    each refused by the endpoint that advertised them.
+    """
+    import db
+    from viewer._api import api_proposals
+
+    refused = [
+        view
+        for view in db._PROPOSAL_VIEWS
+        if api_proposals(_Req({"view": view})).status_code == 400
+    ]
+    assert not refused, f"/api/proposals 400s on registered views: {refused}"
+
+
 def test_nav_fragments_events():
     """/events tabs/calendar/pager/form target the ledger list."""
     from viewer._events import events_page
