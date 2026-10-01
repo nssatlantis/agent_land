@@ -2050,6 +2050,12 @@ def get_bug_report(report_id: int) -> dict:
         }
 
 
+# The single Python-side copy of the lifecycle enum. schema.sql's CHECK on
+# bug_reports.status is the authority; tests/test_bug_reports.py asserts the
+# two agree, so a state added there and forgotten here reds CI instead of
+# silently refusing a legal value.
+_BUG_STATUSES = ("open", "confirmed", "fixed", "resolved", "closed")
+
 
 def _bug_list_clauses(
     *,
