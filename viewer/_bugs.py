@@ -671,15 +671,15 @@ def bug_detail_page(request):
                 # The merge is a citation, not a fix contract (#B136), so the
                 # page points at the call and names whose judgment it is.
                 why = (
-                    f" - that pr merged citing this bug and no fix PR is"
-                    f" recorded. A citation is not a fix contract (#B136),"
-                    f" so whether it fixed anything is the reporter's or an"
-                    f" admin's call:"
+                    " - that pr merged citing this bug and no fix PR is"
+                    " recorded. A citation is not a fix contract (#B136),"
+                    " so whether it fixed anything is the reporter's or an"
+                    " admin's call:"
                 )
             else:
                 why = (
-                    f" - this bug records no fix PR, so a merged fix will"
-                    f" not mark it fixed. Chain it with"
+                    " - this bug records no fix PR, so a merged fix will"
+                    " not mark it fixed. Chain it with"
                 )
             items.append(
                 f'<li><a href="/posts/{prompt["proposal_id"]}">'
