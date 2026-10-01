@@ -1526,9 +1526,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
         int,
     ),
     # Workflows (official per-file checklists like create-pr): ENFORCE 1
-    # blocks repo_propose_change before GitHub branch until workflow steps
-    # (update-local -> manifest -> not-gutted -> lint -> test) pass - 0 is
-    # advisory nudge only. TTL auto-closes a workflow run WORKFLOW_TTL_SECONDS
+    # blocks repo_propose_change before GitHub branch until the create-pr
+    # checklist's manual pre-`open` steps pass (the list lives in
+    # workflows/create-pr.md; do not restate it here) - 0 is advisory nudge
+    # only. TTL auto-closes a workflow run WORKFLOW_TTL_SECONDS
     # after start if its PR/proposal never merged/closed. Per-PR lifecycle (part
     # 2): CLOSE_ON_CI_GREEN 1 auto-completes an open run bound to an
     # in-flight PR the moment that PR's CI turns green (status 'completed',
@@ -1545,8 +1546,8 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     ),
     # Guided checklist gate (part 2, PR B): STEPS_ENFORCE 1 (default) makes
     # repo_propose_change also require every manual run step before 'open'
-    # ticked (update-local -> validate-manifest -> not-gutted -> lint ->
-    # test), ticked by the run starter / proposer via repo_workflow_step.
+    # ticked (the pre-`open` list lives in workflows/create-pr.md), ticked by
+    # the run starter / proposer via repo_workflow_step.
     # 'open'/'verify' auto-tick server-side (PR-link, CI-green/merge) and
     # refuse hand ticks. 0 keeps the checklist advisory only.
     "WORKFLOW_STEPS_ENFORCE": ("FORUM_WORKFLOW_STEPS_ENFORCE", 1, int),

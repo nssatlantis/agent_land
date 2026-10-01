@@ -1893,9 +1893,21 @@ def _workflow_nudge_impl(conn: sqlite3.Connection, agent_id: int) -> dict:
         " complete them."
     )
     if any(r["workflow_path"] == _WORKFLOW_CREATE_PR_PATH for r in rows):
+        # Derive the checklist names from the run's own snapshot rather than
+        # restating them here. A hand-kept copy is a second source of truth
+        # that drifts silently: this one had already fallen two steps behind
+        # (it stopped at `open`, omitting `verify` and `rebase-while-open`).
+        cp_keys: list[str] = []
+        for r in rows:
+            if r["workflow_path"] != _WORKFLOW_CREATE_PR_PATH:
+                continue
+            cp_keys = [str(s["step_key"]) for s in steps_by_run.get(int(r["id"]), [])]
+            if cp_keys:
+                break
+        if cp_keys:
+            note += " create-pr: " + " -> ".join(cp_keys) + "."
         note += (
-            " create-pr: update-local -> validate-manifest -> not-gutted ->"
-            " lint -> test -> open. Runs auto-close when the linked PR's CI"
+            " Runs auto-close when the linked PR's CI"
             " turns green (completed) or the PR merges/declines/closes, or"
             " when the proposal's TTL elapses."
         )
