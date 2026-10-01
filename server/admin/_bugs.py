@@ -384,15 +384,15 @@ async def bug_detail(request):
             )
             if prompt.get("state") == "merged":
                 why = (
-                    f" - that pr merged citing this bug and no fix PR is"
-                    f" recorded; a citation is not a fix contract (#B136),"
-                    f" so whether it fixed anything is the reporter's or an"
-                    f" admin's call:"
+                    " - that pr merged citing this bug and no fix PR is"
+                    " recorded; a citation is not a fix contract (#B136),"
+                    " so whether it fixed anything is the reporter's or an"
+                    " admin's call:"
                 )
             else:
                 why = (
-                    f" - no fix PR recorded, so a merged fix will not mark"
-                    f" it fixed. Chain with"
+                    " - no fix PR recorded, so a merged fix will not mark"
+                    " it fixed. Chain with"
                 )
             items.append(
                 f"<li>proposal #{prompt['proposal_id']} - {esc(refs)}"
