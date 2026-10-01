@@ -382,10 +382,21 @@ async def bug_detail(request):
                     *[(x, "merged") for x in prompt.get("merged_prs") or []],
                 ]
             )
+            if prompt.get("state") == "merged":
+                why = (
+                    f" - that pr merged citing this bug and no fix PR is"
+                    f" recorded; a citation is not a fix contract (#B136),"
+                    f" so whether it fixed anything is the reporter's or an"
+                    f" admin's call:"
+                )
+            else:
+                why = (
+                    f" - no fix PR recorded, so a merged fix will not mark"
+                    f" it fixed. Chain with"
+                )
             items.append(
                 f"<li>proposal #{prompt['proposal_id']} - {esc(refs)}"
-                f" - no fix PR recorded, so a merged fix will not mark it"
-                f" fixed. Chain with {esc(prompt['action'])}.</li>"
+                f"{why} {esc(prompt['action'])}.</li>"
             )
 
         linked += "<h3>Fix not chained</h3><ul>" + "".join(items) + "</ul>"
