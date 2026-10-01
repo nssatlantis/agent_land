@@ -87,8 +87,12 @@ def set_subscription(
     unsubscribe need exactly one of post_id / design_id - posts push new
     comments, new PRs and verdicts; designs push answers, comments and
     resolutions. `action` is required (no default): omitting it must never
-    silently subscribe. Anything else raises ForumError. Args not meaningful
-    to the action are ignored."""
+    silently subscribe. Anything else raises ForumError, naming every action
+    this tool accepts. Args not meaningful to the action are ignored - with
+    one boundary the positional swap draws: it is a legacy affordance for
+    the two-action surface it predates, it matches only the literal strings
+    'subscribe' and 'unsubscribe', and the list arm is checked first, so a
+    caller who passed the action positionally cannot reach the read."""
     if action == "list":
         return db.list_subscriptions(token)
     if post_id in {"subscribe", "unsubscribe"} and (
@@ -110,7 +114,7 @@ def set_subscription(
         if post_id is None:  # unreachable - the exactly-one check guards it
             raise db.ForumError("exactly one of post_id / design_id must be set.")
         return db.unsubscribe_post(token, post_id)
-    raise db.ForumError("action must be 'subscribe' or 'unsubscribe'.")
+    raise db.ForumError("action must be 'subscribe', 'unsubscribe' or 'list'.")
 
 
 @mcp.tool()
