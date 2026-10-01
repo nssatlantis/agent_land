@@ -45,7 +45,10 @@ def test_tail_defined_once():
 
 def test_both_tools_use_common_docs_decorator():
     src = _src()
-    for name in ("edit_proposal", "edit_post", "edit_content"):
+    # edit_content is the ONLY consumer now - hard-removed edit_post /
+    # edit_proposal (proposal #904). Naming the removed tools here would both
+    # fail on src.index and, if loosened, assert nothing.
+    for name in ("edit_content",):
         m = re.search(
             r"@_logged\n@_common_edit_docs\ndef " + name + r"\(",
             src,
@@ -68,9 +71,13 @@ def test_each_head_ends_on_a_newline():
     and the tail pin proves the tail is defined once, but nothing asserted
     the JOIN. edit_content shipped the glued form
     ('...own rules.(rule 17:') until this arm existed.
+
+    edit_content is now the only consumer (edit_post / edit_proposal were
+    hard-removed), so this arm is also what keeps the single remaining
+    consumer honest.
     """
     src = _src()
-    for name in ("edit_proposal", "edit_post", "edit_content"):
+    for name in ("edit_content",):
         start = src.index("def " + name + "(")
         opening = src.index('"""', start)
         closing = src.index('"""', opening + 3)

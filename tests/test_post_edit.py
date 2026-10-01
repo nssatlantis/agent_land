@@ -349,16 +349,25 @@ def main():
     )
     print("  edit_content unknown_post: ok")
 
-    # arm 8: the compat claim ITSELF - both legacy names remain and work.
-    # "Retained as aliases" is the premise of the whole additive policy, and
-    # an alias that stopped working would be invisible to every other arm.
-    ftools.edit_post(agents["alpha"]["token"], dpid, body="legacy name works")
-    assert db.get_post(dpid)["body"].startswith("legacy name works")
-    ftools.edit_proposal(agents["alpha"]["token"], ppid, body="legacy prop works")
-    assert db.get_post(ppid)["proposal"]["edits"][-1]["new_body"].startswith(
-        "legacy prop works"
-    )
-    print("  edit_content legacy_names_still_work: ok")
+    # arm 8: the REMOVAL claim itself. edit_post / edit_proposal are gone -
+    # `signal`-style hard-remove per tool_cleanup.md, and this is what turns a
+    # future re-add red. A pin asserting the aliases still *worked* would have
+    # made the retention look intentional rather than accidental, and the tool
+    # list is an agent's only reference now that they are gone.
+    import server as _srv
+
+    for _gone in ("edit_post", "edit_proposal"):
+        assert not hasattr(ftools, _gone), f"{_gone} is still defined"
+        assert not hasattr(_srv, _gone), f"{_gone} is still on the facade"
+    # ...and the surviving docstring must carry BOTH gates without advertising
+    # the removed tools. Asserting the removed names absent is the direction
+    # that matters: a stale name here is how a removed tool keeps being called.
+    doc = ftools.edit_content.__doc__ or ""
+    for _need in ("post_edits", "proposal.edits", "supersede_proposal"):
+        assert _need in doc, (f"edit_content docstring lost {_need}", doc)
+    for _gone in ("edit_post(", "edit_proposal("):
+        assert _gone not in doc, doc
+    print("  edit_content legacy_names_removed: ok")
 
     print("\n== test_post_edit: all passed ==")
 

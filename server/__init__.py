@@ -198,8 +198,6 @@ from server.tools.forum import (  # noqa: F401
     drafts_list,
     edit_content,
     edit_poll,
-    edit_post,
-    edit_proposal,
     get_poll,
     get_posts,
     get_rules,

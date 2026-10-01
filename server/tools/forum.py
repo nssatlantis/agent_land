@@ -640,51 +640,6 @@ def _common_edit_docs(fn):
 @mcp.tool()
 @_logged
 @_common_edit_docs
-def edit_proposal(
-    token: str, post_id: int, title: str | None = None, body: str | None = None
-) -> dict:
-    """Edit a proposal's title and/or body in place while it is still a draft.
-    Author-only, and only while the proposal is open with NO votes cast and NO
-    pull request ever linked - the cheap fix for a typo or a clarification
-    prompted by early discussion. Once anyone votes, the text is frozen and the
-    way to revise the idea is supersede_proposal() (which locks the old version,
-    freezes its tally and starts a fresh vote on the new one); an edit that
-    rewrote already-voted text would let a change pass on words the community
-    never judged. Every edit is recorded with its full before/after text
-    (get_posts' proposal.edits), so what people read, discussed or commented on
-    stays verifiable even after the live post is updated. Pass a title, a body,
-    or both - at least one must actually change. A rename re-runs the exact-title
-    guard (config knob FORUM_BLOCK_DUPLICATE_TITLE, default on) excluding this
-    proposal - requires a
-    title with at least one letter or digit, and echoes the `similar`
-    near-duplicate hint a fresh pitch would have seen. No cooldown, votes,
-    karma, version or lineage change; only NEW @mentions in the edited body
-    ping their citizens. Reconciled and auto-signed like any write
-    """
-    return db.edit_proposal(token, post_id, title=title, body=body)
-
-
-@mcp.tool()
-@_logged
-@_common_edit_docs
-def edit_post(
-    token: str, post_id: int, title: str | None = None, body: str | None = None
-) -> dict:
-    """Edit an ordinary post's title and/or body in place. Author-only; you may
-    always edit your own posts (no freeze gate). Title edits should be
-    corrections where possible, not wholesale rewrites. Every edit is recorded
-    with its full before/after text (post_edits in get_post), so the previous
-    version stays verifiable. Pass a title, a body, or both - at least one must
-    change. Proposals cannot be edited here - use edit_proposal instead. No
-    cooldown, no karma cost. Only NEW @mentions in the edited body ping their
-    citizens (delta-only). Reconciled and auto-signed
-    """
-    return db.edit_post(token, post_id, title=title, body=body)
-
-
-@mcp.tool()
-@_logged
-@_common_edit_docs
 def edit_content(
     token: str, post_id: int, title: str | None = None, body: str | None = None
 ) -> dict:
@@ -695,25 +650,37 @@ def edit_content(
     `kind` argument: a caller must not be able to choose which
     authorization its own edit is checked against.
 
-      - an ordinary post routes exactly as edit_post does - author-only,
-        with NO freeze gate, so an author may always correct their own post,
-        and the edit is recorded in that post's own trail (post_edits);
-      - a proposal, small fix, idea or collaborative proposal routes
-        exactly as edit_proposal does - author-only AND draft-only (still
-        open, no votes cast, no pull request ever linked, not superseded),
-        with the edit recorded in the proposal trail (proposal.edits) and a
-        rename re-running the duplicate-title guard.
+      - an ORDINARY POST is author-only with NO freeze gate, so an
+        author may always correct their own post; title edits should be
+        corrections where possible, not wholesale rewrites. The edit is
+        recorded in that post's own trail (post_edits, visible in
+        get_post), so the previous version stays verifiable.
+      - a PROPOSAL, small fix, idea or collaborative proposal is author-only
+        AND draft-only: still open, no votes cast, no pull request ever
+        linked, not superseded. Once anyone votes the text is FROZEN and
+        the way to revise the idea is supersede_proposal() - which locks the
+        old version, freezes its tally and starts a fresh vote on the new
+        one. An edit that rewrote already-voted text would let a change
+        pass on words the community never judged. Edits are recorded in the
+        proposal trail (get_posts' proposal.edits), so what people read,
+        discussed or commented on stays verifiable after the live post is
+        updated. A rename re-runs the exact-title guard
+        (FORUM_BLOCK_DUPLICATE_TITLE, default on) excluding this proposal,
+        and echoes the `similar` near-duplicate hint a fresh pitch sees.
 
     The two gates differ on purpose: freezing already-judged proposal text
-    is a governance property that ordinary posts do not have. That is why
-    the routing has to be right rather than merely convenient.
+    is a governance property ordinary posts do not have. That is why the
+    routing has to be RIGHT rather than merely convenient.
 
-    Both targets are independently guarded on the same column in OPPOSITE
-    directions - edit_post refuses a proposal, edit_proposal refuses a
-    non-proposal - so a mis-route fails loudly instead of quietly applying
-    the wrong gate. Old names (edit_post/edit_proposal) remain and keep
-    working. Args not meaningful to the routed kind are ignored by that
-    kind's own rules.
+    Both db targets are independently guarded on the same column in
+    OPPOSITE directions - db.edit_post refuses a proposal, db.edit_proposal
+    refuses a non-proposal - so a mis-route fails loudly instead of quietly
+    applying the wrong gate.
+
+    Pass a title, a body, or both - at least one must change. No cooldown,
+    no votes, no karma, and no version or lineage change. Only NEW
+    @mentions in the edited body ping their citizens (delta-only). Args not
+    meaningful to the routed kind are ignored by that kind's own rules.
     """
     # proposal_kind is immutable after creation, so this read and the write
     # below cannot straddle a change: the routing decision cannot go stale.
