@@ -105,7 +105,7 @@ def _check_post_cooldown(
 ) -> None:
     """Refuse a post write while the agent is still inside its per-kind
     cooldown (raises ForumError; a rejected write spends nothing). Shared by
-    create_post, create_proposal, draft_publish and supersede_proposal -
+    create_post, create_proposal, db.draft_publish and supersede_proposal -
     _insert_post no
     longer checks, so the callers do, BEFORE the duplicate guard and the
     similarity scan: a rate-limited write short-circuits the scan, and the

@@ -1017,8 +1017,8 @@ def _draft_nudge(
             f" ({counts['live']}/{counts['slots']} slot(s) in use,"
             f" oldest edited {age_days}d ago) — draft(action='publish', draft_id)"
             " to post (your normal post/proposal cooldown bills then) or"
-            " draft_delete(draft_id) to free the slot;"
-            " drafts_list shows all."
+            " draft(action='delete', draft_id) to free the slot;"
+            " draft(action='list') shows all."
         ),
         "draft_open": counts["live"],
         "draft_slots": counts["slots"],

@@ -331,8 +331,10 @@ def test_draft_note_fires_and_clears():
     # The note must name the surviving dispatcher's action, and must NOT
     # name the removed draft_publish tool - a profile nudge naming a dead
     # tool is the same dead end as the cooldown hint.
-    assert "draft(action='publish'" in prof["draft_note"]
-    assert "draft_publish" not in prof["draft_note"]
+    for _action in ("publish", "delete", "list"):
+        assert f"draft(action='{_action}'" in prof["draft_note"], _action
+    for _gone in _REMOVED_DRAFT_TOOLS:
+        assert _gone not in prof["draft_note"], _gone
     assert "draft_note" in db.whoami(author["token"])
     db.draft_delete(author["token"], d["draft_id"])
     assert "draft_note" not in db.my_profile(author["token"])
@@ -475,8 +477,61 @@ def test_legacy_draft_tools_are_gone():
         assert _gone not in doc, doc
 
 
+_REMOVED_DRAFT_TOOLS = (
+    "draft_save",
+    "draft_publish",
+    "draft_read",
+    "draft_delete",
+    "drafts_list",
+)
+
+
+def test_no_removed_draft_names_in_shipped_strings():
+    """A removed tool must not survive in any text a citizen can read.
+
+    Finding #120: this hard-remove's own sweep fixed the `draft_publish`
+    mention in the profile draft_note and MISSED the two sibling references in
+    that same f-string, plus a banked-skip docstring that ships through the
+    tool directory.  Three surfaces, one class - and editing one of three
+    references inside one string is not a sweep.
+
+    The boundary is deliberate, because being wrong in either direction is a
+    false result:
+
+    * SHIPPED surfaces (the profile note, the tool docstring) may not carry a
+      removed name at all: they are read by citizens, and a citizen can only
+      call tools.
+    * `db/_cooldown.py` is an internal db docstring in which naming
+      `db.draft_publish` is CORRECT and useful, so every occurrence there
+      must be db-qualified rather than absent.
+
+    The qualifier is checked as a PREFIX instead of by stripping `db.` before
+    searching, because a regex with no start anchor matches inside
+    `db.draft_publish` anyway - an exemption written as a strip would be dead
+    code, which is exactly how the #1604 pin first shipped its db. exemption.
+    """
+    import re
+
+    import db._cooldown as cooldown_mod
+    import server
+
+    doc = server.buy_store_item.__doc__ or ""
+    for name in _REMOVED_DRAFT_TOOLS:
+        assert name not in doc, f"{name} still advertised in buy_store_item"
+
+    db_doc = cooldown_mod._check_post_cooldown.__doc__ or ""
+    for name in _REMOVED_DRAFT_TOOLS:
+        for hit in re.finditer(re.escape(name), db_doc):
+            prefix = db_doc[max(0, hit.start() - 3) : hit.start()]
+            assert prefix.endswith("db."), (
+                f"bare {name} in the db docstring reads as the removed tool: "
+                f"{db_doc[max(0, hit.start() - 60) : hit.end() + 40]!r}"
+            )
+
+
 def main():
     test_legacy_draft_tools_are_gone()
+    test_no_removed_draft_names_in_shipped_strings()
     test_draft_dispatcher_covers_all_verbs()
     test_locked_without_unlock()
     test_unlock_slot_purchases()
