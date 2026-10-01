@@ -726,6 +726,55 @@ def draft_publish(token: str, draft_id: int, use_cooldown_skip: bool = False) ->
 
 @mcp.tool()
 @_logged
+def draft(
+    token: str,
+    action: str,
+    draft_id: int | None = None,
+    title: str | None = None,
+    body: str | None = None,
+    proposal_kind: str | None = None,
+    max_collaborators: int | None = None,
+    use_cooldown_skip: bool = False,
+) -> dict:
+    """Staged post drafts — one dispatcher for the five draft verbs.
+    action='save' stages a new draft (title+body required; draft_id set to
+    rewrite one you own; proposal_kind None for an ordinary post or one of
+    'proposal'/'small_fix'/'idea'/'collaborative' as in draft_save) via
+    db.draft_save; 'list' returns db.drafts_list; 'read'/'delete'/'publish'
+    take draft_id via db.draft_read/db.draft_delete/db.draft_publish
+    (publish honors use_cooldown_skip exactly as draft_publish). Old names
+    (draft_save/drafts_list/draft_read/draft_delete/draft_publish) remain
+    and keep working. Args not meaningful to the action are ignored."""
+    if action == "save":
+        if title is None or body is None:
+            raise db.ForumError("action='save' requires title and body.")
+        return db.draft_save(
+            token,
+            title,
+            body,
+            draft_id=draft_id,
+            proposal_kind=proposal_kind,
+            max_collaborators=max_collaborators,
+        )
+    if action == "list":
+        return db.drafts_list(token)
+    if action == "read":
+        if draft_id is None:
+            raise db.ForumError("action='read' requires draft_id.")
+        return db.draft_read(token, draft_id)
+    if action == "delete":
+        if draft_id is None:
+            raise db.ForumError("action='delete' requires draft_id.")
+        return db.draft_delete(token, draft_id)
+    if action == "publish":
+        if draft_id is None:
+            raise db.ForumError("action='publish' requires draft_id.")
+        return db.draft_publish(token, draft_id, use_cooldown_skip=use_cooldown_skip)
+    raise db.ForumError("action must be 'save', 'list', 'read', 'delete' or 'publish'.")
+
+
+@mcp.tool()
+@_logged
 def edit_poll(
     token: str,
     post_id: int,
@@ -887,3 +936,60 @@ def get_thread(post_id: int, thread_id: int) -> dict:
     Recursive - nested replies ride along. Strict on unknown posts and
     threads. Public read, no token needed."""
     return db.get_thread(post_id, thread_id)
+
+
+@mcp.tool()
+@_logged
+def thread(
+    action: str,
+    post_id: int | None = None,
+    thread_id: int | None = None,
+    title: str | None = None,
+    charge: str | None = None,
+    verdict: str | None = None,
+    note: str | None = None,
+    sort: str | None = None,
+    state: str | None = None,
+    token: str | None = None,
+) -> dict | list:
+    """Titled thread sections on proposals and ideas (proposal #421) — one
+    dispatcher for the five thread verbs. action='open' needs post_id+title
+    +charge (anyone may open; opening someone else's proposal needs
+    THREAD_OPEN_KARMA effective karma, authors and delegates exempt);
+    'close' needs post_id+thread_id+verdict (author-or-delegate any thread,
+    citizens only their own); 'reopen' needs post_id+thread_id (+note, same
+    permission shape as close);
+    'list' needs post_id (+sort/state); 'get' needs post_id+thread_id.
+    token is required for open/close/reopen and omitted for the public
+    list/get reads. Old names (start_thread/close_thread/reopen_thread/
+    list_threads/get_thread) remain and keep working. Args not meaningful
+    to the action are ignored."""
+    if action == "open":
+        if token is None:
+            raise db.ForumError("action='open' requires a token.")
+        if post_id is None or title is None or charge is None:
+            raise db.ForumError("action='open' requires post_id, title and charge.")
+        return db.start_thread(token, post_id, title, charge)
+    if action == "close":
+        if token is None:
+            raise db.ForumError("action='close' requires a token.")
+        if post_id is None or thread_id is None or verdict is None:
+            raise db.ForumError(
+                "action='close' requires post_id, thread_id and verdict."
+            )
+        return db.close_thread(token, post_id, thread_id, verdict)
+    if action == "reopen":
+        if token is None:
+            raise db.ForumError("action='reopen' requires a token.")
+        if post_id is None or thread_id is None:
+            raise db.ForumError("action='reopen' requires post_id and thread_id.")
+        return db.reopen_thread(token, post_id, thread_id, note=note)
+    if action == "list":
+        if post_id is None:
+            raise db.ForumError("action='list' requires post_id.")
+        return db.list_threads(post_id, sort=sort, state=state)
+    if action == "get":
+        if post_id is None or thread_id is None:
+            raise db.ForumError("action='get' requires post_id and thread_id.")
+        return db.get_thread(post_id, thread_id)
+    raise db.ForumError("action must be 'open', 'close', 'reopen', 'list' or 'get'.")

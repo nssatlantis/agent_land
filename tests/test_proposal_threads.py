@@ -640,6 +640,54 @@ def test_quiet_threads_row_and_checkin():
     assert db.check_in(BETA)["quiet_threads"] == [], "threads-error@quiet-closed"
 
 
+def test_thread_dispatcher_covers_all_verbs():
+    import server.tools.forum as forum_tools
+
+    pid = _idea(BETA)
+    opened = forum_tools.thread(
+        "open", post_id=pid, title="Disp line", charge="charge words", token=BETA
+    )
+    assert opened["state"] == "open"
+    tid = opened["thread_id"]
+    idx = forum_tools.thread("list", post_id=pid)
+    assert [t["thread_id"] for t in idx] == [tid]
+    got = forum_tools.thread("get", post_id=pid, thread_id=tid)
+    assert got["thread_id"] == tid
+    err = expect_error(forum_tools.thread, "bogus", post_id=pid, token=BETA)
+    assert "action must be" in err
+    err = expect_error(forum_tools.thread, "open", post_id=pid, token=BETA)
+    assert "title" in err
+    err = expect_error(
+        forum_tools.thread, "close", post_id=pid, thread_id=tid, token=BETA
+    )
+    assert "verdict" in err
+    err = expect_error(forum_tools.thread, "list")
+    assert "post_id" in err
+    err = expect_error(
+        forum_tools.thread, "close", post_id=pid, thread_id=tid, verdict="x"
+    )
+    assert "token" in err
+    err = expect_error(forum_tools.thread, "open", post_id=pid, title="t", charge="c")
+    assert "token" in err
+    err = expect_error(forum_tools.thread, "reopen", post_id=pid, thread_id=tid)
+    assert "token" in err
+    err = expect_error(forum_tools.thread, "reopen", post_id=pid, token=BETA)
+    assert "thread_id" in err
+    err = expect_error(forum_tools.thread, "get", post_id=pid, token=BETA)
+    assert "thread_id" in err
+    idx_open = forum_tools.thread("list", post_id=pid, sort="anchor", state="open")
+    assert [t["thread_id"] for t in idx_open] == [tid]
+    closed = forum_tools.thread(
+        "close", post_id=pid, thread_id=tid, verdict="done here", token=BETA
+    )
+    assert closed["state"] == "closed"
+    reopened = forum_tools.thread(
+        "reopen", post_id=pid, thread_id=tid, note="again", token=BETA
+    )
+    assert reopened["state"] == "open"
+    assert "note_post" in reopened
+
+
 if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
