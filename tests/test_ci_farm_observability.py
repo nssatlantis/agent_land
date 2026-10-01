@@ -652,13 +652,56 @@ def test_a_runner_without_a_url_releases_the_slot_pick_runner_took():
     assert released == [7], (
         f"the slot pick_runner reserved must be released on this path, got {released}"
     )
-    assert runner["_dispatch_reason"] == farm.DISPATCH_REJECTED, (
-        "a runner with no url was never sent a request, so it is rejected - "
-        "not may_have_executed"
+    assert runner["_dispatch_reason"] == farm.RUNNER_UNCONFIGURED, (
+        "a runner with no url was never sent a request, so it is refused - "
+        "not may_have_executed - and it is NOT a capacity event, so it must "
+        "not borrow the value both lanes file as a 'busy' skip"
     )
 
 
+def test_a_refusal_that_is_not_a_capacity_event_keeps_its_own_label():
+    """A picked-but-unusable runner must not be filed as a capacity skip.
+
+    Both lanes sent DISPATCH_REJECTED to a "busy" skip, because a 4xx really
+    is the farm being full. Two refusals are not 4xx - the row is not routable,
+    and we could not encode the payload - and they used to share that value, so
+    the ledger would have reported a saturated farm for a farm that was never
+    saturated. That is a false all-clear about capacity, which is the one
+    direction this whole module exists to make legible (finding #118).
+
+    The census arm is load-bearing, and it is a proof rather than a proxy: the
+    routing passes `skip_reason=why`, and log_skip coerces only what is NOT in
+    SKIP_REASONS - so every routing value being a member is exactly the
+    condition under which the ledger records the reason verbatim.
+    """
+    assert farm._REJECTED_NOT_A_CAPACITY_EVENT, "the routing tuple is empty"
+    for value in farm._REJECTED_NOT_A_CAPACITY_EVENT:
+        assert value in farm.SKIP_REASONS, (
+            f"{value!r} would be coerced to 'unhealthy' on the way to the "
+            f"ledger; SKIP_REASONS is {list(farm.SKIP_REASONS)}"
+        )
+    # Control: the value that DOES mean capacity keeps the capacity routing.
+    assert farm.DISPATCH_REJECTED not in farm._REJECTED_NOT_A_CAPACITY_EVENT
+
+    # Drive the real guard, so the census cannot pass while the arm still
+    # stamps the shared value.
+    runner = {"id": 11, "url": "", "name": "no-url"}
+    with mock.patch.object(farm, "_release"):
+        assert farm.dispatch_to_runner(runner, {"checks": "tests"}) is None
+    why = str(runner.get("_dispatch_reason") or "")
+    assert why == farm.RUNNER_UNCONFIGURED, f"guard stamped {why!r}"
+
+    # The sibling refusal: same shape, same requirement, reached by handing
+    # json.dumps something it genuinely cannot encode.
+    unserialisable = {"id": 12, "url": "http://r/", "name": "r"}
+    with mock.patch.object(farm, "_release"):
+        assert farm.dispatch_to_runner(unserialisable, {"checks": object()}) is None
+    stamped = str(unserialisable.get("_dispatch_reason") or "")
+    assert stamped == farm.PAYLOAD_UNSERIALISABLE, f"serialisation stamped {stamped!r}"
+
+
 def main() -> None:
+    test_a_refusal_that_is_not_a_capacity_event_keeps_its_own_label()
     test_classify_no_pick_tells_five_populations_apart()
     test_the_tree_payload_and_its_skip_are_gated_on_farm_eligibility()
     test_a_runner_without_a_url_releases_the_slot_pick_runner_took()

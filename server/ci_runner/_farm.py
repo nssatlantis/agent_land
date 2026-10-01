@@ -258,6 +258,13 @@ def _retry_local(
     raise _FarmRetryLocal(reason)
 
 
+# A picked runner that turned out unusable for a reason that is NOT a capacity
+# event. These are dispatch reasons too, defined here because SKIP_REASONS
+# needs them and the dispatch sites sit further down: one string, both uses,
+# so the ledger label and the dispatch reason cannot drift apart.
+RUNNER_UNCONFIGURED = "runner_unconfigured"
+PAYLOAD_UNSERIALISABLE = "payload_unserialisable"
+
 # Closed vocabulary for ci_farm_skipped rows. A skip is an ELIGIBLE dispatch
 # that found no usable runner - never a shape the gate refused by design, or
 # every branch-CI run would write a row claiming the farm declined it.
@@ -268,6 +275,8 @@ SKIP_REASONS = (
     "at_capacity",
     "busy",
     "ineligible_tree",
+    RUNNER_UNCONFIGURED,
+    PAYLOAD_UNSERIALISABLE,
 )
 # Probe budget for the admin panel. Concurrency AND a cap, because a serial
 # N-pings-at-CI_FARM_HTTP_TIMEOUT loop (default 8s) on a page that auto-reloads
@@ -293,6 +302,10 @@ FARM_MAX_FILES_BYTES = 5 * 1024 * 1024
 # the single string "runner reply unreadable".
 DISPATCH_REJECTED = "runner_rejected"
 DISPATCH_MAY_HAVE_RUN = "may_have_executed"
+# The two refusals that are NOT capacity events. Both lanes send
+# DISPATCH_REJECTED to a "busy" skip because a 4xx really is the farm being
+# full; these two are not, so they keep their own labels instead.
+_REJECTED_NOT_A_CAPACITY_EVENT = (RUNNER_UNCONFIGURED, PAYLOAD_UNSERIALISABLE)
 
 
 def log_skip(
@@ -578,7 +591,11 @@ def dispatch_to_runner(runner: dict, payload: dict) -> dict | None:
     the caller's local retry may be its second execution), and
     "unreadable_body" (a 2xx whose payload was not a dict). Splitting these is
     the point: they shared one string with a 409, which is a capacity skip, so
-    a full farm was reported as a broken one.
+    a full farm was reported as a broken one. The two refusals that are NOT
+    capacity events carry their own values instead - RUNNER_UNCONFIGURED (the
+    row is not routable) and PAYLOAD_UNSERIALISABLE (we could not encode the
+    payload) - because both lanes file DISPATCH_REJECTED as a "busy" skip, so
+    sharing that value would report a full farm that was never full.
 
     Deliberately still `-> dict | None` rather than a (result, reason) tuple.
     Three existing test modules mock this function with a bare result dict;
@@ -615,18 +632,26 @@ def dispatch_to_runner(runner: dict, payload: dict) -> dict | None:
         # register_runner - plus pick_runner, which can only return a row
         # whose /health answered. So this guards a latent leak rather than a
         # live one; a future writer that skips that validation makes it live.
+        #
+        # Labelled RUNNER_UNCONFIGURED rather than DISPATCH_REJECTED. Nothing
+        # was sent, so "rejected" is true but useless, and try_dispatch routes
+        # DISPATCH_REJECTED to a "busy" CAPACITY skip - so sharing that value
+        # would report a saturated farm for a farm that was never saturated
+        # (finding #118).
         if rid is not None:
             _release(rid)
-        runner["_dispatch_reason"] = DISPATCH_REJECTED
+        runner["_dispatch_reason"] = RUNNER_UNCONFIGURED
         return None
     try:
         body = json.dumps(payload).encode("utf-8")
     except Exception:
         # domain: degrade-silently - a payload we cannot serialise was never
-        # sent, so nothing ran remotely: release the slot and say rejected, not
-        # may_have_executed. Same reason the build sits inside its own try.
+        # sent, so nothing ran remotely: release the slot, and give it its own
+        # label rather than may_have_executed (which would lie about execution)
+        # or DISPATCH_REJECTED (which try_dispatch files as a "busy" capacity
+        # skip). Same reason the build sits inside its own try.
         _release(rid)
-        runner["_dispatch_reason"] = DISPATCH_REJECTED
+        runner["_dispatch_reason"] = PAYLOAD_UNSERIALISABLE
         return None
     headers = {"Content-Type": "application/json"}
     token = runner.get("token") or ""
@@ -848,6 +873,15 @@ def try_dispatch(
         payload["base_ref"] = base_ref
     remote = dispatch_to_runner(runner, payload)
     why = str(runner.get("_dispatch_reason") or "")
+    if remote is None and why in _REJECTED_NOT_A_CAPACITY_EVENT:
+        # A picked-but-unusable runner, for a reason that is not the farm being
+        # full. Each keeps its own label: folding either into "busy" would
+        # report a saturated farm when nothing was saturated (finding #118).
+        # Still raises, so the caller retries locally exactly as it did before
+        # - only the recorded cause changes. Every value in the routing tuple is
+        # a member of SKIP_REASONS, so log_skip records it verbatim rather than
+        # coercing it to "unhealthy".
+        _retry_local(runner, why, checks, agent_id, name, skip_reason=why)
     if remote is None and why == DISPATCH_REJECTED:
         # The runner declined this run (409 busy, or another 4xx): it did no
         # work, so this is a CAPACITY skip, not a dispatch failure - filing it
@@ -973,12 +1007,14 @@ def try_bench_dispatch(
     payload: dict = {"checks": checks, "mode": "main", "extra_env": anchor_env}
     remote = dispatch_to_runner(runner, payload)
     why = str(runner.get("_dispatch_reason") or "")
-    if remote is None and why == DISPATCH_REJECTED:
+    if remote is None and why in (DISPATCH_REJECTED, *_REJECTED_NOT_A_CAPACITY_EVENT):
         # Declined, not broken. Silent local fallback is this lane's documented
         # contract, but the skip row is what makes a farm that is switched off
-        # legible from the ledger instead of silent.
+        # legible from the ledger instead of silent. A refusal that is not a
+        # capacity event keeps its own label instead of being filed as "busy"
+        # (finding #118); a genuine 4xx still is a capacity skip.
         log_skip(
-            "busy",
+            "busy" if why == DISPATCH_REJECTED else why,
             "bench",
             checks,
             agent_id,
