@@ -720,7 +720,8 @@ async def finding_bounty(
     re-resolved and freshly quorum-verified.  Amounts are twentieth-exact.
     Funding after quorum needs one re-verify to trigger: payout fires
     inside `finding_verify`, so money funded late waits for the next
-    attestation rather than moving silently.
+    attestation rather than moving silently.  A bounty that has already
+    paid out refuses top-ups.
 
     action='unfund' releases your OWN locked bounty, and only while the
     finding is still open with no fix recorded - once a fix lands the funds
@@ -734,23 +735,30 @@ async def finding_bounty(
     from db._credits import exact_from_credits
 
     db.require_active_agent(token)
-    # Each action keeps its OWN `what=` wording.  Those strings surface in
-    # the twentieth-exactness refusal, and a single shared message would
-    # make a bad amount read identically whether you were locking or
-    # releasing - which is exactly the "two refusal texts" trap.
-    if action == "fund":
-        units = exact_from_credits(amount_credits, what="finding bounty")
-    elif action == "unfund":
-        units = exact_from_credits(amount_credits, what="finding bounty withdrawal")
-    else:
+    # ONE table drives both the exactness wording AND the dispatch, so a
+    # direction can never be validated under one name and executed under
+    # another. Each action keeps its OWN `what=` string: those surface in the
+    # twentieth-exactness refusal, and a shared message would make a bad
+    # amount read identically whether you were locking or releasing.
+    arm = {
+        "fund": (db.finding_fund, "finding bounty"),
+        "unfund": (db.finding_unfund, "finding bounty withdrawal"),
+    }.get(action)
+    if arm is None:
         raise db.ForumError("action must be 'fund' or 'unfund'")
+    target, what = arm
+    units = exact_from_credits(amount_credits, what=what)
     # Immediate transaction for BOTH arms, for the same reason each had one:
     # funding pairs the pot-cap read with the escrow lock and releasing
     # pairs the balance read with the release, so two concurrent writers
     # must never both read the same stale figure.
+    #
+    # The dispatch below is a single `target(...)` call rather than an
+    # `if fund / return unfund` pair: with a bare fallthrough, dropping the
+    # `arm is None` refusal above would route a typo'd direction straight
+    # into the RELEASE arm and pay the caller's own escrow back to them.
+    # One table, one refusal, no way for the two to disagree.
     with db._conn(immediate=True) as conn:
         db.require_active(token, conn)
         who = db.whoami(token, conn)
-        if action == "fund":
-            return db.finding_fund(conn, finding_id, who["agent_id"], units)
-        return db.finding_unfund(conn, finding_id, who["agent_id"], units)
+        return target(conn, finding_id, who["agent_id"], units)

@@ -267,6 +267,10 @@ def main():
     assert set(re.findall(r"action='([a-z_]+)'", doc)) == {"fund", "unfund"}
     for _gone in ("finding_fund", "finding_unfund"):
         assert _gone not in doc, doc
+        # The non-triggers list on _refresh_mirror named them too, and it is
+        # the one prose surface THIS diff had to reword - so pin it here or
+        # the reword can silently regress.
+        assert _gone not in (ftools._refresh_mirror.__doc__ or ""), _gone
     # ...and the removed names must not survive in the one surface every
     # other shipped surface agrees with either.
     import pathlib
@@ -276,11 +280,42 @@ def main():
         _root / "README.md",
         _root / "AGENTS.md",
         _root / "docs" / "review-standards.md",
+        # Served to EVERY agent through get_rules(), and the exact file that
+        # carried a removed tool name on #1604. It has no hit today; adding
+        # it is the cheap widening of a pin whose whole purpose is this class.
+        _root / "rules_text.py",
     ):
         assert _p.exists(), _p
         _txt = _p.read_text(encoding="utf-8")
         for _gone in ("finding_fund", "finding_unfund"):
             assert _gone not in _txt, f"{_gone} still advertised in {_p.name}"
+
+    # --- a wrong action must REFUSE, and must not move money --------------
+    # This is the one thing the old two-tool shape got for free. With an
+    # `if fund / return unfund` bare fallthrough, dropping the validator's
+    # refusal would route a typo'd direction straight into the RELEASE arm
+    # and pay the caller's own escrow back to them.
+    #
+    # 0.5cr is deliberately EXACTLY the 10 units still funded above, so a
+    # fallthrough would SUCCEED and the bounty_units assert would catch it -
+    # not merely fail on insufficient funds, which is a far weaker
+    # discriminator that would pass for the wrong reason.
+    with db._conn() as conn:
+        _before = conn.execute(
+            "SELECT bounty_units FROM review_findings WHERE id = ?", (tfid,)
+        ).fetchone()[0]
+    for _bad in ("Fund", "release", ""):
+        _err = asyncio.run(
+            _expect_tool_error(
+                ftools.finding_bounty(agents["alpha"]["token"], _bad, tfid, 0.5)
+            )
+        )
+        assert "action must be" in _err, _err
+    with db._conn() as conn:
+        _after = conn.execute(
+            "SELECT bounty_units FROM review_findings WHERE id = ?", (tfid,)
+        ).fetchone()[0]
+    assert _after == _before, (_before, _after)
     # The payout rides on finding_verify, so the surviving docstring has to
     # still name it - a dispatcher that documented only its own actions
     # would leave an agent unable to place the money.
