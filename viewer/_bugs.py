@@ -127,9 +127,17 @@ def _two_bars(
         merges.  So a bug whose fix PR is still open reads `pending`,
         exactly like a merged fix nobody has judged: the two are the SAME
         dict, and no fixture over that shape can tell them apart.
-      - `report_status == "fixed"` is the signal that survives, because it
-        is the round's own precondition - verify_bug_fix refuses unless the
-        report is `fixed`, so the bar only ever exists in that state.
+      - `report_status` is the signal that survives, and it must be read as
+        a SET, not a value.  `verify_bug_fix` refuses unless the report is
+        `fixed`, so `fixed` is the round's entry precondition - but
+        `fixed` is TRANSIENT.  `_apply_fix_verdict` writes
+        `status = 'resolved'` in the same transaction that makes the round
+        state `resolved`, so the moment the bar fills, the writer that
+        satisfied this gate mutates it away.  Gating on `== "fixed"` alone
+        therefore dropped the bar from every fully-verified report, and
+        `_fix_round_cell` printed "no fix has merged yet" on a 3/3 bug.
+        A process's precondition is not a valid gate for its terminal
+        state; the bar spans `fixed` -> `resolved`, so the gate must too.
 
     report_status defaults to "" so a caller that forgets it gets NO second
     bar.  Under-claiming a missing bar is recoverable; rendering "fix
@@ -151,7 +159,7 @@ def _two_bars(
     """
     out = _bar(confidence or 0, threshold, "confirmed real")
     rnd = fix_round or {}
-    if report_status == "fixed" and rnd.get("state") in (
+    if report_status in ("fixed", "resolved") and rnd.get("state") in (
         "pending",
         "resolved",
         "disputed",
@@ -178,7 +186,7 @@ def _fix_round_cell(report: dict) -> str:
     unreachable and every row fell through to the counts.
     """
     rnd = report.get("fix_round") or {}
-    if report.get("status") != "fixed" or rnd.get("state") not in (
+    if report.get("status") not in ("fixed", "resolved") or rnd.get("state") not in (
         "pending",
         "resolved",
         "disputed",
