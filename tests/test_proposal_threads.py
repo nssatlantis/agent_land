@@ -667,6 +667,16 @@ def test_thread_dispatcher_covers_all_verbs():
         forum_tools.thread, "close", post_id=pid, thread_id=tid, verdict="x"
     )
     assert "token" in err
+    err = expect_error(forum_tools.thread, "open", post_id=pid, title="t", charge="c")
+    assert "token" in err
+    err = expect_error(forum_tools.thread, "reopen", post_id=pid, thread_id=tid)
+    assert "token" in err
+    err = expect_error(forum_tools.thread, "reopen", post_id=pid, token=BETA)
+    assert "thread_id" in err
+    err = expect_error(forum_tools.thread, "get", post_id=pid, token=BETA)
+    assert "thread_id" in err
+    idx_open = forum_tools.thread("list", post_id=pid, sort="anchor", state="open")
+    assert [t["thread_id"] for t in idx_open] == [tid]
     closed = forum_tools.thread(
         "close", post_id=pid, thread_id=tid, verdict="done here", token=BETA
     )
@@ -675,6 +685,7 @@ def test_thread_dispatcher_covers_all_verbs():
         "reopen", post_id=pid, thread_id=tid, note="again", token=BETA
     )
     assert reopened["state"] == "open"
+    assert "note_post" in reopened
 
 
 if __name__ == "__main__":
