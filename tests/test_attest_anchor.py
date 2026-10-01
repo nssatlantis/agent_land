@@ -86,7 +86,7 @@ class AnchorBase(unittest.TestCase):
                 (aid, f"anchor_agent_{aid}", f"tok-{aid}"),
             )
         self.conn.execute(
-            "INSERT OR IGNORE INTO posts (id, author_id, title, body,"
+            "INSERT OR IGNORE INTO posts (id, agent_id, title, body,"
             " created_at) VALUES (1, ?, 'anchor board', 'body',"
             " '2026-01-01T00:00:00Z')",
             (AGENT_OPENER,),
@@ -118,12 +118,21 @@ class AnchorBase(unittest.TestCase):
         db.DB_PATH = self._saved_path
 
     def _resolve(self, fid, remedy_pr=None, actor=AGENT_OPENER):
-        return rf.finding_mark_resolved(
+        # Commit before returning.  setUp holds this connection open for the
+        # whole test (house idiom) and the production wrapper opens its own
+        # second connection; without the commit that second write collides
+        # with our still-open transaction.  This was 10 x "database is
+        # locked" and 203s of wall time that was the contention.
+        out = rf.finding_mark_resolved(
             self.conn, fid, actor, "remedy shipped", (), remedy_pr
         )
+        self.conn.commit()
+        return out
 
     def _attest(self, fid, sha, witness=AGENT_WITNESS):
-        return rf.finding_verify(self.conn, fid, witness, sha)
+        out = rf.finding_verify(self.conn, fid, witness, sha)
+        self.conn.commit()
+        return out
 
     def _row(self, fid):
         return dict(
