@@ -58,7 +58,10 @@ def _bug_quorum_bar(value: int, quorum: int, label: str) -> str:
 
 
 def _bug_confidence_bar(
-    confidence: int, threshold: int, fix_round: dict | None = None
+    confidence: int,
+    threshold: int,
+    fix_round: dict | None = None,
+    report_status: str = "",
 ) -> str:
     """Both quorum bars (proposal #821): "is it real" and, once a fix has
     merged, "did the fix work".
@@ -69,12 +72,47 @@ def _bug_confidence_bar(
     an import across the viewer/admin boundary would pull the whole viewer
     package into the admin process, and a parity test states the invariant
     just as well while keeping the failure local and named.
+
+    The second bar needs BOTH conditions, and neither alone is enough:
+
+      - `quorum` cannot gate it: bug_fix_round sets
+        `quorum = max(1, BUG_FIX_VERIFY_VOTES)` for EVERY report, so a
+        quorum test is true even when no fix has ever landed.
+      - `state` cannot gate it either, for the opposite reason.
+        _fix_round_state's only merge-adjacent input is `fix_pr` - a PR
+        NUMBER - and fix_pr is stamped when the PR OPENS, never when it
+        merges, so a bug whose fix PR is still open reads `pending`,
+        exactly like a merged fix nobody has judged.
+      - `report_status` is the signal that survives, read as a SET rather
+        than a value.  `verify_bug_fix` refuses unless the report is
+        `fixed`, so `fixed` is the round's entry precondition - but it is
+        TRANSIENT: `_apply_fix_verdict` writes `status = 'resolved'` in the
+        same transaction that resolves the round, so gating on `== "fixed"`
+        alone dropped the bar from every fully-verified report.  The bar
+        spans `fixed` -> `resolved`; the gate has to as well.
+
+    report_status defaults to "" so a caller that forgets it gets NO second
+    bar.  Under-claiming a missing bar is recoverable; rendering "fix
+    merged" on an unmerged fix is the false all-clear this gate exists to
+    prevent, so the omission fails closed.  Keep this copy behaviourally
+    identical to viewer._bugs._two_bars - the parity pin compares the two
+    renderers, but it can only catch them DISAGREEING, so every state a
+    caller really supplies must appear in its fixture, including the ones
+    where no bar belongs at all.
     """
     out = _bug_quorum_bar(confidence or 0, threshold, "confirmed real")
     rnd = fix_round or {}
-    if rnd.get("quorum") and (rnd.get("confirmed") or rnd.get("disputed")):
-        out += _bug_quorum_bar(rnd.get("confirmed", 0), rnd["quorum"], "fix verified")
-        if rnd.get("disputed"):
+    if report_status in ("fixed", "resolved") and rnd.get("state") in (
+        "pending",
+        "resolved",
+        "disputed",
+    ):
+        confirmed = rnd.get("confirmed") or 0
+        disputed = rnd.get("disputed") or 0
+        started = bool(confirmed or disputed)
+        label = "fix verified" if started else "fix merged, awaiting verdicts"
+        out += _bug_quorum_bar(confirmed, rnd["quorum"], label)
+        if disputed:
             out += (
                 '<div style="font-size:13px;color:#dc2626;margin:2px 0">'
                 f"{rnd['disputed']} of {rnd.get('reopen_quorum', 0)} said not fixed</div>"
@@ -151,7 +189,9 @@ async def bugs_index(request):
             else ""
         )
 
-        conf = _bug_confidence_bar(r["confidence"], threshold, r.get("fix_round"))
+        conf = _bug_confidence_bar(
+            r["confidence"], threshold, r.get("fix_round"), r.get("status") or ""
+        )
 
         url_part = f" | {_bug_url_anchor(r['url'], 'link')}" if r["url"] else ""
 
@@ -227,7 +267,12 @@ async def bug_detail(request):
 
     badge = _bug_status_badge(report["status"])
 
-    conf = _bug_confidence_bar(report["confidence"], threshold, report.get("fix_round"))
+    conf = _bug_confidence_bar(
+        report["confidence"],
+        threshold,
+        report.get("fix_round"),
+        report.get("status") or "",
+    )
 
     url_row = ""
 
