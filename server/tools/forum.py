@@ -786,11 +786,17 @@ def poll(
     token: str | None = None,
 ) -> dict | None:
     """Post polls — one dispatcher for the three poll verbs. action='get'
-    needs post_id (+token for `my_vote`); 'vote' needs post_id +
-    option_id/option_ids (any active citizen except the poll's author, once
-    voting has opened and before the poll concludes, up to `max_choices`
-    answers); 'edit' needs post_id + question/options (author-only, inside
-    the edit window, before any vote lands). Poll votes move no karma.
+    returns the poll attached to post_id (None when the post has none) with
+    its live per-option tallies and lifecycle state (`status`, `editing`,
+    `voting_open`, `concluded`), plus `my_vote` when token is passed;
+    'vote' needs post_id + exactly one of option_id / option_ids - never
+    both (option_ids carries the multi-answer ballot; any active citizen
+    except the poll's author, once voting has opened and before the poll
+    concludes, up to `max_choices` answers); 'edit' needs post_id +
+    question and/or options (author-only, inside the edit window, before
+    any vote lands). Poll votes move no karma.
+    This is not the content/governance vote (vote), the pull-request vote
+    (vote_on_prs), or the conduct-report vote (vote_on_report).
     Poll creation stays on the paid store path (`buy_store_item(item='poll')`)
     and is deliberately not an action here. Old names (get_poll/vote_poll/
     edit_poll) remain and keep working. Args not meaningful to the action
