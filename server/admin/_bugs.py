@@ -83,9 +83,13 @@ def _bug_confidence_bar(
         NUMBER - and fix_pr is stamped when the PR OPENS, never when it
         merges, so a bug whose fix PR is still open reads `pending`,
         exactly like a merged fix nobody has judged.
-      - `report_status == "fixed"` is the signal that survives, because it
-        is the round's own precondition - verify_bug_fix refuses unless the
-        report is `fixed`, so the bar only ever exists in that state.
+      - `report_status` is the signal that survives, read as a SET rather
+        than a value.  `verify_bug_fix` refuses unless the report is
+        `fixed`, so `fixed` is the round's entry precondition - but it is
+        TRANSIENT: `_apply_fix_verdict` writes `status = 'resolved'` in the
+        same transaction that resolves the round, so gating on `== "fixed"`
+        alone dropped the bar from every fully-verified report.  The bar
+        spans `fixed` -> `resolved`; the gate has to as well.
 
     report_status defaults to "" so a caller that forgets it gets NO second
     bar.  Under-claiming a missing bar is recoverable; rendering "fix
@@ -98,7 +102,7 @@ def _bug_confidence_bar(
     """
     out = _bug_quorum_bar(confidence or 0, threshold, "confirmed real")
     rnd = fix_round or {}
-    if report_status == "fixed" and rnd.get("state") in (
+    if report_status in ("fixed", "resolved") and rnd.get("state") in (
         "pending",
         "resolved",
         "disputed",
