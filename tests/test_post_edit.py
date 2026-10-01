@@ -1,4 +1,6 @@
-"""Tests for db.edit_post — in-place editing of ordinary posts."""
+"""Tests for in-place editing: db.edit_post on ordinary posts, then the
+server-layer edit_content dispatcher (Tier 1A) which routes an edit to
+edit_post or edit_proposal on the post's own kind."""
 
 import os
 import sys
@@ -242,6 +244,18 @@ def main():
     assert leaked == 0, f"ordinary post wrote {leaked} proposal_edits row(s)"
     print("  edit_content ordinary_routes_to_post_edits: ok")
 
+    # arm 1b: the RENAME is forwarded on this route. Without an arm that
+    # actually renames, deleting `title=title` from the dispatcher leaves the
+    # whole section green - every other arm edits a body, and the signature
+    # arm only checks that the PARAMETER still exists. A rename is also the
+    # higher-stakes half: on the proposal route it is what re-runs the
+    # duplicate-title guard, so an unpinned forward is an unpinned guard.
+    ftools.edit_content(agents["alpha"]["token"], dpid, title="Dispatch post renamed")
+    row = db.get_post(dpid)
+    assert row["title"] == "Dispatch post renamed", row["title"]
+    assert len(row["post_edits"]) == 2, row["post_edits"]
+    print("  edit_content ordinary_forwards_rename: ok")
+
     # arm 2: the SAME call on a proposal lands in proposal_edits instead
     ftools.edit_content(agents["alpha"]["token"], ppid, body="p v2 body")
     ped = db.get_post(ppid)["proposal"]["edits"]
@@ -253,6 +267,17 @@ def main():
         ).fetchone()[0]
     assert leaked == 0, f"proposal wrote {leaked} post_edits row(s)"
     print("  edit_content proposal_routes_to_proposal_edits: ok")
+
+    # arm 2b: and the rename is forwarded on THIS route too. Dropping
+    # `title=title` here would not raise (edit_proposal still refuses on
+    # "at least one change"), so the assertion that the title actually
+    # changed is what makes this arm a discriminator rather than a name.
+    ftools.edit_content(
+        agents["alpha"]["token"], ppid, title="Dispatch proposal renamed"
+    )
+    prop_row = db.get_post(ppid)
+    assert prop_row["title"] == "Dispatch proposal renamed", prop_row["title"]
+    print("  edit_content proposal_forwards_rename: ok")
 
     # arm 3: the FREEZE gate survives routing. Assert the property - the text
     # did not change - rather than a message substring, so this cannot be
@@ -309,7 +334,16 @@ def main():
     assert params == ["token", "post_id", "title", "body"], params
     print("  edit_content no_client_kind_argument: ok")
 
-    # arm 7: the routing read must not degrade the not-found refusal.
+    # arm 7: the routing read must not degrade the not-found refusal, which
+    # is genuinely worth pinning - it is the message a caller sees when the
+    # dispatcher hands them the db's own wording.
+    # Scoped honestly: this pins the MESSAGE, not the presence of the read.
+    # db.edit_post raises a byte-identical "no post with id", so this arm
+    # passes identically with the routing read removed. A bad-token variant
+    # WOULD separate them (get_post takes no token and runs first, so it
+    # reports the missing post before auth fires) - but that would pin an
+    # existence-before-auth ordering as a contract, and fail-closed ordering
+    # is the better default, so deliberately not asserted here.
     assert "no post with id" in expect_error(
         ftools.edit_content, agents["alpha"]["token"], 99999, body="nope"
     )

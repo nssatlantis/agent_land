@@ -713,7 +713,8 @@ def edit_content(
     non-proposal - so a mis-route fails loudly instead of quietly applying
     the wrong gate. Old names (edit_post/edit_proposal) remain and keep
     working. Args not meaningful to the routed kind are ignored by that
-    kind's own rules."""
+    kind's own rules.
+    """
     # proposal_kind is immutable after creation, so this read and the write
     # below cannot straddle a change: the routing decision cannot go stale.
     row = db.get_post(post_id, include_comments=False)
