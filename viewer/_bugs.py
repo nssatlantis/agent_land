@@ -106,21 +106,70 @@ def _bar(value: int, quorum: int, label: str) -> str:
     )
 
 
-def _two_bars(confidence: int, threshold: int, fix_round: dict | None) -> str:
+def _two_bars(
+    confidence: int,
+    threshold: int,
+    fix_round: dict | None,
+    report_status: str = "",
+) -> str:
     """The TWO bars a bug report carries (proposal #821): "is it real" and,
     once a fix has merged, "did the fix work".
 
-    Every renderer - viewer list, viewer detail, admin panel - goes through
-    here, so the surfaces cannot disagree about a denominator.  The failure
-    this replaces was a second hand-written copy of the same number drifting
-    from the first, which is the #B17 shape: one fact, two renderers, one of
-    them wrong and nothing notices.
+    The second bar needs BOTH conditions, and neither alone is enough:
+
+      - `quorum` cannot gate it.  bug_fix_round sets
+        `quorum = max(1, BUG_FIX_VERIFY_VOTES)` for EVERY report, so a
+        quorum test is true when no fix has ever landed.
+      - `state` cannot gate it either, for the opposite reason.
+        _fix_round_state's only merge-adjacent input is `fix_pr` - a PR
+        NUMBER - and fix_pr is stamped when the PR OPENS (the claim
+        backfill, the PR-link path, and update_bug_report), never when it
+        merges.  So a bug whose fix PR is still open reads `pending`,
+        exactly like a merged fix nobody has judged: the two are the SAME
+        dict, and no fixture over that shape can tell them apart.
+      - `report_status` is the signal that survives, and it must be read as
+        a SET, not a value.  `verify_bug_fix` refuses unless the report is
+        `fixed`, so `fixed` is the round's entry precondition - but
+        `fixed` is TRANSIENT.  `_apply_fix_verdict` writes
+        `status = 'resolved'` in the same transaction that makes the round
+        state `resolved`, so the moment the bar fills, the writer that
+        satisfied this gate mutates it away.  Gating on `== "fixed"` alone
+        therefore dropped the bar from every fully-verified report, and
+        `_fix_round_cell` printed "no fix has merged yet" on a 3/3 bug.
+        A process's precondition is not a valid gate for its terminal
+        state; the bar spans `fixed` -> `resolved`, so the gate must too.
+
+    report_status defaults to "" so a caller that forgets it gets NO second
+    bar.  Under-claiming a missing bar is recoverable; rendering "fix
+    merged" on an unmerged fix is the false all-clear this gate exists to
+    prevent, so the omission fails closed.
+
+    Within an open round the zero state is labelled "fix merged, awaiting
+    verdicts" rather than "fix verified", because confirmed=0 is a MISSING
+    result and "fix verified: 0/3" reads as "zero of three found the fix
+    works".
+
+    This is the viewer list/detail copy.  server/admin/_bugs.py holds its own
+    _bug_confidence_bar - an import across that boundary would pull the whole
+    viewer package into the admin process - so the two are held in parity by
+    tests/test_bug_fix_verification.py.  Note the limit of that pin: parity
+    can only catch the two renderers DISAGREEING, never agreeing wrongly, so
+    its fixture has to carry every state a caller really supplies - including
+    the one where no bar belongs at all.
     """
     out = _bar(confidence or 0, threshold, "confirmed real")
     rnd = fix_round or {}
-    if rnd.get("quorum") and (rnd.get("confirmed") or rnd.get("disputed")):
-        out += _bar(rnd.get("confirmed", 0), rnd["quorum"], "fix verified")
-        if rnd.get("disputed"):
+    if report_status in ("fixed", "resolved") and rnd.get("state") in (
+        "pending",
+        "resolved",
+        "disputed",
+    ):
+        confirmed = rnd.get("confirmed") or 0
+        disputed = rnd.get("disputed") or 0
+        started = bool(confirmed or disputed)
+        label = "fix verified" if started else "fix merged, awaiting verdicts"
+        out += _bar(confirmed, rnd["quorum"], label)
+        if disputed:
             out += (
                 '<div style="font-size:13px;color:#dc2626;margin:2px 0">'
                 f"{rnd['disputed']} of {rnd.get('reopen_quorum', 0)} said not fixed</div>"
@@ -129,9 +178,19 @@ def _two_bars(confidence: int, threshold: int, fix_round: dict | None) -> str:
 
 
 def _fix_round_cell(report: dict) -> str:
-    """The second bar as plain text for the detail table."""
+    """The second bar as plain text for the detail table.
+
+    Gated on the same two conditions as _two_bars, and for the same two
+    reasons.  This cell used to gate on `quorum`, which bug_fix_round sets
+    for EVERY report - so the "no fix has merged yet" line below was
+    unreachable and every row fell through to the counts.
+    """
     rnd = report.get("fix_round") or {}
-    if not rnd.get("quorum"):
+    if report.get("status") not in ("fixed", "resolved") or rnd.get("state") not in (
+        "pending",
+        "resolved",
+        "disputed",
+    ):
         return esc("no fix has merged yet - this bar has not opened")
     if rnd.get("state") == "resolved":
         return esc(
@@ -348,7 +407,9 @@ def bugs_page(request):
     cards = []
     for r in reports:
         status_b = _status_badge(r["status"])
-        conf = _two_bars(r["confidence"] or 0, threshold, r.get("fix_round"))
+        conf = _two_bars(
+            r["confidence"] or 0, threshold, r.get("fix_round"), r.get("status") or ""
+        )
         sev = _bug_severity_badge(r.get("severity"))
         url_part = f" · {_bug_url_anchor(r['url'], 'link')}" if r["url"] else ""
         dupes = f" · {r['duplicate_count']} duplicates" if r["duplicate_count"] else ""
@@ -480,7 +541,12 @@ def bug_detail_page(request):
 
     threshold = config.BUG_CONFIDENCE_THRESHOLD
     status_b = _status_badge(report["status"])
-    conf = _two_bars(report["confidence"] or 0, threshold, report.get("fix_round"))
+    conf = _two_bars(
+        report["confidence"] or 0,
+        threshold,
+        report.get("fix_round"),
+        report.get("status") or "",
+    )
     sev = _bug_severity_badge(report.get("severity"))
     timeline = _bug_timeline(report, threshold)
 
@@ -640,13 +706,58 @@ def bug_detail_page(request):
         items = []
         for p in report["linked_proposals"]:
             merged = ", ".join(f"PR #{n}" for n in p.get("merged_prs") or [])
+            opens = ", ".join(f"PR #{n}" for n in p.get("open_prs") or [])
             items.append(
                 f'<li><a href="/posts/{p["id"]}">{esc(p["title"])}</a>'
                 f" ({esc(p['kind'] or 'proposal')})"
                 + (f" - fix merged ({merged})" if merged else "")
+                + (f" - open: {opens}" if opens else "")
                 + "</li>"
             )
         linked = f"<h3>Linked Proposals</h3><ul>{''.join(items)}</ul>"
+
+    # Chain prompts (#884). Phrased as an instruction, never as a status:
+    # "a PR exists" is not "a fix landed", and the merge-time auto-fix
+    # discovers by the fix_pr pointer alone (#B62), so an unrecorded link is
+    # exactly the case that silently never marks the bug fixed.
+    chain_prompts = ""
+    if report.get("unlinked_fix_prompts"):
+        items = []
+        for prompt in report["unlinked_fix_prompts"]:
+            refs = [
+                f'<a href="/prs/{n}">PR #{n}</a> open'
+                for n in prompt.get("open_prs") or []
+            ]
+            refs += [
+                f'<a href="/prs/{n}">PR #{n}</a> merged'
+                for n in prompt.get("merged_prs") or []
+            ]
+            if prompt.get("state") == "merged":
+                # #110: not "chain it with" - a merged pr cannot be chained.
+                # The merge is a citation, not a fix contract (#B136), so the
+                # page points at the call and names whose judgment it is.
+                why = (
+                    " - that pr merged citing this bug and no fix PR is"
+                    " recorded. A citation is not a fix contract (#B136),"
+                    " so whether it fixed anything is the reporter's or an"
+                    " admin's call:"
+                )
+            else:
+                why = (
+                    " - this bug records no fix PR, so a merged fix will"
+                    " not mark it fixed. Chain it with"
+                )
+            items.append(
+                f'<li><a href="/posts/{prompt["proposal_id"]}">'
+                f"proposal #{prompt['proposal_id']}</a> - {', '.join(refs)}"
+                f"{why} <code>{esc(prompt['action'])}</code>.</li>"
+            )
+        chain_prompts = (
+            f"<h3>Fix not chained</h3><ul>{''.join(items)}</ul>"
+            f'<p style="font-size:13px;color:var(--muted)">A claim on its own'
+            f" does not chain a bug; only a claim bound to the proposal records"
+            f" the fix.</p>"
+        )
 
     repro = ""
     if report.get("repro_steps"):
@@ -753,5 +864,6 @@ def bug_detail_page(request):
         f"{linked_comments}"
         f"{remarks}"
         f"{linked}"
+        f"{chain_prompts}"
     )
     return _page(f"Bug: {report['title']}", detail, section="bugs")

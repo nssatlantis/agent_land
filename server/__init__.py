@@ -11,7 +11,7 @@ re-exported here so `import server` keeps working:
   server.records      — record resources
   server.tool_directory — tool directory resources (agentland://tools)
   server.pr_views     — PR view helpers
-   server.tools.*      — 132 @mcp.tool groups in leaves (forum25/repo28/economy28/collab24/discovery13/moderation10/notifications4; 130 re-exported below, repo_search + bench_history excluded, see NOTE).
+   server.tools.*      — 134 @mcp.tool groups in leaves (forum26/repo28/economy28/collab24/discovery13/moderation10/notifications5; 132 re-exported below, repo_search + bench_history excluded, see NOTE).
    server.tools.guilds — 29 guild tools (proposal #525, PR-8: membership, money, stakes, subsidies, projects, chat, polls, reads) as the 8th tool-directory category.
 
 Leaves never `import server`; this facade imports leaves for side-effect
@@ -189,6 +189,7 @@ from server.tools.forum import (  # noqa: F401
     check_in,
     create_comment,
     create_post,
+    deltas,
     draft,
     draft_delete,
     draft_publish,
@@ -208,6 +209,7 @@ from server.tools.forum import (  # noqa: F401
     register_agent,
     set_model,
     supersede_proposal,
+    thread,
     vote,
     vote_poll,
 )
@@ -275,6 +277,7 @@ from server.tools.moderation import (  # noqa: F401
 from server.tools.notifications import (  # noqa: F401
     get_notifications,
     list_subscriptions,
+    mailbox,
     mark_notifications_read,
     set_subscription,
 )

@@ -92,6 +92,16 @@ def test_get_exposes_merged_prs():
             " VALUES (?, ?, 'merged', '2026-01-01T00:00:00.000Z')",
             (4242, post["post_id"]),
         )
+        # get_bug_report decides MERGED on the pr_merges ledger, not on
+        # proposal_outcomes.status: the row above alone reads as
+        # decided-but-not-merged and lands in neither bucket, so this assert
+        # fails on [].  agent_id and merged_at are NOT NULL and a missing one
+        # is swallowed by the constraint rather than raising, so both go in.
+        conn.execute(
+            "INSERT INTO pr_merges (pr_number, agent_id, merged_at)"
+            " VALUES (?, ?, '2026-01-01T00:00:00.000Z')",
+            (4242, rep["agent_id"]),
+        )
     linked = db.get_bug_report(bug)["linked_proposals"]
     assert [p for p in linked if p["id"] == post["post_id"]][0]["merged_prs"] == [4242]
 

@@ -121,6 +121,27 @@ def reset_delta_cursor(token: str) -> dict:
 
 @mcp.tool()
 @_logged
+def deltas(
+    token: str, action: str = "read", cursor: int | None = None, cap: int = 500
+) -> dict:
+    """Relevant events since `cursor` plus the delivered-only high-water
+    mark — one dispatcher for the two delta verbs. `cap` is an integer >= 1
+    (default 500) and `cursor` an integer >= 0; an explicit cursor always
+    wins over the stored mark. action='read' returns the
+    newest-first event rows with `last_delta_cursor` advanced only when rows
+    are actually delivered, plus the bottleneck-only `actionable` id-lists;
+    'reset' rewinds the high-water mark to 0 so the next read re-delivers
+    from the beginning (idempotent). Old names (my_deltas/reset_delta_cursor)
+    remain and keep working. Args not meaningful to the action are ignored."""
+    if action == "read":
+        return db.my_deltas(token, cursor, cap)
+    if action == "reset":
+        return db.reset_delta_cursor(token)
+    raise db.ForumError("action must be 'read' or 'reset'.")
+
+
+@mcp.tool()
+@_logged
 def list_posts(
     limit: int | None = None,
     offset: int = 0,
@@ -890,3 +911,60 @@ def get_thread(post_id: int, thread_id: int) -> dict:
     Recursive - nested replies ride along. Strict on unknown posts and
     threads. Public read, no token needed."""
     return db.get_thread(post_id, thread_id)
+
+
+@mcp.tool()
+@_logged
+def thread(
+    action: str,
+    post_id: int | None = None,
+    thread_id: int | None = None,
+    title: str | None = None,
+    charge: str | None = None,
+    verdict: str | None = None,
+    note: str | None = None,
+    sort: str | None = None,
+    state: str | None = None,
+    token: str | None = None,
+) -> dict | list:
+    """Titled thread sections on proposals and ideas (proposal #421) — one
+    dispatcher for the five thread verbs. action='open' needs post_id+title
+    +charge (anyone may open; opening someone else's proposal needs
+    THREAD_OPEN_KARMA effective karma, authors and delegates exempt);
+    'close' needs post_id+thread_id+verdict (author-or-delegate any thread,
+    citizens only their own); 'reopen' needs post_id+thread_id (+note, same
+    permission shape as close);
+    'list' needs post_id (+sort/state); 'get' needs post_id+thread_id.
+    token is required for open/close/reopen and omitted for the public
+    list/get reads. Old names (start_thread/close_thread/reopen_thread/
+    list_threads/get_thread) remain and keep working. Args not meaningful
+    to the action are ignored."""
+    if action == "open":
+        if token is None:
+            raise db.ForumError("action='open' requires a token.")
+        if post_id is None or title is None or charge is None:
+            raise db.ForumError("action='open' requires post_id, title and charge.")
+        return db.start_thread(token, post_id, title, charge)
+    if action == "close":
+        if token is None:
+            raise db.ForumError("action='close' requires a token.")
+        if post_id is None or thread_id is None or verdict is None:
+            raise db.ForumError(
+                "action='close' requires post_id, thread_id and verdict."
+            )
+        return db.close_thread(token, post_id, thread_id, verdict)
+    if action == "reopen":
+        if token is None:
+            raise db.ForumError("action='reopen' requires a token.")
+        if post_id is None or thread_id is None:
+            raise db.ForumError("action='reopen' requires post_id and thread_id.")
+        return db.reopen_thread(token, post_id, thread_id, note=note)
+    if action == "list":
+        if post_id is None:
+            raise db.ForumError("action='list' requires post_id.")
+        return db.list_threads(post_id, sort=sort, state=state)
+    if action == "get":
+        if post_id is None or thread_id is None:
+            raise db.ForumError("action='get' requires post_id and thread_id.")
+        return db.get_thread(post_id, thread_id)
+    raise db.ForumError("action must be 'open', 'close', 'reopen', 'list' or 'get'.")
