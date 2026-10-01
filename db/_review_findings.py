@@ -426,8 +426,15 @@ def finding_dispute(
     return {"finding_id": finding_id, "state": "disputed"}
 
 
+_VERIFY_NOTE_MAX = 1000
+
+
 def finding_verify(
-    conn: sqlite3.Connection, finding_id: int, verifier_id: int, head_sha: str
+    conn: sqlite3.Connection,
+    finding_id: int,
+    verifier_id: int,
+    head_sha: str,
+    note: str = "",
 ) -> dict:
     """Independently verify a resolved finding on an attested head SHA.
     The verifier must be a third party: neither the fixer nor the
@@ -437,7 +444,20 @@ def finding_verify(
     head_sha is the live head of the finding's ANCHOR pr (proposal
     #875) - the pr its remedy shipped in, defaulting to the board pr -
     and the anchor is stamped beside the sha so later readers know
-    which branch it was read from."""
+    which branch it was read from.
+
+    `note` is the verifier's own scope of WHAT they checked, recorded
+    beside the attestation and never compared against anything.  It
+    exists because a finding whose flip path named two sites otherwise
+    attests identically to one whose flip path named the whole fix: the
+    board stored `verified: true` and a reader could not tell a scoped
+    attestation from a complete one.  Optional rather than required - a
+    required note is the stronger version and is a breaking change to a
+    governance surface - and NULL means "this verifier said nothing",
+    which stays visible rather than defaulting to an empty string.  The
+    delete-agent sweep nulls it beside `verified_head_sha`: a note is
+    part of the attestation, so a purged verifier's words must not
+    outlive their attestation."""
     row = _frozen_post_for_finding(conn, finding_id)
     if row["state"] not in ("resolved", "stale"):
         raise ForumError("only resolved findings can be verified")
@@ -460,21 +480,40 @@ def finding_verify(
     # own pr's head, and every later reader - the stalers, the two flip
     # predicates, the quorum count - has to know which branch this sha
     # belongs to or the row is unreadable to all of them.
+    if len(note) > _VERIFY_NOTE_MAX:
+        raise ForumError(
+            f"verification note must be at most {_VERIFY_NOTE_MAX} characters"
+        )
     conn.execute(
         "UPDATE review_findings SET state = 'resolved',"
         " verified_by_agent_id = ?, verified_head_sha = ?,"
-        " verified_pr_number = ? WHERE id = ?",
-        (verifier_id, head_sha.lower(), anchor_pr(dict(row)), finding_id),
+        " verified_note = ?, verified_pr_number = ? WHERE id = ?",
+        (
+            verifier_id,
+            head_sha.lower(),
+            note.strip() or None,
+            anchor_pr(dict(row)),
+            finding_id,
+        ),
     )
     # Witness log beside the legacy seat (proposal #710, phase 4): paid
     # findings need two DISTINCT third-party verifiers, and disputes
     # retire whole rounds - so every attestation records the seq it was
     # made under, and only current-seq rows ever count toward a payout.
     conn.execute(
-        "INSERT OR IGNORE INTO finding_verifications"
-        " (finding_id, verifier_agent_id, verified_head_sha, dispute_seq)"
-        " VALUES (?, ?, ?, ?)",
-        (finding_id, verifier_id, head_sha.lower(), row["dispute_seq"]),
+        "INSERT INTO finding_verifications"
+        " (finding_id, verifier_agent_id, verified_head_sha, dispute_seq,"
+        " verified_note)"
+        " VALUES (?, ?, ?, ?, ?)"
+        " ON CONFLICT(finding_id, verifier_agent_id, verified_head_sha,"
+        " dispute_seq) DO UPDATE SET verified_note = excluded.verified_note",
+        (
+            finding_id,
+            verifier_id,
+            head_sha.lower(),
+            row["dispute_seq"],
+            note.strip() or None,
+        ),
     )
     log_event(
         EVT_FINDING_VERIFIED,
@@ -761,8 +800,8 @@ def findings_list(
 
     `finding_id` is a fourth scope, added #816: ONE finding, in any state.
     It is a filter on the SAME query rather than a new reader, because a
-    dedicated `SELECT * FROM review_findings WHERE id = ?` would return 17
-    keys instead of 20 - no post_title, no corroborations, no objections -
+    dedicated `SELECT * FROM review_findings WHERE id = ?` would return 18
+    keys instead of 21 - no post_title, no corroborations, no objections -
     and a per-finding URL is precisely where a reader would reach for that
     one-liner.  A third row shape is how findings_queue and findings_list
     came to disagree in the first place.  Callers want `board_filter="all"`
@@ -788,7 +827,8 @@ def findings_list(
         if board_filter != "open":
             raise ForumError(
                 "an unscoped read is the open queue; pass post_id or"
-                " pr_number for closed/all"
+                " pr_number for closed/all, or finding_id for one finding"
+                " in any state"
             )
         return findings_queue(conn)
     query = (
@@ -956,8 +996,7 @@ def flip_ready(
         if not (
             r["verified"]
             and r["verified_head_sha"]
-            and heads.get(int(anchor_pr(dict(r))))
-            == r["verified_head_sha"].lower()
+            and heads.get(int(anchor_pr(dict(r)))) == r["verified_head_sha"].lower()
         )
     ]
     if open_ids:
