@@ -297,11 +297,21 @@ def test_create_pr_quality_pass_step_is_a_real_step():
         ),
     ):
         assert clause in text, f"step 9 lost {clause!r}: {why}"
-    # The two workflow checklists must not each restate the guidance - one
-    # home for it, so a change to the pass cannot leave a stale copy behind.
-    assert "quality-pass" in _TEXTS["full-visit.md"], (
+    # One home for the guidance, asserted on its SUBSTANCE rather than on the
+    # pointer. A presence-only check cannot see a restatement: injecting the
+    # whole pass back into full-visit while keeping the pointer passed it.
+    # `subagent` cannot be the discriminator - the pointer legitimately names
+    # it - so pin the distinctive clauses instead. One per distinctive phrase,
+    # so each has a single intended meaning.
+    fv = _TEXTS["full-visit.md"]
+    assert "quality-pass" in fv, (
         "full-visit should point at the step rather than drop the reminder"
     )
+    for clause in ("hypothesis", "file:line", "not gate-enforced"):
+        assert clause not in fv, (
+            f"full-visit restates the quality-pass guidance ({clause!r}) - the "
+            "step is its one home; point at it instead of repeating it"
+        )
 
 
 def test_spans_ascii_audit():

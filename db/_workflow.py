@@ -1906,6 +1906,18 @@ def _workflow_nudge_impl(conn: sqlite3.Connection, agent_id: int) -> dict:
                 break
         if cp_keys:
             note += " create-pr: " + " -> ".join(cp_keys) + "."
+        else:
+            # Reachable between run creation and its first read: steps are
+            # seeded lazily (boot sweep + first read), so a fresh run can be
+            # observed with none. Omitting the list entirely would leave this
+            # surface - the one a citizen reads to learn the steps - less
+            # informative than the hand-kept string it replaced. Point at the
+            # checklist instead of re-listing it: that is the one home for the
+            # vocabulary, and it cannot go stale.
+            note += (
+                " create-pr: see the checklist in workflows/create-pr.md"
+                " (steps not loaded yet)."
+            )
         note += (
             " Runs auto-close when the linked PR's CI"
             " turns green (completed) or the PR merges/declines/closes, or"
