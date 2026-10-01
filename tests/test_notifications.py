@@ -1453,24 +1453,47 @@ def main():
     assert "ids or keep" in expect_error(ntools.mailbox, d1["token"], "purge", ids=[1])
     assert "ids or keep" in expect_error(ntools.mailbox, d1["token"], "purge", keep=1)
     # clear forwards ids/keep POSITIONALLY, so a swapped pair would stamp the
-    # wrong rows: each direction needs its own split-state assertion.
-    db.create_comment(d2["token"], dp["post_id"], "second reply")
-    db.create_comment(d2["token"], dp["post_id"], "third reply")
-    ids = [r["id"] for r in ntools.mailbox(d1["token"], "read")["notifications"]]
-    ntools.mailbox(d1["token"], "clear", ids=ids[:1])
+    # wrong rows. Getting TWO unread rows takes two different kinds on two
+    # different posts: consecutive same-post activity coalesces into ONE
+    # notification row, so an earlier draft of this pin that seeded several
+    # comments could never observe a split state and its assertion could not
+    # hold. The coalescing rule is measured, not assumed - two votes by
+    # different actors on two comments of the same post still collapse to a
+    # single row, which is what the first two drafts got wrong.
+    dp2 = db.create_post(d1["token"], "Mailbox dispatch two", "second post")["post_id"]
+    farm = db.create_comment(d1["token"], dp["post_id"], "karma farm")["comment_id"]
+    db.vote(d2["token"], "comment", farm, 1)
+    db.create_comment(d2["token"], dp2, "a reply on the second post")
+    unread_ids = [
+        r["id"]
+        for r in ntools.mailbox(d1["token"], "read")["notifications"]
+        if not r["read"]
+    ]
+    assert len(unread_ids) == 2, unread_ids
+    ntools.mailbox(d1["token"], "clear", ids=unread_ids[:1])
     flags = {
         r["id"]: r["read"] for r in ntools.mailbox(d1["token"], "read")["notifications"]
     }
-    assert flags[ids[0]] is True and any(v is False for v in flags.values())
+    assert flags[unread_ids[0]] is True and any(v is False for v in flags.values())
     ntools.mailbox(d1["token"], "clear", keep=1)
     kept = ntools.mailbox(d1["token"], "read", unread_only=True)["notifications"]
     assert len(kept) == 1  # keep=1 kept exactly the newest unread
     # read-side filter forwards: the defaults-vs-defaults compare above cannot
-    # see a dropped unread_only, summary_only or limit clamp.
+    # see a dropped unread_only, summary_only or limit clamp. The clamp needs
+    # MORE THAN ONE row to be observable at all - with a single row every
+    # limit returns that row, so a deleted clamp would still pass. Seed extra
+    # rows on distinct posts (same-post activity coalesces), then read the
+    # clamp off the row count: 0 clamps up to 1, 1 gives 1, 2 gives 2.
     assert "notifications" not in ntools.mailbox(d1["token"], "read", summary_only=True)
-    assert ntools.mailbox(d1["token"], "read", limit=0)["notifications"] == [
-        ntools.mailbox(d1["token"], "read", limit=1)["notifications"]
-    ]  # limit clamps up to the 1 floor, both copies of the clamp
+    for i in range(3):
+        extra = db.create_post(d1["token"], f"clamp post {i}", "b")["post_id"]
+        db.create_comment(d2["token"], extra, f"clamp reply {i}")
+    assert len(ntools.mailbox(d1["token"], "read")["notifications"]) >= 2
+    assert (
+        len(ntools.mailbox(d1["token"], "read", limit=0)["notifications"]) == 1
+    )  # limit=0 clamps UP to the 1 floor, in both copies of the clamp
+    assert len(ntools.mailbox(d1["token"], "read", limit=1)["notifications"]) == 1
+    assert len(ntools.mailbox(d1["token"], "read", limit=2)["notifications"]) == 2
     db.create_comment(d2["token"], dp["post_id"], "another reply for you")
     ntools.mailbox(d1["token"], "clear")
     purged = ntools.mailbox(d1["token"], "purge")

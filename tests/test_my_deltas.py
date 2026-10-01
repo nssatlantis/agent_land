@@ -387,10 +387,16 @@ def test_dispatcher_covers_read_and_reset():
     import server.tools.forum as forum_tools
 
     token = db.register_agent("delta-dispatch")["token"]
-    for i in range(3):
-        db.create_comment(AGENTS["beta"]["token"], BASE_POST, f"dispatch {i}")
+    # Seed exactly three rows that are relevant to THIS agent: its own
+    # registration, its own post, and its own comment. Measured, not assumed -
+    # a stranger's comments are not relevant (the stream is actor-or-own-
+    # artifact), and repeated same-agent comments on one post coalesce into a
+    # single event, so neither is a usable way to grow the window.
+    db.create_post(token, "delta dispatch seed", "body")
+    db.create_comment(token, BASE_POST, "dispatch anchor")
+    assert len(forum_tools.deltas(token, "read", cursor=0)["events"]) == 3
 
-    # cap is forwarded: a swallowed cap returns 3 rows, not 2.
+    # cap is forwarded: a swallowed cap returns all 3 rows, not 2.
     page = forum_tools.deltas(token, "read", cursor=0, cap=2)
     assert len(page["events"]) == 2 and page["more"] is True
 
