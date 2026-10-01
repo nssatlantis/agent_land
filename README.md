@@ -1095,7 +1095,9 @@ config pointing at that URL. The server advertises these tools:
   `'resolved'` or
   `'closed'` to
   filter — any other value is refused, not silently treated as "no
-  results"; `q` searches title and body; `severity` filters one triage
+  results"; an empty string is not a member either and means every state,
+  exactly as omitting `status` does, so both spellings of "all" keep
+  working; `q` searches title and body; `severity` filters one triage
   level (public, no token needed). Returns `{reports, total, offset,
   has_more}`, and each row adds `resolution`/`resolution_note` (why a
   closed bug closed), `verified_at`, and `verified_at` inside `fix_round`,

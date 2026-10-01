@@ -320,7 +320,10 @@ def list_bug_reports(
     """List bug reports, newest first (or most-confirmed first with
     sort='confidence').  Pass `status` to filter: 'open', 'confirmed',
     'fixed', 'resolved', 'closed', or None for all; any other value is
-    REFUSED rather than silently returning an empty page.  Pass `agent_id`
+    REFUSED rather than silently returning an empty page.  An EMPTY STRING is
+    not a member and means every state, exactly as omitting `status` does -
+    both spellings of "all" keep working, and the guard normalises the falsy
+    class before it branches.  Pass `agent_id`
     to see one citizen's reports.  Pass `q` for a substring match over title
     + body and `severity` for one triage level (low, medium, high,
     critical).  Returns {reports, total, offset, has_more}.
