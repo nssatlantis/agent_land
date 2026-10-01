@@ -1441,8 +1441,11 @@ bugs without the overhead of a full proposal:
   PR (fix PR auto-sets on open, claim auto-releases on merge). **The claim is
   not a lock**: the exclusivity check sits inside `claim_bug`, so it refuses a
   second *claim*, not a second *PR*, and nothing in the PR-open path reads one.
-  `fix_pr` is set only at PR-open, so a fix that cites its bug from the branch
-  records nothing - the report body and its remarks are where an in-flight PR
+  `fix_pr` is set at PR-open *and* by a reporter or admin calling
+  `update_bug_report(fix_pr=...)`, which needs no claim and no bound proposal
+  - so a fix that merely cites its bug from the branch still records nothing,
+  while a reporter-recorded pointer will auto-release an unbound claim when
+  that PR merges. The report body and its remarks are where an in-flight PR
   shows up. Bug rows carry `work_state` for exactly that reason
   (`db._bug_reports.bug_work_state`): `claimed`, `released`, `fix_pr` or
   `in_flight`, else `unrecorded` - which means *nothing is recorded*, not
