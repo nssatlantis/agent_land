@@ -106,18 +106,35 @@ def _bar(value: int, quorum: int, label: str) -> str:
     )
 
 
-def _two_bars(confidence: int, threshold: int, fix_round: dict | None) -> str:
+def _two_bars(
+    confidence: int,
+    threshold: int,
+    fix_round: dict | None,
+    report_status: str = "",
+) -> str:
     """The TWO bars a bug report carries (proposal #821): "is it real" and,
     once a fix has merged, "did the fix work".
 
-    The second bar is gated on the round's PUBLISHED STATE, never on its
-    quorum.  bug_fix_round sets `quorum = max(1, BUG_FIX_VERIFY_VOTES)` for
-    EVERY report, so a quorum test is true even when no fix has ever landed
-    and would announce one on both surfaces; `state` is the only field that
-    separates the two, and its own docstring says so - not_fixed means "no
-    fix has landed, so the bar has not opened yet".  (_fix_round_cell's "no
-    fix has merged yet" branch is the fossil of that predicate: dead code on
-    main for exactly this reason.)
+    The second bar needs BOTH conditions, and neither alone is enough:
+
+      - `quorum` cannot gate it.  bug_fix_round sets
+        `quorum = max(1, BUG_FIX_VERIFY_VOTES)` for EVERY report, so a
+        quorum test is true when no fix has ever landed.
+      - `state` cannot gate it either, for the opposite reason.
+        _fix_round_state's only merge-adjacent input is `fix_pr` - a PR
+        NUMBER - and fix_pr is stamped when the PR OPENS (the claim
+        backfill, the PR-link path, and update_bug_report), never when it
+        merges.  So a bug whose fix PR is still open reads `pending`,
+        exactly like a merged fix nobody has judged: the two are the SAME
+        dict, and no fixture over that shape can tell them apart.
+      - `report_status == "fixed"` is the signal that survives, because it
+        is the round's own precondition - verify_bug_fix refuses unless the
+        report is `fixed`, so the bar only ever exists in that state.
+
+    report_status defaults to "" so a caller that forgets it gets NO second
+    bar.  Under-claiming a missing bar is recoverable; rendering "fix
+    merged" on an unmerged fix is the false all-clear this gate exists to
+    prevent, so the omission fails closed.
 
     Within an open round the zero state is labelled "fix merged, awaiting
     verdicts" rather than "fix verified", because confirmed=0 is a MISSING
@@ -134,7 +151,11 @@ def _two_bars(confidence: int, threshold: int, fix_round: dict | None) -> str:
     """
     out = _bar(confidence or 0, threshold, "confirmed real")
     rnd = fix_round or {}
-    if rnd.get("state") in ("pending", "resolved", "disputed"):
+    if report_status == "fixed" and rnd.get("state") in (
+        "pending",
+        "resolved",
+        "disputed",
+    ):
         confirmed = rnd.get("confirmed") or 0
         disputed = rnd.get("disputed") or 0
         started = bool(confirmed or disputed)
@@ -149,9 +170,19 @@ def _two_bars(confidence: int, threshold: int, fix_round: dict | None) -> str:
 
 
 def _fix_round_cell(report: dict) -> str:
-    """The second bar as plain text for the detail table."""
+    """The second bar as plain text for the detail table.
+
+    Gated on the same two conditions as _two_bars, and for the same two
+    reasons.  This cell used to gate on `quorum`, which bug_fix_round sets
+    for EVERY report - so the "no fix has merged yet" line below was
+    unreachable and every row fell through to the counts.
+    """
     rnd = report.get("fix_round") or {}
-    if not rnd.get("quorum"):
+    if report.get("status") != "fixed" or rnd.get("state") not in (
+        "pending",
+        "resolved",
+        "disputed",
+    ):
         return esc("no fix has merged yet - this bar has not opened")
     if rnd.get("state") == "resolved":
         return esc(
@@ -368,7 +399,9 @@ def bugs_page(request):
     cards = []
     for r in reports:
         status_b = _status_badge(r["status"])
-        conf = _two_bars(r["confidence"] or 0, threshold, r.get("fix_round"))
+        conf = _two_bars(
+            r["confidence"] or 0, threshold, r.get("fix_round"), r.get("status") or ""
+        )
         sev = _bug_severity_badge(r.get("severity"))
         url_part = f" · {_bug_url_anchor(r['url'], 'link')}" if r["url"] else ""
         dupes = f" · {r['duplicate_count']} duplicates" if r["duplicate_count"] else ""
@@ -500,7 +533,12 @@ def bug_detail_page(request):
 
     threshold = config.BUG_CONFIDENCE_THRESHOLD
     status_b = _status_badge(report["status"])
-    conf = _two_bars(report["confidence"] or 0, threshold, report.get("fix_round"))
+    conf = _two_bars(
+        report["confidence"] or 0,
+        threshold,
+        report.get("fix_round"),
+        report.get("status") or "",
+    )
     sev = _bug_severity_badge(report.get("severity"))
     timeline = _bug_timeline(report, threshold)
 
