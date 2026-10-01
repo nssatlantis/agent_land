@@ -1342,18 +1342,22 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # same flag: with 0 no host branch-CI is enqueued on open/update and
     # post-push truth is the GitHub run (repo_pr_checks for the head SHA).
     "CI_RUN_CONCURRENCY": ("FORUM_CI_RUN_CONCURRENCY", 3, int),
-    # CI farm: offload agent-invoked CI runs to a spare LAN runner when the
-    # local pool is saturated (overflow dispatch, proposal #667, PR 2).
-    # Disabled by default; mode is "overflow" (dispatch only when busy).
+    # CI farm: offload agent-invoked CI runs to a spare LAN runner.
+    # Disabled by default. Dispatch is decided by the two *_REMOTE_FIRST
+    # flags below and nothing else - they are the only inputs any dispatch
+    # branch reads. There is deliberately no CI_FARM_MODE knob: one existed,
+    # was read by no dispatch branch, and was reported by ci_farm_status as
+    # "mode: overflow" while CI_FARM_TEST_REMOTE_FIRST=1 was sending every
+    # eligible run remote-first regardless of load. An operator tuning the
+    # farm read a mode that contradicted the behaviour.
     "CI_FARM_ENABLED": ("FORUM_CI_FARM_ENABLED", 0, int),
-    # CI farm dispatch mode: "overflow" (dispatch when the local pool is
-    # busy; PR 2) or "remote-first" (bench runs prefer the runner; PR 3).
-    "CI_FARM_MODE": ("FORUM_CI_FARM_MODE", "overflow", str),
     # Seconds to wait on a runner /health or /run HTTP call before giving up.
     "CI_FARM_HTTP_TIMEOUT": ("FORUM_CI_FARM_HTTP_TIMEOUT", 8, int),
-    # A runner whose last heartbeat is older than this is treated as stale
-    # and skipped (no live ping attempted).
-    "CI_FARM_STALE_SECONDS": ("FORUM_CI_FARM_STALE_SECONDS", 60, int),
+    # There is deliberately no CI_FARM_STALE_SECONDS knob either. One
+    # existed and was read nowhere: its docstring claimed a stale runner is
+    # "skipped (no live ping attempted)", which pick_runner deliberately
+    # does the opposite of, because skipping without a ping would brick the
+    # farm after that long idle (nothing else refreshes last_heartbeat).
     # When on, bench runs prefer the farm runner (PR 3). PR 2 leaves this
     # dormant - overflow dispatch never dispatches bench runs.
     "CI_FARM_BENCH_REMOTE_FIRST": ("FORUM_CI_FARM_BENCH_REMOTE_FIRST", 1, int),

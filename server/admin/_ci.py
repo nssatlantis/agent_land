@@ -732,27 +732,55 @@ def _render_ci_dashboard(request) -> str:
     except Exception as exc:  # domain: degrade-silently - dashboard best-effort
         _farm_rows, _farm_error = [], str(exc)
 
+    def _farm_live_cell(probe: dict | None) -> str:
+        """One `live` cell, from a fresh read-only probe.
+
+        Three honest states, never collapsed: reachable and idle, reachable
+        and busy, unreachable. Rendering all three as "?" would read as
+        "unknown" on a farm that is merely switched off - the false all-clear
+        this column exists to remove, since a farm that is off and a farm that
+        is broken must not look the same.
+        """
+        if not probe:
+            return '<span style="color:var(--muted)">not probed</span>'
+        if not probe.get("reachable"):
+            return '<span style="color:#f66">unreachable</span>'
+        state = "busy" if probe.get("busy") else "idle"
+        return f'<span style="color:var(--accent)">{esc(state)}</span>'
+
+    # Live reachability, probed fresh for this render. Read-only: it pings
+    # /health and reserves nothing, unlike pick_runner - so rendering the
+    # panel can never consume a dispatch slot or stamp a heartbeat, which
+    # would make the very column this replaces stop meaning "last dispatch".
+    try:
+        _farm_probe = {int(p["id"]): p for p in _farm_mod.probe_runners()}
+    except Exception:  # domain: degrade-silently - the panel renders regardless
+        _farm_probe = {}
     _farm_trs = ""
     for _fr in _farm_rows:
         _farm_trs += (
             f"<tr><td>{esc(str(_fr.get('name', '?')))}</td>"
             f"<td>{esc(str(_fr.get('url', '?')))}</td>"
             f"<td>{esc(str(_fr.get('status', '?')))}</td>"
+            f"<td>{_farm_live_cell(_farm_probe.get(int(_fr.get('id') or 0)))}</td>"
             f"<td>{esc(str(_fr.get('last_heartbeat') or '-'))}</td>"
             f'<td><form method="post" action="/admin/ci/farm-remove">'
             f"{_csrf_field(request)}"
             f'<input type="hidden" name="runner_id" value="{esc(str(_fr.get("id")))}">'
             f'<button type="submit">Remove</button></form></td></tr>'
         )
-    # NOTE: the bearer token is write-only - registered once below, never
+    # NOTE: "last successful dispatch" is stamped only by a successful
+    # pick_runner dispatch, so on an idle farm it reads "-" whether the box is
+    # off or simply unused. The `live` column is the honest one: it pings now.
+    # The bearer token is write-only - registered once below, never
     # rendered back (not even hashed).
     farm_html = (
-        '<div class="panel" id="farm-runners"><h2>CI Farm Runners (LAN overflow)</h2>'
+        '<div class="panel" id="farm-runners"><h2>CI Farm Runners (LAN)</h2>'
         '<p style="color:var(--muted)">Dispatch requires CI_FARM_ENABLED=1 '
         "(server env + restart). Register a runner, then install it with the SAME "
         "bearer token: <code>CIFARM_TOKEN=&lt;token&gt; ci_farm/install.sh</code>.</p>"
         '<div class="table-wrap"><table><tr><th>name</th><th>url</th>'
-        "<th>status</th><th>last probe</th><th></th></tr>"
+        "<th>status</th><th>live</th><th>last successful dispatch</th><th></th></tr>"
         + (_farm_trs or "<tr><td colspan=5>no runners registered</td></tr>")
         + "</table></div>"
         + (

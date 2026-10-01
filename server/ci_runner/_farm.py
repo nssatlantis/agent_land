@@ -28,6 +28,7 @@ import json
 import re
 import sqlite3
 import threading
+import urllib.error
 import urllib.request
 from typing import NoReturn
 
@@ -217,17 +218,229 @@ def _audit_dispatch_failed(
 
 
 def _retry_local(
-    runner: dict, reason: str, checks: str, agent_id: int, name: str
+    runner: dict,
+    reason: str,
+    checks: str,
+    agent_id: int,
+    name: str,
+    *,
+    skip_reason: str | None = None,
 ) -> NoReturn:
-    """Audit the failure, then raise the caller's retry-locally signal.
+    """Audit the row, then raise the caller's retry-locally signal.
 
     Every picked-but-unusable runner reply funnels through here, so the
-    overflow lane gets one durable ledger row per dropped dispatch instead
-    of a silent host fallback. Annotated NoReturn (not None) so mypy - and
-    the next reader - know control never continues past the call.
+    overflow lane gets one durable ledger row per dropped dispatch instead of
+    a silent host fallback. Annotated NoReturn (not None) so mypy - and the
+    next reader - know control never continues past the call.
+
+    skip_reason labels the row a capacity SKIP rather than a dispatch failure.
+    It matters that this still RAISES rather than returning None: on this
+    lane a None return means "no runner available", and _runs.py turns that
+    into a BUSY error for the agent. A declined run did no work, so it has to
+    keep taking the local-retry path it always took - with the corrected
+    label, not a new refusal. Bench is different: that lane's documented
+    contract is a silent local fallback, so it returns None there.
     """
-    _audit_dispatch_failed(runner, checks, agent_id, name, reason, "overflow")
+    if skip_reason is not None:
+        log_skip(
+            skip_reason,
+            "overflow",
+            checks,
+            agent_id,
+            name,
+            runner=str(runner.get("name") or ""),
+            runner_id=runner.get("id"),
+            url=str(runner.get("url") or ""),
+        )
+    else:
+        _audit_dispatch_failed(runner, checks, agent_id, name, reason, "overflow")
     raise _FarmRetryLocal(reason)
+
+
+# Closed vocabulary for ci_farm_skipped rows. A skip is an ELIGIBLE dispatch
+# that found no usable runner - never a shape the gate refused by design, or
+# every branch-CI run would write a row claiming the farm declined it.
+SKIP_REASONS = (
+    "no_runner_registered",
+    "unhealthy",
+    "at_capacity",
+    "busy",
+    "ineligible_tree",
+)
+# The runner's own ceilings, mirrored so a payload that would be rejected
+# after a multi-MB upload is refused before it is sent. The gate's own comment
+# records paying that upload "to learn the cap" as owed; this is the pre-check.
+# Kept as module constants rather than read from the runner, because the runner
+# is a separate process on another box and importing its module here would be
+# the wrong dependency direction.
+FARM_MAX_FILES_COUNT = 50
+FARM_MAX_FILES_BYTES = 5 * 1024 * 1024
+
+# Closed vocabulary for a dispatch that was attempted and produced nothing.
+# The distinction that matters operationally is rejected vs unknown: a 4xx
+# means the runner declined and provably did NO work, while a timeout means
+# the run may or may not have executed remotely - in which case the caller's
+# local retry may be the second execution of the same work. urlopen raises
+# HTTPError on any 4xx, which is why every cause below used to collapse into
+# the single string "runner reply unreadable".
+DISPATCH_REJECTED = "runner_rejected"
+DISPATCH_MAY_HAVE_RUN = "may_have_executed"
+
+
+def log_skip(
+    reason: str,
+    lane: str,
+    checks: str,
+    agent_id: int,
+    name: str,
+    **extra,
+) -> None:
+    """Ledger one eligible dispatch that found no usable runner.
+
+    The sibling of _audit_dispatch_failed, and the half that function's own
+    docstring asks for: that row needs a runner to have been PICKED first, so a
+    farm that is switched off, has no runner registered, or whose runners are
+    all down logged nothing at all - and "the farm is idle" read identically to
+    "the farm is broken". A record only; nothing keys eligibility off it,
+    because a skip-on-failure rule with no self-clearing path would brick
+    dispatch until an operator intervened.
+    """
+    if reason not in SKIP_REASONS:
+        reason = "unhealthy"
+    try:
+        events.log_event(
+            events.EVT_CI_FARM_SKIPPED,
+            actor_agent_id=agent_id,
+            actor_name=name,
+            detail={
+                "reason": reason,
+                "lane": lane,
+                "checks": checks,
+                "runner": str(extra.pop("runner", "") or ""),
+                "runner_id": extra.pop("runner_id", None),
+                "url": str(extra.pop("url", "") or ""),
+                **extra,
+            },
+        )
+    except Exception:
+        # domain: degrade-silently - the audit row is best-effort; the
+        # caller's local fallback must happen either way.
+        pass
+
+
+def tree_payload(
+    agent_id: int, tree: str, files: list | None, base_ref: str
+) -> tuple[list[dict] | None, str]:
+    """The `files` a named-tree run must ship to reproduce the tree locally.
+
+    Returns (payload, reason); reason is "" when the tree may be dispatched.
+
+    PARITY, which is the whole reason this is safe to do at all: the local
+    path (_prepare_named_tree) resets the tree to current origin/<base> and
+    replays the stored deltas and then the incoming ones, and the runner's
+    local path does the same thing to a fresh clone of that same ref. So both
+    sides run "current base + stored + incoming", and the payload that makes
+    them equal is the UNION - not the request's newest delta alone.
+
+    The caller passes base_ref so try_dispatch's existing verification runs:
+    it checks the runner echoed the same ref and that executed_base_sha is a
+    40-hex equal to the reported base_sha. That is a post-dispatch check on
+    the real tree the runner used, and it costs no new machinery - it is the
+    same check #667 already relies on for stacked rehearsals.
+
+    Refuses rather than guesses. A tree is ineligible when it has no incoming
+    delta to ship, or when the union would exceed the runner's ceilings -
+    shipping a payload the runner will reject costs a multi-MB round trip and
+    then falls back locally, which is the failure the pre-check exists to stop.
+    """
+    incoming = [f for f in (files or []) if isinstance(f, dict)]
+    if not incoming:
+        return None, "ineligible_tree"
+    try:
+        from server.ci_runner import _trees as _trees_mod
+
+        stored = _trees_mod.named_tree_deltas(agent_id, tree)
+    except Exception:
+        # domain: degrade-silently - if we cannot read the store we cannot
+        # prove the union is complete, so the tree stays local
+        return None, "ineligible_tree"
+    payload: list[dict] = []
+    for blob in stored:
+        payload.extend(f for f in blob if isinstance(f, dict))
+    payload.extend(incoming)
+    if len(payload) > FARM_MAX_FILES_COUNT:
+        return None, "ineligible_tree"
+    total = 0
+    for entry in payload:
+        content = entry.get("content")
+        if content:
+            total += len(content.encode("utf-8"))
+            if total > FARM_MAX_FILES_BYTES:
+                return None, "ineligible_tree"
+    if not base_ref:
+        return None, "ineligible_tree"
+    return payload, ""
+
+
+def classify_no_pick() -> tuple[str, int]:
+    """Why did the pick_runner() that just came back empty find nothing?
+
+    Re-derived from state the failed attempt already wrote, so it costs no
+    extra ping and reserves nothing: pick_runner calls _mark(.., "stale") on a
+    ping failure and _mark(.., "busy", heartbeat=True) on a busy runner, so
+    the registry and _ACTIVE_RUNS already hold the answer. Precedence is fixed
+    so one unreachable runner cannot mask a different reason held by another.
+    """
+    try:
+        with db._conn() as conn:
+            rows = [
+                _row_to_dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM ci_runners WHERE status != 'removed'"
+                ).fetchall()
+            ]
+    except Exception:  # domain: degrade-silently - an unreadable registry is
+        return "no_runner_registered", 0  # not distinguishable from "none".
+    if not rows:
+        return "no_runner_registered", 0
+    cap = max(0, int(config.CI_FARM_RUNNER_MAX_ACTIVE))
+    if cap and any(_ACTIVE_RUNS.get(r["id"], 0) >= cap for r in rows):
+        return "at_capacity", len(rows)
+    if any(str(r.get("status") or "") == "busy" for r in rows):
+        return "busy", len(rows)
+    return "unhealthy", len(rows)
+
+
+def probe_runners() -> list[dict]:
+    """Live /health for every registered runner, for the admin panel.
+
+    Read-only on purpose: it pings, but never reserves a slot, never calls
+    _mark and never writes the registry. A panel that reused pick_runner would
+    consume a dispatch slot and stamp last_heartbeat on every render - which
+    would destroy the one thing that column means. A failed ping here reports
+    reachable=False and writes nothing, so viewing the panel can never change
+    what it reports.
+    """
+    out: list[dict] = []
+    for row in list_runners():
+        entry: dict = {
+            "id": row.get("id"),
+            "name": str(row.get("name") or ""),
+            "url": str(row.get("url") or ""),
+            "status": str(row.get("status") or "unknown"),
+            "last_heartbeat": row.get("last_heartbeat"),
+        }
+        if str(row.get("status") or "") == "removed":
+            entry["reachable"] = None
+            out.append(entry)
+            continue
+        ping = _ping(row.get("url") or "", row.get("token") or "")
+        entry["reachable"] = ping is not None
+        if ping is not None:
+            entry["busy"] = bool(ping.get("busy"))
+            entry["head_sha"] = _runner_head_sha(ping)
+        out.append(entry)
+    return out
 
 
 def pick_runner() -> dict | None:
@@ -241,11 +454,13 @@ def pick_runner() -> dict | None:
     dispatch_to_runner's finally (and remove_runner drops it); callers that
     pick without dispatching (tests) must call _release().
 
-    Every candidate is pinged, including ones whose recorded heartbeat is
-    older than CI_FARM_STALE_SECONDS: skipping without a ping would brick
-    the farm after that long idle (nothing else refreshes the heartbeat -
-    no background poller exists), so a quiet hour would darken every runner
-    permanently. Only a failed ping marks a runner stale.
+    Every candidate is pinged, however old its recorded heartbeat: skipping
+    without a ping would brick the farm after one idle spell (nothing else
+    refreshes the heartbeat - there is no background poller), so a quiet hour
+    would darken every runner permanently. Only a failed ping marks a runner
+    stale. There is deliberately no staleness-threshold knob: CI_FARM_STALE_
+    SECONDS existed, was read nowhere, and its docstring described exactly
+    the skip this function refuses to do.
 
     P3-3: skips runners at their active_runs cap.
 
@@ -295,6 +510,23 @@ def pick_runner() -> dict | None:
 def dispatch_to_runner(runner: dict, payload: dict) -> dict | None:
     """POST /run to the runner. Returns the result dict or None on failure.
 
+    On failure the reason is stashed on `runner` under "_dispatch_reason" -
+    the same private-key convention pick_runner already uses for
+    "_runner_head_sha", for the same reason: it rides on the dict the caller
+    already holds. The vocabulary is DISPATCH_REJECTED (the runner declined,
+    so provably no work was done), DISPATCH_MAY_HAVE_RUN (a timeout or
+    transport break, where the run may or may not have executed remotely - so
+    the caller's local retry may be its second execution), and
+    "unreadable_body" (a 2xx whose payload was not a dict). Splitting these is
+    the point: they shared one string with a 409, which is a capacity skip, so
+    a full farm was reported as a broken one.
+
+    Deliberately still `-> dict | None` rather than a (result, reason) tuple.
+    Three existing test modules mock this function with a bare result dict;
+    returning a tuple made them unpack a dict's keys and raised
+    ValueError. Changing the contract to carry new information would have
+    meant editing pins that have nothing to do with this change.
+
     The active-run slot was reserved by pick_runner; it releases here in the
     finally via _release(). A runner dict without an id or url fails closed
     (None) instead of raising KeyError out of the degrade-silently contract.
@@ -302,6 +534,7 @@ def dispatch_to_runner(runner: dict, payload: dict) -> dict | None:
     rid = runner.get("id")
     url = (runner.get("url") or "").rstrip("/") + "/run"
     if rid is None or not runner.get("url"):
+        runner["_dispatch_reason"] = DISPATCH_REJECTED
         return None
     headers = {"Content-Type": "application/json"}
     token = runner.get("token") or ""
@@ -318,10 +551,32 @@ def dispatch_to_runner(runner: dict, payload: dict) -> dict | None:
             req, timeout=config.CI_FARM_DISPATCH_TIMEOUT
         ) as resp:
             body = json.loads(resp.read().decode("utf-8"))
-        return body if isinstance(body, dict) else None
+        if isinstance(body, dict):
+            return body
+        runner["_dispatch_reason"] = "unreadable_body"
+        return None
+    except urllib.error.HTTPError as exc:
+        # domain:http - urlopen RAISES on any 4xx/5xx, so a runner that
+        # DECLINED the run landed in the bare handler below and was recorded as
+        # "runner reply unreadable", byte-identical to the string a mid-run
+        # socket reset produced. A 4xx is provably rejected: no work was done,
+        # so a local retry is the only execution. A 5xx is the opposite - it
+        # may have started before failing - so it stays may_have_executed.
+        code = int(getattr(exc, "code", 0) or 0)
+        runner["_dispatch_reason"] = (
+            DISPATCH_REJECTED if 400 <= code < 500 else DISPATCH_MAY_HAVE_RUN
+        )
+        return None
+    except TimeoutError:
+        # domain:http - socket.timeout is TimeoutError on py311+; the run's
+        # fate is unknown, which is why the caller must not read this as a
+        # clean skip.
+        runner["_dispatch_reason"] = DISPATCH_MAY_HAVE_RUN
+        return None
     except Exception:
         # domain: degrade-silently - transport failure reads as no result;
         # try_dispatch turns a picked-but-failed dispatch into a local retry
+        runner["_dispatch_reason"] = DISPATCH_MAY_HAVE_RUN
         return None
     finally:
         _release(rid)
@@ -488,6 +743,8 @@ def try_dispatch(
         return None
     runner = pick_runner()
     if runner is None:
+        reason, candidates = classify_no_pick()
+        log_skip(reason, "overflow", checks, agent_id, name, candidates=candidates)
         return None
     mode = "local" if local_mode else "main"
     payload: dict = {"checks": checks, "mode": mode}
@@ -498,11 +755,27 @@ def try_dispatch(
     if base_ref is not None:
         payload["base_ref"] = base_ref
     remote = dispatch_to_runner(runner, payload)
+    why = str(runner.get("_dispatch_reason") or "")
+    if remote is None and why == DISPATCH_REJECTED:
+        # The runner declined this run (409 busy, or another 4xx): it did no
+        # work, so this is a CAPACITY skip, not a dispatch failure - filing it
+        # as a failure would mislabel the cause and imply a broken farm when
+        # the farm is merely full. Still raises, so the caller retries here
+        # exactly as it did before the taxonomy existed.
+        _retry_local(
+            runner,
+            "runner declined the run",
+            checks,
+            agent_id,
+            name,
+            skip_reason="busy",
+        )
     if not isinstance(remote, dict):
-        # Transport failure or unreadable body AFTER a runner was picked: the
-        # run may or may not have executed remotely, so retry once locally
-        # instead of reporting busy (P3-2).
-        _retry_local(runner, "runner reply unreadable", checks, agent_id, name)
+        # Transport failure, a timeout, or an unreadable body AFTER a runner
+        # was picked: the run may or may not have executed remotely, so retry
+        # once locally instead of reporting busy (P3-2). The reason now says
+        # which of those it was; all three shared one string before.
+        _retry_local(runner, why or "unreadable_body", checks, agent_id, name)
     if not isinstance(remote.get("ok"), bool):
         _retry_local(
             runner,
@@ -589,6 +862,8 @@ def try_bench_dispatch(
         return None
     runner = pick_runner()
     if runner is None:
+        reason, candidates = classify_no_pick()
+        log_skip(reason, "bench", checks, agent_id, name, candidates=candidates)
         return None
     # Resolve anchor env server-side via the shared helper (deferred import
     # to avoid circular dependency with _runs).
@@ -605,6 +880,22 @@ def try_bench_dispatch(
     # chars alongside PR 1 so real medians tables round-trip).
     payload: dict = {"checks": checks, "mode": "main", "extra_env": anchor_env}
     remote = dispatch_to_runner(runner, payload)
+    why = str(runner.get("_dispatch_reason") or "")
+    if remote is None and why == DISPATCH_REJECTED:
+        # Declined, not broken. Silent local fallback is this lane's documented
+        # contract, but the skip row is what makes a farm that is switched off
+        # legible from the ledger instead of silent.
+        log_skip(
+            "busy",
+            "bench",
+            checks,
+            agent_id,
+            name,
+            runner=str(runner.get("name") or ""),
+            runner_id=runner.get("id"),
+            url=str(runner.get("url") or ""),
+        )
+        return None
     if (
         not isinstance(remote, dict)
         or not isinstance(remote.get("ok"), bool)
@@ -616,7 +907,7 @@ def try_bench_dispatch(
             agent_id,
             name,
             (
-                "runner reply unreadable"
+                (why or "unreadable_body")
                 if not isinstance(remote, dict)
                 else str(remote.get("error") or "runner reply unusable")[:200]
             ),

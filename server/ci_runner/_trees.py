@@ -805,6 +805,45 @@ def _clear_deltas(tree: str) -> None:
     _retire_dir(os.path.join(tree, ".ci-deltas"))
 
 
+def named_tree_deltas(agent_id: int, name: str) -> list[list[dict]]:
+    """The delta blobs a named tree still holds, oldest first. Read-only.
+
+    The shape is a list of BLOBS, each blob the list of {path, content}
+    entries from one stored delta - not a flat list of entries. The consumer
+    (farm.tree_payload) concatenates blob by blob, which is also the order the
+    local path replays them in, so flattening here would be the wrong fix.
+
+    Exists so the CI farm can ship a WARM tree, not just a cold one. The
+    request's own `files` is only the newest delta; a tree carries every
+    earlier one on disk. Shipping only the newest would measure a DIFFERENT
+    tree than the local path runs - the exact failure the farm gate's comment
+    warns about ("a farm run over a DIFFERENT tree that still reports green").
+
+    Returns [] for a tree that does not exist yet, is not this agent's, or
+    whose name fails validation: every one of those cases means "no stored
+    deltas", which is the safe answer for a predicate. Never raises, never
+    writes, never resets - asking whether a tree may be dispatched must not be
+    able to change it.
+    """
+    try:
+        tree = _named_dir(int(agent_id), _validate_tree_name(name))
+    except Exception:
+        # domain: degrade-silently - an unusable tree simply holds no deltas
+        return []
+    if not os.path.isdir(os.path.join(tree, ".git")):
+        return []
+    manifest = _read_manifest(tree)
+    if manifest is not None and int(manifest.get("agent_id", -1)) != int(agent_id):
+        return []
+    try:
+        blobs = _stored_deltas(tree)
+    except Exception:
+        # domain: degrade-silently - unreadable store means we cannot prove the
+        # tree is reproducible, so the caller must treat it as ineligible
+        return []
+    return [b for b in blobs if isinstance(b, list) and b]
+
+
 def forget_named_tree(agent_id: int, name: str) -> bool:
     """Release one named tree. True when the name was freed (a locked
     leftover converges on later sweeps); False when nothing was held."""
