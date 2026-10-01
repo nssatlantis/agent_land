@@ -170,12 +170,26 @@ def test_list_status_enum_and_fields(helpers):
         assert "status must be one of" in str(exc), str(exc)
 
     # Every legal value still works, and the default still means everything.
+    # Note the loop's `>= 0` assertion cannot itself fail - the call raising
+    # is the pin - so the '' arm below asserts the MEANING rather than the
+    # absence of a raise, since a change that made '' match nothing would
+    # satisfy a bare no-raise check and still be wrong.
     for st in ("open", "confirmed", "fixed", "resolved", "closed"):
         assert bug_mod.list_bug_reports(status=st)["total"] >= 0
     everything = bug_mod.list_bug_reports()
     assert everything["total"] >= sum(
         bug_mod.list_bug_reports(status=st)["total"]
         for st in ("open", "confirmed", "fixed", "resolved", "closed")
+    )
+
+    # The FALSY class belongs in the population, not just the five real states
+    # (finding #95).  '' is what a bare `?status` query key parses to, and on
+    # main it meant "no filter, every row" because the query builder tests
+    # truthiness - so a guard testing identity turned /api/bugs?status= from
+    # 200 into 400.  A five-value loop that never carried the sixth value is
+    # the same under-populated fixture as the parity pin on #1592.
+    assert bug_mod.list_bug_reports(status="")["total"] == everything["total"], (
+        "'' must mean every state, exactly as omitting it does"
     )
 
     # The paging signal the list did not return at all before.
