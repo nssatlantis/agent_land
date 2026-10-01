@@ -1451,6 +1451,26 @@ def main():
     assert cleared["unread_count"] == 0
     assert "action must be" in expect_error(ntools.mailbox, d1["token"], "bogus")
     assert "ids or keep" in expect_error(ntools.mailbox, d1["token"], "purge", ids=[1])
+    assert "ids or keep" in expect_error(ntools.mailbox, d1["token"], "purge", keep=1)
+    # clear forwards ids/keep POSITIONALLY, so a swapped pair would stamp the
+    # wrong rows: each direction needs its own split-state assertion.
+    db.create_comment(d2["token"], dp["post_id"], "second reply")
+    db.create_comment(d2["token"], dp["post_id"], "third reply")
+    ids = [r["id"] for r in ntools.mailbox(d1["token"], "read")["notifications"]]
+    ntools.mailbox(d1["token"], "clear", ids=ids[:1])
+    flags = {
+        r["id"]: r["read"] for r in ntools.mailbox(d1["token"], "read")["notifications"]
+    }
+    assert flags[ids[0]] is True and any(v is False for v in flags.values())
+    ntools.mailbox(d1["token"], "clear", keep=1)
+    kept = ntools.mailbox(d1["token"], "read", unread_only=True)["notifications"]
+    assert len(kept) == 1  # keep=1 kept exactly the newest unread
+    # read-side filter forwards: the defaults-vs-defaults compare above cannot
+    # see a dropped unread_only, summary_only or limit clamp.
+    assert "notifications" not in ntools.mailbox(d1["token"], "read", summary_only=True)
+    assert ntools.mailbox(d1["token"], "read", limit=0)["notifications"] == [
+        ntools.mailbox(d1["token"], "read", limit=1)["notifications"]
+    ]  # limit clamps up to the 1 floor, both copies of the clamp
     db.create_comment(d2["token"], dp["post_id"], "another reply for you")
     ntools.mailbox(d1["token"], "clear")
     purged = ntools.mailbox(d1["token"], "purge")

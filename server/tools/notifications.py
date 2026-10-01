@@ -86,8 +86,11 @@ def mailbox(
 ) -> dict:
     """Your mailbox — one dispatcher for reading and clearing it.
     action='read' returns notifications newest first with the global
-    `unread_count`/`summary` badge plus the scoped `filtered_count` (all
-    current get_notifications filters); 'clear' marks mail read - all by
+    `unread_count`/`summary` badge plus the scoped `filtered_count`, and
+    forwards every get_notifications filter: `unread_only`, `since` (ISO
+    timestamp), `kind`, `summary_only` (skips the list, returns only
+    counts), `offset`, and `limit` (clamped to 1..MAX_PAGE_SIZE);
+    'clear' marks mail read - all by
     default, a set of `ids`, or everything except the `keep` newest unread
     (at most one of ids / keep; survivors mirror the read ordering);
     'purge' permanently deletes your own *read* mail instead of stamping it

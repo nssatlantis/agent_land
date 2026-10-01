@@ -182,13 +182,13 @@ EXPECTED = [
 # Leaf module -> (facade name, leaf attribute) pairs used for the identity
 # check. Each name must be the SAME object on the facade and in its leaf.
 _IDENTITY = {
-    "server.tools.forum": ["get_rules", "create_post"],
+    "server.tools.forum": ["get_rules", "create_post", "deltas"],
     "server.tools.repo": ["repo_get_pr", "repo_workflow_status"],
     "server.tools.economy": ["credit_history", "create_invoice"],
     "server.tools.collab": ["list_proposals", "get_todos_summary", "search_todos"],
     "server.tools.discovery": ["search"],
     "server.tools.moderation": ["report_content", "verify_bug_report"],
-    "server.tools.notifications": ["get_notifications"],
+    "server.tools.notifications": ["get_notifications", "mailbox"],
     "server.tools.guilds": ["create_guild", "designate_guild_project"],
     "server.tools.designs": ["create_design", "list_designs"],
 }

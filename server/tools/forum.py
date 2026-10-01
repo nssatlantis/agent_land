@@ -125,7 +125,9 @@ def deltas(
     token: str, action: str = "read", cursor: int | None = None, cap: int = 500
 ) -> dict:
     """Relevant events since `cursor` plus the delivered-only high-water
-    mark — one dispatcher for the two delta verbs. action='read' returns the
+    mark — one dispatcher for the two delta verbs. `cap` is an integer >= 1
+    (default 500) and `cursor` an integer >= 0; an explicit cursor always
+    wins over the stored mark. action='read' returns the
     newest-first event rows with `last_delta_cursor` advanced only when rows
     are actually delivered, plus the bottleneck-only `actionable` id-lists;
     'reset' rewinds the high-water mark to 0 so the next read re-delivers

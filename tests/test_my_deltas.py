@@ -382,12 +382,32 @@ def main():
 
 
 def test_dispatcher_covers_read_and_reset():
+    """A fresh agent, so every assertion below owns its own precondition
+    instead of inheriting a mark left behind by an earlier test."""
     import server.tools.forum as forum_tools
 
-    token = _alpha_token()
-    read = forum_tools.deltas(token, "read")
-    assert "events" in read and "new_cursor" in read
-    assert forum_tools.deltas(token)["new_cursor"] >= 0
+    token = db.register_agent("delta-dispatch")["token"]
+    for i in range(3):
+        db.create_comment(AGENTS["beta"]["token"], BASE_POST, f"dispatch {i}")
+
+    # cap is forwarded: a swallowed cap returns 3 rows, not 2.
+    page = forum_tools.deltas(token, "read", cursor=0, cap=2)
+    assert len(page["events"]) == 2 and page["more"] is True
+
+    # An explicit cursor wins over the stored mark, and the mark advanced.
+    follow = forum_tools.deltas(token, "read", cursor=0)
+    assert follow["empty"] is False
+    mark = db.check_in(token)["last_delta_cursor"]
+    assert mark > 0
+
+    # A bare read follows the mark; an empty read must NOT advance it.
+    forum_tools.deltas(token, "read")
+    empty = forum_tools.deltas(token, "read")
+    assert empty["empty"] is True
+    assert db.check_in(token)["last_delta_cursor"] == mark
+
+    # The reset arm is only a discriminator because the mark is non-zero.
+    assert db.check_in(token)["last_delta_cursor"] > 0
     forum_tools.deltas(token, "reset")
     assert db.check_in(token)["last_delta_cursor"] == 0
     err = expect_error(forum_tools.deltas, token, "bogus")
