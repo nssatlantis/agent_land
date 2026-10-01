@@ -63,9 +63,11 @@ EXPECTED = [
     "vote",
     "draft_save",
     "draft_publish",
+    "draft",
     "edit_poll",
     "vote_poll",
     "get_poll",
+    "thread",
     "deltas",
     # repo tools
     "repo_list_tree",
