@@ -190,13 +190,12 @@ class TestAnchorResolution(AnchorBase):
         would then be attested against a tree the new fixer never
         touched.
 
-        remedy_pr=BOARD, not None: naming the board pr is the REACHABLE
-        re-anchor (a bare re-resolve of a verified row is refused, since
-        it would discard a third party's attestation with nothing to
-        replace it - that is the refusal the sibling pin drives). It then
-        normalises to NULL, so the row ends on the board anchor with the
-        attestation cleared - the same final state, reached through the
-        supported API.
+        remedy_pr=BOARD is the DEGENERATE case and stays as the guard
+        probe: it is not None, so it is allowed past the verified-row
+        refusal, and it then normalises to NULL - the row ends on the
+        board anchor with the attestation cleared.  It cannot show WHERE
+        a re-anchor lands, which is #75's actual question; the sibling
+        pin drives remedy_pr=REMEDY and asserts the anchor moved.
         """
         fid = self._finding()
         self._resolve(fid, remedy_pr=REMEDY)
@@ -219,6 +218,56 @@ class TestAnchorResolution(AnchorBase):
             "a board-pr declaration must normalise to NULL, not to a "
             "second spelling of the default",
         )
+
+    def test_verified_row_re_anchors_to_the_declared_remedy_pr(self):
+        """#75's population, driven: a row that is ALREADY attested.
+
+        Axiom's witness sweep left #21/#43/#47 verified against the board
+        pr's head - a frozen tree that still carries the defect - and
+        `finding_mark_resolved` refused every re-declaration, so the rows
+        #B185 is about could not be re-anchored by the mechanism this PR
+        adds.  Under NULL-means-board-pr they then read as verified
+        against the board head, which is a false claim this PR would
+        otherwise make formally consistent.
+
+        The bare re-resolve stays refused (the sibling arm drives that),
+        so this arm MUST name a remedy pr - that is what separates
+        "re-anchor onto the tree that shipped the fix" from "discard a
+        third party's attestation with nothing to replace it".  Naming
+        the board pr instead would normalise to NULL and prove nothing
+        about where the row ends up, so REMEDY != BOARD matters here.
+        """
+        fid = self._finding()
+        self._resolve(fid, remedy_pr=BOARD)
+        # Attest WITH a note, so the verified_note leg below is load-
+        # bearing: the house _attest helper passes none, and asserting
+        # None against a column that was never written is decoration.
+        rf.finding_verify(self.conn, fid, AGENT_WITNESS, _SHA_A, "mirror only")
+        self.conn.commit()
+        self.assertEqual(self._row(fid)["verified_note"], "mirror only", "precondition")
+
+        # The re-declare, on the verified row, naming the remedy pr.
+        self._resolve(fid, remedy_pr=REMEDY)
+        row = self._row(fid)
+        # The discriminator: the anchor MOVED to the remedy - not the
+        # board, not the NULL default the previous arm ends on.
+        self.assertEqual(row["remedy_pr_number"], REMEDY)
+        self.assertEqual(rf.anchor_pr(row), REMEDY)
+        self.assertEqual(rf.verified_anchor_pr(row), REMEDY)
+        # ...and the whole prior attestation cleared, all four members.
+        # verified_note is the fourth: the column the rebase onto
+        # #1574 could have left behind (#74), and the one a reader would
+        # otherwise take as a live witness statement.
+        self.assertEqual(row["state"], "resolved")
+        self.assertIsNone(row["verified_by_agent_id"])
+        self.assertIsNone(row["verified_head_sha"])
+        self.assertIsNone(row["verified_pr_number"])
+        self.assertIsNone(row["verified_note"])
+        # The point of the whole PR: the row is dischargeable again, and
+        # against the tree that carries the remedy rather than the board.
+        self._attest(fid, _SHA_B)
+        self.assertEqual(self._row(fid)["verified_head_sha"], _SHA_B)
+        self.assertEqual(rf.verified_anchor_pr(self._row(fid)), REMEDY)
 
 
 class TestAnchorAttestation(AnchorBase):
