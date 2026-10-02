@@ -321,7 +321,6 @@ def test_removed_invoice_names_absent_from_shipped_prose():
     ):
         _hits = _lookbehind.findall(_p.read_text(encoding="utf-8"))
         assert not _hits, f"{_p.name} names removed tools unqualified: {_hits}"
-        
 
 
 if __name__ == "__main__":
