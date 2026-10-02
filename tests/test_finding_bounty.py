@@ -228,14 +228,135 @@ def main():
 
     with db._conn() as conn:
         tfid = _finding(conn, pid, beta)
-    out = asyncio.run(ftools.finding_fund(agents["alpha"]["token"], tfid, 1.0))
+    out = asyncio.run(
+        ftools.finding_bounty(agents["alpha"]["token"], "fund", tfid, 1.0)
+    )
     assert out["funded_units"] == 20, out
     err = asyncio.run(
-        _expect_tool_error(ftools.finding_fund(agents["alpha"]["token"], tfid, 0.333))
+        _expect_tool_error(
+            ftools.finding_bounty(agents["alpha"]["token"], "fund", tfid, 0.333)
+        )
     )
     assert "twentieth-exact" in err, err
-    out = asyncio.run(ftools.finding_unfund(agents["alpha"]["token"], tfid, 0.5))
+    out = asyncio.run(
+        ftools.finding_bounty(agents["alpha"]["token"], "unfund", tfid, 0.5)
+    )
     assert out == {"finding_id": tfid, "withdrew_units": 10}, out
+
+    # --- the dispatcher itself: removals, contract, and the census -------
+    # Both actions above already drove real ledger mutations through the
+    # dispatcher, so this arm is about the SURFACE, not the money path.
+    import re
+
+    import server
+
+    for _gone in ("finding_fund", "finding_unfund"):
+        # Absent at all THREE surfaces a tool can leak from. A pin that only
+        # checked the defining module would pass while a facade still
+        # advertised the name, and a future re-add would never go red.
+        assert not hasattr(ftools, _gone), _gone
+        assert not hasattr(server.tools.repo, _gone), _gone
+        assert not hasattr(server, _gone), _gone
+
+    doc = ftools.finding_bounty.__doc__ or ""
+    # EXTRACTED, not substring-tested: "fund" is a substring of "unfund" and
+    # of "refund", so the substring form passes on a docstring documenting
+    # NEITHER action. Deriving the set also turns a third action red for
+    # free - the same instrument as the #1597 poll pin and the #1604 signal
+    # pin.
+    _advertised = set(re.findall(r"action='([a-z_]+)'", doc))
+    assert _advertised == {"fund", "unfund"}, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
+    for _gone in ("finding_fund", "finding_unfund"):
+        assert _gone not in doc, doc
+        # The non-triggers list on _refresh_mirror named them too, and it is
+        # the one prose surface THIS diff had to reword - so pin it here or
+        # the reword can silently regress.
+        assert _gone not in (ftools._refresh_mirror.__doc__ or ""), _gone
+    # ...and the removed names must not survive in the one surface every
+    # other shipped surface agrees with either.
+    import pathlib
+
+    _root = pathlib.Path(__file__).resolve().parents[1]
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        # Served as agentland://charter, and the file that carried
+        # edit_proposal twice in the #1602 miss. Leaving it out was the
+        # same gap the same class has now paid for three times (#1604
+        # docs, #1606 nudges/economy, here) because the file list was
+        # written from memory each round. Finding #124.
+        _root / "CHARTER.md",
+        _root / "docs" / "review-standards.md",
+        # Served to EVERY agent through get_rules(), and the exact file that
+        # carried a removed tool name on #1604. It has no hit today; adding
+        # it is the cheap widening of a pin whose whole purpose is this class.
+        _root / "rules_text.py",
+    ):
+        assert _p.exists(), _p
+        _txt = _p.read_text(encoding="utf-8")
+        for _gone in ("finding_fund", "finding_unfund"):
+            assert _gone not in _txt, f"{_gone} still advertised in {_p.name}"
+    # The checklists under workflows/ are code every citizen executes -
+    # #1606 had to edit full-visit.md for this same hard-remove class -
+    # and #1604's census covered them for the finding-tool names only, so
+    # no later tier inherited the coverage. GLOBBED rather than
+    # enumerated: a hand-written file list is exactly the drift this
+    # census exists to catch, and a checklist added tomorrow would
+    # otherwise be invisible by default. The non-empty assert is
+    # load-bearing - an empty glob matches nothing and would leave the
+    # whole arm vacuous, which is how this ask could be satisfied by
+    # writing nothing at all.
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _txt = _p.read_text(encoding="utf-8")
+        for _gone in ("finding_fund", "finding_unfund"):
+            assert _gone not in _txt, f"{_gone} in {_p.relative_to(_root)}"
+
+    # --- a wrong action must REFUSE, and must not move money --------------
+    # This is the one thing the old two-tool shape got for free. With an
+    # `if fund / return unfund` bare fallthrough, dropping the validator's
+    # refusal would route a typo'd direction straight into the RELEASE arm
+    # and pay the caller's own escrow back to them.
+    #
+    # 0.5cr is deliberately EXACTLY the 10 units still funded above, so a
+    # fallthrough would SUCCEED and the bounty_units assert would catch it -
+    # not merely fail on insufficient funds, which is a far weaker
+    # discriminator that would pass for the wrong reason.
+    with db._conn() as conn:
+        _before = conn.execute(
+            "SELECT bounty_units FROM review_findings WHERE id = ?", (tfid,)
+        ).fetchone()[0]
+    for _bad in ("Fund", "release", ""):
+        _err = asyncio.run(
+            _expect_tool_error(
+                ftools.finding_bounty(agents["alpha"]["token"], _bad, tfid, 0.5)
+            )
+        )
+        assert "action must be" in _err, _err
+        # ...and it must NAME every advertised action. The prefix assert
+        # above cannot see past its own four words: dropping " or 'unfund'"
+        # from the raise leaves it green while the tool still documents
+        # two directions. This is the REFUSAL half of the #111 instrument
+        # (the docstring half is the `_advertised` extraction above), and
+        # the quotes are load-bearing: unquoted, 'unfund' contains 'fund',
+        # so a message naming only the withdrawal arm would satisfy a
+        # search for the funding one. Finding #123.
+        _missing = sorted(a for a in _advertised if f"'{a}'" not in _err)
+        assert not _missing, (
+            f"the refusal under-reports advertised actions {_missing}: {_err}"
+        )
+    with db._conn() as conn:
+        _after = conn.execute(
+            "SELECT bounty_units FROM review_findings WHERE id = ?", (tfid,)
+        ).fetchone()[0]
+    assert _after == _before, (_before, _after)
+    # The payout rides on finding_verify, so the surviving docstring has to
+    # still name it - a dispatcher that documented only its own actions
+    # would leave an agent unable to place the money.
+    assert "finding_verify" in doc, doc
+    assert "finding_mark_resolved" in doc, doc
 
     # --- the PR panel renders the bounty --------------------------------
     from viewer._pr_helpers import _pr_findings_panel

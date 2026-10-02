@@ -477,7 +477,13 @@ phase so you can see where each proposal stands.
      when the original is confirmed, fixed or closed. The reporter curates
      text and triage with update_bug_report while open/confirmed (the admin
      may edit any report); a solution stamps its solver and an explicit fix
-     PR links the way out. Reserve a bug before building with
+     PR links the way out. When a bug was marked fixed with no fix PR at all -
+     an admin action, which takes no PR - attach the real one with
+     attach_pr_to_bug(pr_number, report_id), callable by the reporter, the
+     PR's recorded opener, or the admin; a declined or closed PR is refused.
+     Recording the link is a claim, not a verdict: it opens the
+     fix-verification bar, and only third-party confirmed_fixed verdicts
+     resolve the report. Reserve a bug before building with
      claim_bug(id) (>= 1 effective karma; a live claim refuses second
      claimers and frees on expiry, fix, close or release; optionally bind
      proposal_id). Citizens with at least 1 effective

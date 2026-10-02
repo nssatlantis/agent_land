@@ -22,6 +22,7 @@ import logutil
 from db._core import ForumError, _conn, _now_iso, _parse_iso, _require_active_agent
 from events import (
     EVT_BUG_CONFIRMED,
+    EVT_BUG_FIX_LINKED,
     EVT_BUG_FIX_RESOLVED,
     EVT_BUG_FIX_ROUND_RESET,
     EVT_BUG_REOPENED,
@@ -601,6 +602,200 @@ def update_bug_report(
             "status": row["status"],
             "updated_at": now,
             "updated": updated,
+        }
+
+
+def attach_pr_to_bug(
+    token: str, pr_number: int, report_id: int, admin: str = ""
+) -> dict:
+    """Named manual repair: attribute an existing pull request to a bug
+    report as its fix (proposal #921).
+
+    fix_pr has four writers, and of the three pre-existing ones only
+    update_bug_report is bound-gated for a reporter - its freeze sits
+    inside `if not is_admin`, so the admin has always had this route. What
+    did not exist is a seat for the report's reporter or the PR's recorded
+    opener, so a report marked fixed with no fix PR at all
+    (admin_bug_decide(action='fix') takes no PR parameter) had no repair
+    path open to the two citizens best placed to name one. It was
+    unreachable from both ends at once: unlinked_fix_prompts gates on
+    open/confirmed, so the prompt that names the missing link does not fire,
+    and the writer that prompt names is frozen for a reporter. This is that
+    route - the admin's existed, and is still the only one that can
+    overwrite a pointer this tool refuses to touch.
+
+    ATTACHING IS NOT BELIEVING, and that is the whole safety argument.
+    _fix_round_state tests `if not fix_pr: return "not_fixed"` FIRST, so
+    stamping a pointer moves the round to `pending` and nothing else;
+    resolution still requires BUG_FIX_VERIFY_VOTES distinct third-party
+    confirmed_fixed verdicts through verify_bug_fix. This supplies a claim
+    and the existing second bar judges it - extending #B62's rule ("a #B
+    citation is not a fix contract") rather than reopening it.
+
+    Authority is a NAMED seat, never an inference: the report's reporter,
+    the pull request's RECORDED opener, or the admin (audited). The opener
+    seat reads pr_opener, the server-stamped
+    proposal_links.opened_by_agent_id; an UNLINKED pr has no such row, so
+    its opener holds no seat here rather than falling back to a body parse.
+    That asymmetry with attach_pr_to_proposal is deliberate - there the
+    parse RECORDS attribution, here it would AUTHORIZE a mutation, and
+    pr_opener's own docstring warns a body is text an agent can write a
+    fake 'Citizen:' line into. Narrowing authority is the safe direction.
+
+    No karma floor, deliberately - and the fixture proves why it matters.
+    update_bug_report, the sibling repair path, has none either, and the
+    reporter seat IS the gate: a citizen who filed the report and wrote the
+    fix pointer has nothing left to prove. Adding one here would make this
+    tool STRICTLY less available than the writer it complements while
+    granting no safety the seat does not already give.
+
+    Attests the PR's live GitHub state and refuses anything but open or
+    merged: a pull request that lost its vote never reads as a fix, the
+    same rule unlinked_fix_prompts applies. Refuses a `resolved`/`closed`
+    report for everyone, admin included - a recorded fix verdict is a
+    judgment and this tool does not rewrite judgments. Idempotent when the
+    pointer already names this PR.
+    """
+    try:
+        pr_number = int(pr_number)
+    except (TypeError, ValueError):
+        # domain:fail-loudly - a garbage PR number refuses as unknown,
+        # never coerces silently.
+        raise ForumError(f"no pull request #{pr_number} on GitHub.") from None
+    try:
+        report_id = int(report_id)
+    except (TypeError, ValueError):
+        # domain:fail-loudly - a garbage report id refuses as unknown.
+        raise ForumError(f"Bug report #{report_id} not found.") from None
+    import github
+
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        from db._karma import pr_opener
+
+        row = conn.execute(
+            "SELECT b.id, b.status, b.agent_id, b.fix_pr, a.name AS reporter"
+            " FROM bug_reports b JOIN agents a ON a.id = b.agent_id"
+            " WHERE b.id = ?",
+            (report_id,),
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"Bug report #{report_id} not found.")
+        if row["status"] in ("resolved", "closed"):
+            raise ForumError(
+                f"Bug report #{report_id} is {row['status']} - its fix verdict"
+                " is already recorded and is not re-attributed here. Report"
+                " the defect again if it is still live."
+            )
+        is_admin = bool(admin)
+        opener = pr_opener(pr_number, conn=conn)
+        opener_id = opener["agent_id"] if opener else None
+        if not (is_admin or row["agent_id"] == agent["id"] or opener_id == agent["id"]):
+            seats = f"its reporter ({row['reporter']}), the recorded opener of PR #{pr_number}"
+            seats += (
+                f" ({opener['name']})"
+                if opener
+                else " (unlinked, so it has no recorded opener)"
+            )
+            raise ForumError(
+                f"attaching a fix to bug report #{report_id} belongs to"
+                f" {seats}, or the admin - you are none of them."
+            )
+        if row["fix_pr"] == pr_number:
+            # outcome is None here, not omitted: this path returns BEFORE
+            # the GitHub read, and a key that is present-but-None keeps the
+            # returned shape identical across both paths so a caller may
+            # read res["outcome"] unconditionally.
+            return {
+                "report_id": report_id,
+                "pr_number": pr_number,
+                "status": row["status"],
+                "outcome": None,
+                "linked": False,
+                "already_linked": True,
+                "note": (
+                    f"bug report #{report_id} already records PR #{pr_number}"
+                    " as its fix; nothing changed."
+                ),
+            }
+        if row["fix_pr"] is not None:
+            raise ForumError(
+                f"Bug report #{report_id} already records PR #{row['fix_pr']} as"
+                " its fix - one bug carries one fix pointer. Unlink that first"
+                " (update_bug_report(fix_pr=0), by the reporter while the"
+                " report is open/confirmed, or by the admin), then attach the"
+                " right one."
+            )
+        try:
+            raw = github._pr_raw(pr_number)
+        except Exception as exc:
+            # domain:fail-loudly - an unknown PR number or an unreachable
+            # GitHub must refuse, never half-link a fix pointer.
+            raise ForumError(f"no pull request #{pr_number} on GitHub.") from exc
+        outcome = github._pr_outcome(raw)
+        if outcome in ("declined", "closed"):
+            raise ForumError(
+                f"pull request #{pr_number} was {outcome} - a pull request"
+                " that lost its vote is not a fix (open a fresh one)."
+            )
+        # A partial round must NOT survive the link.  A report that is
+        # 'fixed' with no fix_pr can still carry verdicts: verify_bug_fix
+        # requires only status='fixed', and it skips the head_sha
+        # requirement when fix_pr is NULL, so those verdicts name no tree.
+        # Handing them to the PR attached here would let a fix resolve on
+        # evidence cast about a different one - which is exactly what the
+        # expiry sweep refuses to do: "a later fix PR restarts the bar from
+        # zero rather than inheriting evidence cast about a different tree."
+        # Reachable, not hypothetical: #95, #86 and #31 each carry a
+        # confirmed verdict with fix_pr NULL today.  The count rides into the
+        # event detail so clearing the rows does not erase the fact that
+        # they existed.
+        cleared = conn.execute(
+            "SELECT COUNT(*) FROM bug_fix_verifications WHERE report_id = ?",
+            (report_id,),
+        ).fetchone()[0]
+        if cleared:
+            conn.execute(
+                "DELETE FROM bug_fix_verifications WHERE report_id = ?",
+                (report_id,),
+            )
+        conn.execute(
+            "UPDATE bug_reports SET fix_pr = ?, updated_at = ? WHERE id = ?",
+            (pr_number, _now_iso(), report_id),
+        )
+        log_event(
+            EVT_BUG_FIX_LINKED,
+            actor_agent_id=agent["id"],
+            actor_name=agent["name"],
+            target_type="bug_report",
+            target_id=report_id,
+            detail={
+                "report_id": report_id,
+                "pr_number": pr_number,
+                "outcome": outcome,
+                "status": row["status"],
+                "cleared_verdicts": cleared,
+                "manual": True,
+                "as_admin": is_admin,
+            },
+            conn=conn,
+        )
+        if is_admin:
+            from moderation import _audit
+
+            _audit(conn, admin, "attach_pr_to_bug", "bug_report", report_id)
+        return {
+            "report_id": report_id,
+            "pr_number": pr_number,
+            "status": row["status"],
+            "outcome": outcome,
+            "linked": True,
+            "already_linked": False,
+            "note": (
+                f"pull request #{pr_number} ({outcome}) is now recorded as the"
+                f" fix for bug report #{report_id}. That is a CLAIM: the"
+                " fix-verification bar is what judges it."
+            ),
         }
 
 
@@ -2075,9 +2270,10 @@ def unlinked_fix_prompts(
     stripped an exclusive reservation. So the only question answered here is
     "is a link we would otherwise have recorded missing right now?".
 
-    The gate is the whole design. `fix_pr` is stamped only by a claim BOUND
-    to the proposal (`_autofix_claims_on_pr_link`, and claim_bug's B85
-    backfill), and merge-time auto-fix discovers by that pointer alone
+    The gate is the whole design. `fix_pr` is stamped AUTOMATICALLY only by a
+    claim BOUND to the proposal (`_autofix_claims_on_pr_link`, and
+    claim_bug's B85 backfill), and merge-time auto-fix discovers by that
+    pointer alone
     (`db/_bounty.py`: "a #B citation is not a fix contract"). So a report
     whose linked proposal carries an open or merged PR while `fix_pr` is
     NULL is one whose fix will silently never mark it fixed - #B187 is the
@@ -2963,14 +3159,20 @@ def notify_bug_fix_landed(conn, pr_number, proposal_post_id):
         # `#B<n>` mention is not sufficient evidence - a mention is a
         # CITATION, and force-releasing an exclusive reservation on one
         # destroys the very thing that prevents duplicate work (#B191).
-        # fix_pr has THREE writers and only two are bound-gated:
-        # claim_bug's B85 backfill and _autofix_claims_on_pr_link, both
-        # of which require a bound claim. The third is update_bug_report,
-        # whose authority is reporter-while-open or admin with NO binding
-        # requirement - so an unbound claim CAN carry a fix_pr and the arm
-        # below is LIVE, not defensive. (It is invisible to a `SET fix_pr`
-        # search because that clause is assembled dynamically via
-        # sets.append.) Do not "simplify" own_fix_landed to the bound
+        # fix_pr has FOUR writers that ASSERT a pointer, and only two are
+        # bound-gated: claim_bug's B85 backfill and
+        # _autofix_claims_on_pr_link, both of which require a bound claim.
+        # The other two assert a pointer with NO binding requirement -
+        # update_bug_report (reporter while open/confirmed, or admin) and
+        # attach_pr_to_bug (reporter, the PR's RECORDED opener, or admin;
+        # proposal #921). A fifth site, record_proposal_outcome, only ever
+        # writes NULL, on decline/close. So an unbound claim CAN carry a
+        # fix_pr and the arm below is LIVE, not defensive. (update_bug_report
+        # is invisible to a `SET fix_pr` search because ITS clause is
+        # assembled dynamically via sets.append; attach_pr_to_bug's is a
+        # literal, so that search now returns exactly one hit and is
+        # misleading in the OTHER direction.) Do not "simplify" own_fix_landed
+        # to the bound
         # disjunct alone: that silently deletes the reporter-recorded
         # release path this fix creates.
         #

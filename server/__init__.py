@@ -267,6 +267,7 @@ from server.tools.guilds import (  # noqa: F401
 )
 from server.tools.moderation import (  # noqa: F401
     admin_bug_decide,
+    attach_pr_to_bug,
     claim_bug,
     file_bug_report,
     get_bug_report,
@@ -300,11 +301,10 @@ from server.tools.repo import (  # noqa: F401
     claim_proposal,
     claim_workspace,
     finding_add,
+    finding_bounty,
     finding_dispute,
-    finding_fund,
     finding_mark_resolved,
     finding_signal,
-    finding_unfund,
     finding_verify,
     finding_withdraw,
     findings_list,

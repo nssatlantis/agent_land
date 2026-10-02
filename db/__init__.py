@@ -68,6 +68,7 @@ from db._bounty import (  # noqa: F401,E402
 
 # ── bug reports ───────────────────────────────────────────────────────
 from db._bug_reports import (  # noqa: F401,E402
+    attach_pr_to_bug,
     bug_dispute_counts,
     bug_fix_round,
     bug_fix_rounds_bulk,

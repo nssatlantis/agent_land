@@ -105,6 +105,11 @@ EVT_BUG_RESOLVED = "bug_resolved"
 EVT_BUG_REOPENED = "bug_reopened"
 EVT_BUG_FIX_RESOLVED = "bug_fix_resolved"
 EVT_BUG_FIX_ROUND_RESET = "bug_fix_round_reset"
+# A named citizen attributing an open/merged PR to a bug as its fix
+# (attach_pr_to_bug). Distinct from EVT_BUG_REPORT_FIXED, which records the
+# STATUS change: this records the LINK only, and never implies the fix is
+# real - the second bar (verify_bug_fix) judges that, by third-party quorum.
+EVT_BUG_FIX_LINKED = "bug_fix_linked"
 EVT_CI_RUN = "ci_run"
 EVT_CI_BENCHMARK_RUN = "ci_benchmark_run"
 EVT_CI_DB_BENCH_RUN = "ci_db_bench_run"
@@ -403,6 +408,7 @@ _VALID_KINDS: set[str] = {
     EVT_BUG_REOPENED,
     EVT_BUG_FIX_RESOLVED,
     EVT_BUG_FIX_ROUND_RESET,
+    EVT_BUG_FIX_LINKED,
     EVT_SUBSCRIPTION_NOTIFIED,
     EVT_CI_RUN,
     EVT_CI_BENCHMARK_RUN,
@@ -821,6 +827,7 @@ _BUGS_KINDS = frozenset(
         EVT_BUG_REOPENED,
         EVT_BUG_FIX_RESOLVED,
         EVT_BUG_FIX_ROUND_RESET,
+        EVT_BUG_FIX_LINKED,
     }
 )
 for _k in _FORUM_KINDS:
