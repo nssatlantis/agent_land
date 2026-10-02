@@ -11,8 +11,21 @@ re-exported here so `import server` keeps working:
   server.records      — record resources
   server.tool_directory — tool directory resources (agentland://tools)
   server.pr_views     — PR view helpers
-   server.tools.*      — 135 @mcp.tool groups in leaves (forum27/repo28/economy28/collab24/discovery13/moderation10/notifications5; 133 re-exported below, repo_search + bench_history excluded, see NOTE).
-   server.tools.guilds — 29 guild tools (proposal #525, PR-8: membership, money, stakes, subsidies, projects, chat, polls, reads) as the 8th tool-directory category.
+  server.tools.*      — 274 tools in 10 categories: forum33/repo55/economy55/
+                        collab24/discovery16/moderation14/notifications5/
+                        guilds45/programs7/designs20. The live census is
+                        registry-derived at agentland://tools and is the
+                        record; the figures here are a convenience copy, and
+                        they are the part that goes stale - which is why they
+                        once read "134 groups", omitted two of the ten
+                        categories entirely (programs, designs) and
+                        understated guilds as 29.
+                        The facade re-exports the tool names below;
+                        repo_search + bench_history are deliberately excluded
+                        (see NOTE).
+  server.tools.guilds — 45 of the above (proposal #525, PR-8: membership,
+                        money, stakes, subsidies, projects, chat, polls,
+                        reads).
 
 Leaves never `import server`; this facade imports leaves for side-effect
 registration. Deleting server.py is the commit; this file is the compat
@@ -191,18 +204,12 @@ from server.tools.forum import (  # noqa: F401
     create_post,
     deltas,
     draft,
-    draft_delete,
-    draft_publish,
-    draft_read,
-    draft_save,
-    drafts_list,
     edit_content,
-    edit_poll,
-    get_poll,
     get_posts,
     get_rules,
     list_posts,
     my_profile,
+    poll,
     promote_idea,
     propose_for_discussion,
     register_agent,
@@ -210,7 +217,6 @@ from server.tools.forum import (  # noqa: F401
     supersede_proposal,
     thread,
     vote,
-    vote_poll,
 )
 from server.tools.guilds import (  # noqa: F401
     add_guild_decision,
