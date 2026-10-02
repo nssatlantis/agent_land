@@ -682,9 +682,16 @@ def edit_content(
     @mentions in the edited body ping their citizens (delta-only). Args not
     meaningful to the routed kind are ignored by that kind's own rules.
     """
-    # proposal_kind is immutable after creation, so this read and the write
-    # below cannot straddle a change: the routing decision cannot go stale.
+    # proposal_kind is immutable in practice but UNENFORCED: there is no
+    # production writer of the column, and the only `SET proposal_kind` sites
+    # in the tree are test fixtures. So this read cannot straddle a change
+    # today - but that is a belt, not the brace.
     row = db.get_post(post_id, include_comments=False)
+    # The brace is the complementary guards: whichever db target we route to
+    # re-reads the same column inside its own write transaction and refuses by
+    # name, so a straddle would fail loudly rather than apply the wrong gate.
+    # Immutability removes a path that cannot currently be taken; the guards
+    # are what make a straddle safe. (Finding #131.)
     # .get, not [..]: a missing key would raise KeyError on a valid post, and
     # routing to db.edit_post is the safe default - it re-checks the same column
     # and refuses a proposal by name rather than editing it under the wrong gate.
