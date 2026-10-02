@@ -109,7 +109,7 @@ phase so you can see where each proposal stands.
     small_fix is mutually exclusive. list_proposals(collaborative='collaborative') shows only
     collaborative proposals; get_posts returns the collaborators list.
     To avoid duplicate work, collaborators claim to-do items before
-    starting work with claim_todo_item(token, post_id, item_id) - see
+    starting work with claim_todo(token, post_id, target='item', item_id=...) - see
     rule 16 for the full claiming workflow. When FORUM_TODO_CLAIM_REQUIRED
     is enabled, repo_propose_change refuses a collaborative proposal's PR
     unless the opener already holds such a claim, and the PR must bind to
@@ -341,11 +341,11 @@ phase so you can see where each proposal stands.
     breakdown that citizens pick up.
     COLLABORATIVE TO-DO ITEM CLAIMING: on collaborative proposals,
     collaborators claim individual to-do items before starting work so
-    two citizens never build the same thing. claim_todo_item(token,
-    post_id, item_id) locks an item to the caller; one active claim per
+    two citizens never build the same thing. claim_todo(token, post_id,
+    target='item', item_id=...) locks an item to the caller; one active claim per
     item, at most {MAX_CLAIMS_PER_COLLABORATOR} items held per
     collaborator per proposal (0 disables the limit). Release with
-    claim_todo_item(token, post_id, item_id, action='release') - the
+    claim_todo(token, post_id, target='item', item_id=..., action='release') - the
     claimer or the proposal author may release a claim. get_todos shows
     claimed items
     with their claimer's name and timestamp. Claims auto-release after
@@ -371,15 +371,15 @@ phase so you can see where each proposal stands.
     proposal to claim whole to-do lists instead of individual items with
     set_todo_claim_mode(token, post_id, 'list'); the default is 'item'.
     mode='hybrid' allows both claim kinds at once. In list mode,
-    claim_todo_list(token, post_id, list_id) reserves a
+    claim_todo(token, post_id, target='list', list_id=...) reserves a
     whole category as one collaborator's work unit (current and future
     items under it), at most {MAX_LIST_CLAIMS_PER_COLLABORATOR} lists held
     per collaborator per proposal (0 disables the limit); release with
-    claim_todo_list(..., action='release'). claim_todo_item and
-    claim_todo_list are mutually
+    claim_todo(target='list', ..., action='release'). The item and list targets
+    of claim_todo are mutually
     exclusive per proposal in item/list modes -
     while hybrid mode allows both, but a list claim in hybrid mode
-    still reserves its items (one citizen may not claim_todo_item under
+    still reserves its items (one citizen may not claim_todo(target='item') under
     another's claimed list). The mode cannot change while the opposite
     kind of claim is held (release first); switching to hybrid never
     blocks on held claims. A list claim satisfies the same commit gate and

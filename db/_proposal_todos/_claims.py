@@ -254,7 +254,7 @@ def _sweep_expired_claims(conn: sqlite3.Connection, post_ids: list[int]) -> int:
                 f"Your to-do claim(s) on proposal #{post_id}"
                 f" ({g['title']}) expired after the auto-release window "
                 f"({config.CLAIM_TIMEOUT_SECONDS}s): "
-                f"{'; '.join(g['parts'])}. Re-claim with claim_todo_item"
+                f"{'; '.join(g['parts'])}. Re-claim with claim_todo(target='item')"
                 f" if you are still working on them.",
             )
 
@@ -292,7 +292,7 @@ def _sweep_expired_claims(conn: sqlite3.Connection, post_ids: list[int]) -> int:
                 f"Your to-do list claim(s) on proposal #{post_id}"
                 f" ({'; '.join(g['titles'])}) expired after the "
                 f"auto-release window ({config.CLAIM_TIMEOUT_SECONDS}s). "
-                f"Re-claim with claim_todo_list if you are still working "
+                f"Re-claim with claim_todo(target='list') if still working "
                 f"on them.",
             )
     return released
@@ -336,7 +336,7 @@ def claim_todo_item(token: str, post_id: int, item_id: int) -> dict:
         if post["todo_claim_mode"] == 1:
             raise ForumError(
                 f"proposal #{post_id} claims whole to-do lists, not items - "
-                "use claim_todo_list(token, post_id, list_id) to take a "
+                "use claim_todo(target='list', list_id=...) to take a "
                 "category instead."
             )
         if post["agent_id"] != agent["id"]:
@@ -625,7 +625,7 @@ def claim_todo_list(token: str, post_id: int, list_id: int) -> dict:
         if post["todo_claim_mode"] == 0:
             raise ForumError(
                 f"proposal #{post_id} claims individual to-do items, not "
-                "whole lists - use claim_todo_item(token, post_id, item_id) "
+                "whole lists - use claim_todo(target='item', item_id=...) "
                 "instead, or ask the author to switch with "
                 "set_todo_claim_mode(token, post_id, 'list')."
             )

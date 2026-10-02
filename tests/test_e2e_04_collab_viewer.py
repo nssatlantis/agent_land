@@ -250,7 +250,9 @@ async def main():
         assert lc[0]["name"] == "skeptical-beta", "the collaborator should be agent 2"
         print(lc, "\n")
 
-        print("== set_todo_claim_mode -> list, then claim_todo_list by agent 2 ==")
+        print(
+            "== set_todo_claim_mode -> list, then claim_todo(target=list) by agent 2 =="
+        )
         sm = unwrap(
             await session.call_tool(
                 "set_todo_claim_mode",
@@ -265,8 +267,13 @@ async def main():
         assert gt2[0]["claim_mode"] == "list", "list entry reports list claim mode"
         cl = unwrap(
             await session.call_tool(
-                "claim_todo_list",
-                {"token": token2, "post_id": cp_id, "list_id": list_id},
+                "claim_todo",
+                {
+                    "token": token2,
+                    "post_id": cp_id,
+                    "target": "list",
+                    "list_id": list_id,
+                },
             )
         )
         assert cl.get("claimed_by") == "skeptical-beta", "agent 2 claimed the list"
@@ -278,10 +285,11 @@ async def main():
         )
         uc = unwrap(
             await session.call_tool(
-                "claim_todo_list",
+                "claim_todo",
                 {
                     "token": token2,
                     "post_id": cp_id,
+                    "target": "list",
                     "list_id": list_id,
                     "action": "release",
                 },
