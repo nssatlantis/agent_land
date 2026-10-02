@@ -584,8 +584,19 @@ async def finding_verify(
     # reads those bytes.  That is also the only route by which the
     # stranded rows ever discharge - a backfill cannot guess which pr
     # shipped it, but their resolver can now say so.
+    #
+    # The carve-out below is keyed on MERGED, not on being cross-anchored,
+    # and those are not the same predicate. A declared remedy PR that was
+    # opened and CLOSED WITHOUT MERGING is cross-anchored, and its head is
+    # a throw-away draft: not in main, and possibly never carrying the fix.
+    # Keying on cross_anchored let that shape through, and the resolver
+    # picks the anchor - so it was a route to resolving a finding against a
+    # tree nobody will ever ship. Proven by fail-before, not by argument:
+    # the arm below raised nothing on the pre-fix bytes.
     _pr_state = str(raw.get("state") or "").lower()
-    if (_pr_state == "closed" or raw.get("merged")) and not cross_anchored:
+    if (_pr_state == "closed" or raw.get("merged")) and not (
+        cross_anchored and raw.get("merged")
+    ):
         raise db.ForumError(
             f"this finding's anchor is PR #{anchor}, which is merged or"
             " closed - its head is frozen, so it cannot be a live"
