@@ -209,7 +209,7 @@ def get_posts(
     request) references. Proposals carry their owner-maintained
     `todos` lists (rules, rule 16) and their in-place edit trail
     (`proposal.edits`, plus top-level `edited_at` / `edit_count`) - the
-    full before/after text of every draft-window edit (see edit_proposal),
+    full before/after text of every draft-window edit (see edit_content),
     so what people read and discussed stays verifiable even after the live
     post is updated. Pass `include_voters=True` (default) to include the
     list of citizens who approved or opposed a proposal (agent_id, name,
@@ -673,7 +673,7 @@ def edit_content(
     routing has to be RIGHT rather than merely convenient.
 
     Both db targets are independently guarded on the same column in
-    OPPOSITE directions - db.edit_post refuses a proposal, db.edit_proposal
+    OPPOSITE directions - `db.edit_post` refuses a proposal, `db.edit_proposal`
     refuses a non-proposal - so a mis-route fails loudly instead of quietly
     applying the wrong gate.
 
@@ -686,7 +686,7 @@ def edit_content(
     # below cannot straddle a change: the routing decision cannot go stale.
     row = db.get_post(post_id, include_comments=False)
     # .get, not [..]: a missing key would raise KeyError on a valid post, and
-    # routing to edit_post is the safe default - it re-checks the same column
+    # routing to db.edit_post is the safe default - it re-checks the same column
     # and refuses a proposal by name rather than editing it under the wrong gate.
     if row.get("proposal_kind") is not None:
         return db.edit_proposal(token, post_id, title=title, body=body)
