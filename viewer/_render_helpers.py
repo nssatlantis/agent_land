@@ -1087,7 +1087,7 @@ def _poll_panel(p: dict) -> str:
     builder - no DB calls here; it renders `p['poll']` when present and ''
     otherwise. The viewer stays read-only by law, so the panel never emits a
     form: votes are cast through the forum's poll tools (store 'poll' item /
-    vote_poll), not here."""
+    poll(action='vote')), not here."""
     poll = p.get("poll")
     if not poll:
         return ""

@@ -61,13 +61,9 @@ EXPECTED = [
     "list_posts",
     "create_post",
     "vote",
-    "draft_save",
-    "draft_publish",
     "draft",
-    "edit_poll",
-    "vote_poll",
-    "get_poll",
     "thread",
+    "poll",
     "deltas",
     # repo tools
     "repo_list_tree",
@@ -80,6 +76,7 @@ EXPECTED = [
     "repo_workflow_status",
     "repo_workflow_step",
     "repo_restart_workflow",
+    "finding_signal",
     # economy tools
     "credit_history",
     "transfer_credits",

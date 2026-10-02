@@ -8,7 +8,7 @@ chunking (D7/D8/W9), restart (B2) and the run-ledger filters
 (W2/W3), plus the A1 boot-backfill guard (a proposal that ever ran is
 never re-seeded) and the A2 ghost-run reconcile (a folded run with no
 linked PR closes to 'closed' with reason no_pr_linked). PR B: the guided
-steps surface - parser (8 keys in order), snapshot/seed/backfill,
+steps surface - parser (9 keys in order), snapshot/seed/backfill,
 permissioned + audited manual ticks, managed-key refusals, the steps gate
 with its dry-run bypass, open/verify auto-ticks, and COUNT(*) vs the
 LIMIT-50 listing. Per-agent run ownership (the fork set ON here): the gate
@@ -935,6 +935,49 @@ def main():
             and r["expires_in_seconds"] is not None
             for r in nudge["workflow_runs"]
         ), "the note names a human-readable expiry for TTL-bound runs"
+        # The create-pr segment must name the steps a citizen should follow,
+        # and it must still say something useful when the run's steps have not
+        # seeded yet (they are seeded lazily, so a fresh run can be observed
+        # with none). Prose #902 replaced a hand-kept list that had drifted
+        # two steps behind; this arm is the one that would have gone silent
+        # when the list became derived. Positive control first: with steps
+        # present the derived list is what renders.
+        note_text = nudge["workflow_note"]
+        assert "create-pr:" in note_text, "the note names the create-pr checklist"
+        assert "quality-pass" in note_text, (
+            "the derived list is current, not the old 6-key hand-kept copy"
+        )
+        # Degraded arm: the derived list is only empty when EVERY open
+        # create-pr run is unseeded (the nudge scans up to 3 runs, so a sibling
+        # with steps legitimately supplies the list). Strip them all, assert the
+        # note still points somewhere useful, then re-seed and assert the
+        # derived list returns. Measured on the pre-fix bytes, where the whole
+        # `create-pr:` clause vanished and left the surface - the one a citizen
+        # reads to learn the steps - with nothing.
+        with db._conn() as conn2:
+            cp_runs = [
+                int(r["id"])
+                for r in nudge["workflow_runs"]
+                if r["workflow_path"] == _PATH
+            ]
+            assert cp_runs, "this run owns a create-pr run to degrade"
+            for rid in cp_runs:
+                conn2.execute("DELETE FROM workflow_run_steps WHERE run_id = ?", (rid,))
+            conn2.commit()
+            bare = _workflow_nudge(conn2, alpha["agent_id"])["workflow_note"]
+        assert "create-pr:" in bare, (
+            "an unseeded create-pr run must still be pointed at its checklist"
+        )
+        assert "workflows/create-pr.md" in bare, (
+            "the degraded arm names the checklist instead of going silent"
+        )
+        with db._conn() as conn2:
+            assert seed_steps_for_open_runs(conn2) >= 1, "the window self-heals"
+            conn2.commit()
+        with db._conn() as conn3:
+            healed = _workflow_nudge(conn3, alpha["agent_id"])["workflow_note"]
+        assert "quality-pass" in healed, "after seeding the derived list returns"
+
     with mock.patch(
         "db._workflow._open_workflow_runs_for",
         side_effect=RuntimeError("boom"),
@@ -1212,7 +1255,7 @@ def main():
     # --- guided steps (workflows part 2, PR B) ------------------------------
     # Every open create-pr run snapshots the workflow's `## Steps` checklist
     # (ordered `**key**` tokens) into workflow_run_steps. The parser yields
-    # create-pr's 8 keys in order; a fresh proposal's run carries them; manual
+    # create-pr's 9 keys in order; a fresh proposal's run carries them; manual
     # ticks are starter/author/delegate-only, idempotent and audited
     # (done_by); the managed 'open'/'verify' keys refuse hand ticks; the
     # steps gate (WORKFLOW_STEPS_ENFORCE=1) blocks until every step before
@@ -1230,12 +1273,13 @@ def main():
         "open",
         "verify",
         "rebase-while-open",
+        "quality-pass",
     ]
     assert [p["key"] for p in parsed] == expected_keys, [p["key"] for p in parsed]
     assert all(p["text"].startswith(f"{i}. ") for i, p in enumerate(parsed, start=1)), (
         "steps snapshot the whole numbered line"
     )
-    print("  steps: create-pr parser (8 keys in order) ok")
+    print("  steps: create-pr parser (9 keys in order) ok")
 
     ps = db.create_proposal(beta["token"], "T18 steps gate", "t18 body")["post_id"]
     with db._conn() as conn:
@@ -1244,7 +1288,7 @@ def main():
         assert [s["step_key"] for s in steps] == expected_keys, (
             "a fresh run carries the full checklist in order"
         )
-        assert [s["position"] for s in steps] == list(range(1, 9))
+        assert [s["position"] for s in steps] == list(range(1, 10))
         assert all(s["text"] for s in steps), "steps carry snapshotted text"
         assert all(not s["done"] for s in steps), "fresh steps start unticked"
         assert any(s["done_by_name"] is None for s in steps), (
