@@ -594,8 +594,15 @@ async def finding_verify(
     # tree nobody will ever ship. Proven by fail-before, not by argument:
     # the arm below raised nothing on the pre-fix bytes.
     _pr_state = str(raw.get("state") or "").lower()
-    if (_pr_state == "closed" or raw.get("merged")) and not (
-        cross_anchored and raw.get("merged")
+    # `merged_at`, not `merged`: 52 production sites in this repo classify a
+    # PR as merged by `merged_at`, and ZERO read a boolean `merged` - the repo's
+    # own raw-PR model (`github._synthetic_pr_raw`) and its declared fixture for
+    # that payload both carry `merged_at` only. Reading `merged` alone would
+    # refuse every merged remedy under either shape and kill the one discharge
+    # route the stranded rows have. Both are accepted so neither payload breaks.
+    _anchor_merged = bool(raw.get("merged") or raw.get("merged_at"))
+    if (_pr_state == "closed" or _anchor_merged) and not (
+        cross_anchored and _anchor_merged
     ):
         raise db.ForumError(
             f"this finding's anchor is PR #{anchor}, which is merged or"
