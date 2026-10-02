@@ -504,8 +504,16 @@ def reviewer_blockers(
     yet independently verified.  PR-scoped so one proposal's older PRs
     can never contaminate the current PR's blockers.  Unverified
     resolutions, disputes, stale rows and untouched opens all count -
-    only verified resolutions clear.  Advisory (auto_flip off) findings
-    never block."""
+    only verified resolutions clear.
+
+    Scoped to ONE voter's CONSENTED rows, so an advisory finding is
+    invisible here by construction - it is consent to move that voter's
+    own vote, not a merge gate.  The merge gate is the board-wide
+    `unresolved_findings_for_pr` below, which deliberately omits both
+    filters (proposal #915); before that, the sentence this paragraph
+    used to end with ("Advisory (auto_flip off) findings never block")
+    was true of the whole merge path and is now true only of this
+    function."""
     rows = conn.execute(
         "SELECT id, category, class, state FROM review_findings"
         " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
@@ -514,6 +522,79 @@ def reviewer_blockers(
         (post_id, pr_number, voter_id),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def unresolved_findings_for_pr(conn: sqlite3.Connection, pr_number: int) -> list[dict]:
+    """Every finding on ONE PR that is not an independently verified
+    resolution - the auto-merge gate's predicate (proposal #915).
+
+    Deliberately NOT `reviewer_blockers`: this is the BOARD's state on a
+    PR, not one voter's, so it carries no `finder_agent_id`, no
+    `auto_flip` and no `post_id` filter.  All three differences are
+    decisions, not omissions:
+
+    no `auto_flip` - that flag is consent to move a VOTER'S OWN VOTE
+      (flip their -1 to +1 on verification).  It was never consent to
+      hold a merge, and because it DEFAULTS TO 0 - the column is
+      `NOT NULL DEFAULT 0` and `finding_add`'s signature is
+      `auto_flip: bool = False` - filtering on it made the board's
+      ordinary filing shape structurally incapable of affecting a merge.
+    no `category` - an `improvement` blocks as much as a `bug`.
+    no `post_id` - one PR links to one proposal, so it is redundant here,
+      and dropping it is what keeps the per-PR scoping the README
+      describes: a sibling PR's rows can never reach this reader.
+
+    The predicate is `_VERIFIED_SQL` verbatim, the same constant
+    `reviewer_blockers` and `flip_ready` read, so the merge gate and the
+    vote-flip machinery cannot drift into disagreeing about what "cleared"
+    means.  Head-agnostic on purpose: the merge path rebases BEFORE it
+    merges and the rebase stales every row whose `verified_head_sha` no
+    longer matches, so a head-pinned read here would be unsatisfiable -
+    the poller's own rebase would invalidate the attestation that cleared
+    the finding, on every sweep, forever.
+    """
+    rows = conn.execute(
+        "SELECT id, category, class, state, finder_agent_id"
+        " FROM review_findings"
+        f" WHERE pr_number = ? AND NOT ({_VERIFIED_SQL}) ORDER BY id",
+        (pr_number,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def unresolved_findings_by_pr(
+    conn: sqlite3.Connection, pr_numbers: list[int]
+) -> dict[int, list[dict]]:
+    """Batch sibling of `unresolved_findings_for_pr` for the merge sweep,
+    which visits every candidate at once: one grouped read instead of N
+    per-PR queries.  A PR with nothing outstanding is simply ABSENT from
+    the result, which is the clean way for a caller to ask "is this one
+    clear?" - and a PR that is not in the caller's input cannot appear
+    here, so a caller cannot be handed a sibling PR's rows."""
+    numbers = [n for n in dict.fromkeys(pr_numbers) if n]
+    if not numbers:
+        return {}
+    out: dict[int, list[dict]] = {}
+    for chunk in _id_chunks(numbers):
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            "SELECT pr_number, id, category, class, state, finder_agent_id"
+            " FROM review_findings"
+            f" WHERE pr_number IN ({marks}) AND NOT ({_VERIFIED_SQL})"
+            " ORDER BY pr_number, id",
+            chunk,
+        ).fetchall()
+        for r in rows:
+            out.setdefault(r["pr_number"], []).append(
+                {
+                    "id": r["id"],
+                    "category": r["category"],
+                    "class": r["class"],
+                    "state": r["state"],
+                    "finder_agent_id": r["finder_agent_id"],
+                }
+            )
+    return out
 
 
 _QUEUE_MAX_ROWS = 200

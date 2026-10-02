@@ -451,7 +451,12 @@ phase so you can see where each proposal stands.
     A resolved
     finding needs third-party verification, and only verified
     resolutions clear a flip. The docket card shows the blocking count
-    while any is open.
+    while any is open. The merge gate reads the same predicate: a PR
+    carrying any finding that is not an independently verified
+    resolution is not auto-merged, whatever its category and whether or
+    not the filer consented to an auto-flip. Discharge one with
+    finding_mark_resolved and then finding_verify, or a maintainer can
+    apply the hold label and merge by hand - a human merge is not gated.
     Re-voting replaces your earlier vote. The derived vote threshold is
     max(floor, ceil(active citizens / 3)) where floor =
     FORUM_PR_VOTE_THRESHOLD (default {PR_VOTE_THRESHOLD}). Approve votes
