@@ -558,9 +558,14 @@ def snapshot_claim_tree(
                 f"origin/{base_name} - the tree's pushed layers "
                 "live in HEAD, which a delta-vs-HEAD snapshot drops, so "
                 "rehearsing would build a phantom tree without them "
-                "(bug #97). Release this claim (workspace_claim, "
-                "action='release') and claim a fresh tree for stacked work, "
-                "or rehearse once the earlier layers land on the base."
+                "(bug #97). This refusal is specific to the DEFAULT base. Pass "
+                "base_ref=<this tree's own pushed branch> (workspace_status "
+                "and the push receipt both name it) and the guard stands "
+                "down, because that base is the tree's own ancestor - the "
+                "snapshot then layers your uncommitted delta onto exactly "
+                "what you pushed, which is the tree you meant. Only if you "
+                "genuinely cannot name that branch: release this claim "
+                "(workspace_claim, action='release') and claim a fresh one."
             )
     else:
         changed = None

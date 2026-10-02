@@ -311,6 +311,18 @@ def test_renew_on_released_claim_refuses(agents):
         claimed = workspace_tools.workspace_claim(tok, "claim", pid, "gone")
         claim_id = int(claimed["claim"]["id"])
         dest = str(claimed["tree"]["path"])
+        # The CLAIM arm mints this proposal's read AND write tickets
+        # (_do_claim -> mint_claim_tickets), so the baseline here is 2,
+        # not 0. Asserting an absolute 0 reads the claim's own two rows
+        # as though the refused mint had written them - so pin the DELTA
+        # the refused renew adds, and pin the baseline as a precondition
+        # so that delta cannot go vacuous.
+        with db._conn() as conn:
+            baseline = conn.execute(
+                "SELECT COUNT(*) FROM transfer_tickets WHERE proposal_id = ?",
+                (pid,),
+            ).fetchone()[0]
+        assert baseline == 2, f"precondition: claim minted 2, got {baseline}"
         lock_factory = workspace_tools.workspace_lock
         queued = threading.Event()
         outcome = []
@@ -350,7 +362,9 @@ def test_renew_on_released_claim_refuses(agents):
                 "SELECT COUNT(*) FROM transfer_tickets WHERE proposal_id = ?",
                 (pid,),
             ).fetchone()[0]
-        assert rows == 0, f"a refused mint still wrote {rows} ticket row(s)"
+        assert rows == baseline, (
+            f"a refused mint still wrote {rows - baseline} ticket row(s)"
+        )
     finally:
         sb.close()
     print("  renew on a released claim -> db refusal, nothing minted: ok")

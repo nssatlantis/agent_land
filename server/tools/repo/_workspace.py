@@ -268,9 +268,7 @@ def _do_renew(
     # allow_missing is NOT granted: _resolve_claim_tree only proves
     # isdir(dest), so a tree that lost its .git is a tree no ticket could
     # ever carry - refusing beats minting one.
-    lock = _acquire_workspace_lock(
-        dest, token, proposal_id, name, int(record["id"])
-    )
+    lock = _acquire_workspace_lock(dest, token, proposal_id, name, int(record["id"]))
     try:
         tickets = mint_claim_tickets(token, record, dest, expect_shas)
     finally:

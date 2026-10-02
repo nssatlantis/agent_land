@@ -252,6 +252,10 @@ def test_mint_redeem_roundtrip(agents):
     assert "already used" in expect_error(
         db.redeem_transfer_ticket, w["ticket"], "write", "a.txt"
     )
+    # Fixture hygiene: the claim cap is PER AGENT, so a claim left active
+    # here is still held later in this same process, when the next test
+    # asks alpha for one. Release it; nothing below reads it again.
+    db.release_workspace(tok, pid, "round")
     print("  mint/redeem roundtrip + per-path burn: ok")
 
 
@@ -294,6 +298,7 @@ def test_mint_gates(agents):
     # Unknown ticket reads 404 without leaking existence.
     err = expect_error(db.redeem_transfer_ticket, "xfer_nope", "read", "README.md")
     assert "unknown transfer ticket" in err
+    db.release_workspace(tok, pid, "gated")  # per-agent cap hygiene
     print("  mint/redeem gates: ok")
 
 
@@ -320,6 +325,7 @@ def test_expiry_and_sweep(agents):
             (hashlib.sha256(m["ticket"].encode()).hexdigest(),),
         ).fetchone()["status"]
     assert status == "expired", status
+    db.release_workspace(tok, pid, "exp")  # per-agent cap hygiene
     print("  expiry marks + sweep: ok")
 
 
@@ -1341,51 +1347,69 @@ def test_over_cap_file_refused_at_redeem_and_pin(agents):
     print("  over-cap file refused at download and at a renew pin: ok")
 
 
-def test_pin_refuses_file_that_is_not_there(agents):
+# The three pin-refusal arms below share ONE claim, taken once in main().
+# A claim slot is per-AGENT and capped (WORKSPACE_CLAIM_MAX_PER_AGENT),
+# and each arm needs nothing beyond it: action='renew' resolves the
+# caller's OWN existing claim and consumes no new slot, and the arms write
+# their own distinct filenames, so sharing a tree cannot make them collide.
+_PIN_CTX: dict = {}
+
+
+def _pin_group_open(agents):
+    pid = _prop(agents, "alpha", title="Pingroup Xfer")
+    tok = agents["alpha"]["token"]
+    _claim(agents, pid, "pingroup", who="alpha")
+    _PIN_CTX["ctx"] = (
+        tok,
+        pid,
+        "pingroup",
+        ws._claim_dir(agents["alpha"]["agent_id"], pid, "pingroup"),
+    )
+
+
+def _pin_group_close():
+    ctx = _PIN_CTX.pop("ctx", None)
+    if ctx is None:
+        return
+    tok, pid, name, _dest = ctx
+    WT.workspace_claim(tok, "release", pid, name)
+
+
+def test_pin_refuses_file_that_is_not_there():
     """A pin guards an OVERWRITE, so a path the tree does not hold can
     never be one. Without this arm getsize raises OSError and the caller
     reads "could not read ... in the workspace" - a different sentence for
     the same refusal, which is how a pin check rots into a mystery."""
-    pid = _prop(agents, "alpha", title="Pinabsent Xfer")
-    tok = agents["alpha"]["token"]
-    _claim(agents, pid, "pinabsent", who="alpha")
-    dest = ws._claim_dir(agents["alpha"]["agent_id"], pid, "pinabsent")
+    tok, pid, name, dest = _PIN_CTX["ctx"]
     assert not os.path.exists(os.path.join(dest, "absent.txt")), "precondition"
     msg = expect_error(
-        WT.workspace_claim, tok, "renew", pid, "pinabsent", {"absent.txt": "0" * 64}
+        WT.workspace_claim, tok, "renew", pid, name, {"absent.txt": "0" * 64}
     )
     assert "not a file in this workspace" in msg, msg
     # The refusal is about the MISSING file, not about pins being broken:
     # a pin on a real file at its real sha renews on the same claim.
-    WT.workspace_write_file(tok, pid, "pinabsent", "present.txt", content="v\n")
+    WT.workspace_write_file(tok, pid, name, "present.txt", content="v\n")
     want = _sha256_of(os.path.join(dest, "present.txt"))
-    res = WT.workspace_claim(tok, "renew", pid, "pinabsent", {"present.txt": want})
+    res = WT.workspace_claim(tok, "renew", pid, name, {"present.txt": want})
     assert res["write"]["ticket"], res
-    WT.workspace_claim(tok, "release", pid, "pinabsent")
     print("  pin naming a file the tree lacks is refused at the mint: ok")
 
 
-def test_pin_refuses_a_tree_that_moved_under_it(agents):
+def test_pin_refuses_a_tree_that_moved_under_it():
     """The whole point of a pin: the tree may not have moved between the
     fetch the sha came from and the upload that would overwrite it."""
-    pid = _prop(agents, "beta", title="Pinmoved Xfer")
-    tok = agents["beta"]["token"]
-    _claim(agents, pid, "pinmoved", who="beta")
-    dest = ws._claim_dir(agents["beta"]["agent_id"], pid, "pinmoved")
-    WT.workspace_write_file(tok, pid, "pinmoved", "r.txt", content="v1\n")
+    tok, pid, name, dest = _PIN_CTX["ctx"]
+    WT.workspace_write_file(tok, pid, name, "r.txt", content="v1\n")
     fetched = _sha256_of(os.path.join(dest, "r.txt"))
-    WT.workspace_write_file(tok, pid, "pinmoved", "r.txt", content="v2\n")
+    WT.workspace_write_file(tok, pid, name, "r.txt", content="v2\n")
     assert _sha256_of(os.path.join(dest, "r.txt")) != fetched, "precondition: moved"
-    msg = expect_error(
-        WT.workspace_claim, tok, "renew", pid, "pinmoved", {"r.txt": fetched}
-    )
+    msg = expect_error(WT.workspace_claim, tok, "renew", pid, name, {"r.txt": fetched})
     assert "tree moved since you read it" in msg, msg
     # Positive control on the same claim: the sha the tree ACTUALLY holds
     # renews, so the refusal above is the move and nothing else.
     now = _sha256_of(os.path.join(dest, "r.txt"))
-    res = WT.workspace_claim(tok, "renew", pid, "pinmoved", {"r.txt": now})
+    res = WT.workspace_claim(tok, "renew", pid, name, {"r.txt": now})
     assert res["write"]["ticket"], res
-    WT.workspace_claim(tok, "release", pid, "pinmoved")
     print("  pin on a file that moved under the tree is refused: ok")
 
 
@@ -1424,7 +1448,7 @@ def test_pins_refused_on_claim_and_mint_nothing(agents):
     print("  pins refused on action='claim' mint no ticket and no claim: ok")
 
 
-def test_pin_stored_under_the_validated_path(agents):
+def test_pin_stored_under_the_validated_path():
     """A pin key differing from its path only by padding is guard-clean
     and hash-correct, so the mint must STORE it under the cleaned path.
 
@@ -1436,13 +1460,10 @@ def test_pin_stored_under_the_validated_path(agents):
     """
     import json as _json
 
-    pid = _prop(agents, "delta", title="Pinkey Xfer")
-    tok = agents["delta"]["token"]
-    _claim(agents, pid, "pinkey", who="delta")
-    WT.workspace_write_file(tok, pid, "pinkey", "x.py", content="X = 2\n")
-    dest = ws._claim_dir(agents["delta"]["agent_id"], pid, "pinkey")
+    tok, pid, name, dest = _PIN_CTX["ctx"]
+    WT.workspace_write_file(tok, pid, name, "x.py", content="X = 2\n")
     want = _sha256_of(os.path.join(dest, "x.py"))
-    res = WT.workspace_claim(tok, "renew", pid, "pinkey", {" x.py": want})
+    res = WT.workspace_claim(tok, "renew", pid, name, {" x.py": want})
     ticket = res["write"]["ticket"]
     with db._conn() as conn:
         stored = conn.execute(
@@ -1453,7 +1474,7 @@ def test_pin_stored_under_the_validated_path(agents):
     # The relocated pin is LIVE, not merely moved: move the file under it
     # and upload the bytes it was taken against. A dead pin skips the
     # check entirely and quietly applies them.
-    WT.workspace_write_file(tok, pid, "pinkey", "x.py", content="X = 9\n")
+    WT.workspace_write_file(tok, pid, name, "x.py", content="X = 9\n")
     bad = _run(TR.transfer_upload(_req("POST", ticket, "x.py", body=b"X = 2\n")))
     assert bad.status_code == 409, (bad.status_code, bad.body)
     assert "stale base for" in bad.body.decode(), bad.body
@@ -1462,12 +1483,11 @@ def test_pin_stored_under_the_validated_path(agents):
     # Positive control on a fresh ticket: the pin accepts the bytes it
     # names, so the refusal above is the pin firing and nothing else.
     now = _sha256_of(os.path.join(dest, "x.py"))
-    ticket2 = WT.workspace_claim(
-        tok, "renew", pid, "pinkey", {" x.py": now}
-    )["write"]["ticket"]
+    ticket2 = WT.workspace_claim(tok, "renew", pid, name, {" x.py": now})["write"][
+        "ticket"
+    ]
     ok = _run(TR.transfer_upload(_req("POST", ticket2, "x.py", body=b"X = 9\n")))
     assert ok.status_code == 200, (ok.status_code, ok.body)
-    WT.workspace_claim(tok, "release", pid, "pinkey")
     print("  a padded pin key is stored - and enforced - under the clean path: ok")
 
 
@@ -1594,10 +1614,13 @@ def main():
     test_download_filename_sanitized()
     test_non_ascii_ticket_404s(agents)
     test_over_cap_file_refused_at_redeem_and_pin(agents)
-    test_pin_refuses_file_that_is_not_there(agents)
-    test_pin_refuses_a_tree_that_moved_under_it(agents)
+    # One claim for the whole pin group: taken here, released below.
+    _pin_group_open(agents)
+    test_pin_refuses_file_that_is_not_there()
+    test_pin_refuses_a_tree_that_moved_under_it()
     test_pins_refused_on_claim_and_mint_nothing(agents)
-    test_pin_stored_under_the_validated_path(agents)
+    test_pin_stored_under_the_validated_path()
+    _pin_group_close()
     test_content_write_directory_refused(agents)
     test_expect_shape_validated(agents)
     test_mcp_noop_touches_clocks(agents)
