@@ -156,9 +156,8 @@ EXPECTED = [
     "decide_guild_subsidy",
     "appoint_guild_successor",
     "admin_release_empty_guild",
-    # workspace transfer tickets (proposal #597)
-    "workspace_fetch_ticket",
-    "workspace_upload_ticket",
+    # workspace claim/release dispatch (proposal #919)
+    "workspace_claim",
     # designs tools (proposal #652)
     "create_design",
     "edit_design_meta",
