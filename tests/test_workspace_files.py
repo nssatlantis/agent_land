@@ -119,9 +119,11 @@ def test_write_read_roundtrip(agents, wstools):
         full = wstools.workspace_read_file(tok, pid, "dev", "notes/todo.txt")
         assert full["content"] == "hello", full
         assert full["total_lines"] == 1, full
-        unscoped = wstools.workspace_diff(tok, pid, "dev")
+        unscoped = wstools.workspace_inspect(tok, pid, "dev", "diff")
         assert "hello" in unscoped["diff"], unscoped
-        scoped = wstools.workspace_diff(tok, pid, "dev", path="notes/todo.txt")
+        scoped = wstools.workspace_inspect(
+            tok, pid, "dev", "diff", path="notes/todo.txt"
+        )
         assert "hello" in scoped["diff"], scoped
         body = "l1\nl2\nl3\nl4\nl5\n"
         w(tok, pid, "dev", "lines.txt", body)
@@ -158,21 +160,25 @@ def test_list_status_diff(agents, wstools):
     sb = _FilesSandbox()
     try:
         pid, tok = _claim(agents, wstools, "gamma", "List Shop")
-        st = wstools.workspace_status(tok, pid, "dev")
+        st = wstools.workspace_inspect(tok, pid, "dev", "status")
         assert st["dirty"] is False and st["changes"] == [], st
         assert st["head_sha"], st
-        d0 = wstools.workspace_diff(tok, pid, "dev")
+        d0 = wstools.workspace_inspect(tok, pid, "dev", "diff")
         assert d0["diff"] == "" and d0["truncated"] is False, d0
         wstools.workspace_write_file(tok, pid, "dev", "work.txt", "hello\n")
-        st = wstools.workspace_status(tok, pid, "dev")
+        st = wstools.workspace_inspect(tok, pid, "dev", "status")
         assert st["dirty"] is True, st
         assert [c["path"] for c in st["changes"]] == ["work.txt"], st
-        d1 = wstools.workspace_diff(tok, pid, "dev")
+        d1 = wstools.workspace_inspect(tok, pid, "dev", "diff")
         assert "hello" in d1["diff"] and d1["truncated"] is False, d1
-        d2 = wstools.workspace_diff(tok, pid, "dev", path="work.txt", max_bytes=10)
+        d2 = wstools.workspace_inspect(
+            tok, pid, "dev", "diff", path="work.txt", max_bytes=10
+        )
         assert d2["truncated"] is False, d2  # below the 1KB floor clamps up
         wstools.workspace_write_file(tok, pid, "dev", "big.txt", "x\n" * 600)
-        d3 = wstools.workspace_diff(tok, pid, "dev", path="big.txt", max_bytes=1024)
+        d3 = wstools.workspace_inspect(
+            tok, pid, "dev", "diff", path="big.txt", max_bytes=1024
+        )
         assert d3["truncated"] is True and len(d3["diff"]) == 1024, d3
         listed = wstools.workspace_list_tree(tok, pid, "dev")
         paths = [r["path"] for r in listed]
@@ -215,8 +221,8 @@ def test_read_tools_wait_for_tree_lock(agents, wstools):
         assert_serialized(
             lambda: wstools.workspace_read_file(tok, pid, "dev", "README.md")
         )
-        assert_serialized(lambda: wstools.workspace_status(tok, pid, "dev"))
-        assert_serialized(lambda: wstools.workspace_diff(tok, pid, "dev"))
+        assert_serialized(lambda: wstools.workspace_inspect(tok, pid, "dev", "status"))
+        assert_serialized(lambda: wstools.workspace_inspect(tok, pid, "dev", "diff"))
 
         snapshot_entered = threading.Event()
         original_snapshot = wstools.github.snapshot_claim_tree
@@ -315,7 +321,7 @@ def test_sync_and_clocks_and_budget(agents, wstools):
             wstools.workspace_sync, tok, pid, "dev"
         )
         wstools.workspace_delete_file(tok, pid, "dev", "a.txt")
-        old = wstools.workspace_status(tok, pid, "dev")["head_sha"]
+        old = wstools.workspace_inspect(tok, pid, "dev", "status")["head_sha"]
         _advance_remote()
         synced = wstools.workspace_sync(tok, pid, "dev")
         assert synced["old_sha"] == old, synced
@@ -918,11 +924,24 @@ def test_owner_isolation(agents, wstools):
             wstools.workspace_list_tree, beta, pid, "dev"
         )
         assert "no active workspace" in _expect_tool_error(
-            wstools.workspace_status, beta, pid, "dev"
+            wstools.workspace_inspect, beta, pid, "dev", "status"
         )
         assert "no active workspace" in _expect_tool_error(
-            wstools.workspace_diff, beta, pid, "dev"
+            wstools.workspace_inspect, beta, pid, "dev", "diff"
         )
+        # An invalid action refuses for the OWNER, so the validator is live.
+        assert "unknown action" in _expect_tool_error(
+            wstools.workspace_inspect, tok, pid, "dev", "nope"
+        )
+        # Fail-closed ordering: a stranger probing the action vocabulary gets
+        # the CLAIM refusal, not the action refusal, so an unclaimed caller
+        # cannot enumerate which actions exist. The serializer resolves the
+        # claim tree before the body ever builds its arms table.
+        stranger = _expect_tool_error(
+            wstools.workspace_inspect, beta, pid, "dev", "nope"
+        )
+        assert "no active workspace" in stranger, stranger
+        assert "unknown action" not in stranger, stranger
         assert "no active workspace" in _expect_tool_error(
             wstools.workspace_delete_file, beta, pid, "dev", "README.md"
         )
@@ -1430,10 +1449,150 @@ def test_release_same_name_two_agents(agents, wstools):
     print("  same-name release scopes to the owner, author disambiguates: ok")
 
 
+_INSPECT_REMOVED = ("workspace_status", "workspace_diff")
+
+# Prose an agent actually reads. `rules_text.py` is intentionally absent: a
+# census showed it never named either tool, and asserting a file with no
+# occurrence is a pin that proves nothing.
+_INSPECT_PROSE = (
+    "README.md",
+    "workflows/code-review.md",
+    "workflows/create-pr.md",
+    "workflows/full-visit.md",
+)
+
+# A docstring is shipped text: `agentland://tools` serves it verbatim, so a
+# rename that skips these leaves agents calling a tool that no longer exists.
+_INSPECT_DOCSTRING_FILES = (
+    "server/tools/repo/_transfer.py",
+    "server/tools/repo/_workspace.py",
+)
+
+
+def test_inspect_removed_names_absent_at_all_three_surfaces():
+    """A tool can leak from three places; assert every one, not one."""
+    import server
+    from server.tools import repo as _facade
+    from server.tools.repo import _workspace as _ws
+
+    surfaces = (
+        ("defining module", _ws),
+        ("repo facade", _facade),
+        ("top-level facade", server),
+    )
+    for where, mod in surfaces:
+        for name in _INSPECT_REMOVED:
+            assert not hasattr(mod, name), f"{name} still leaks via the {where}"
+        assert hasattr(mod, "workspace_inspect"), f"survivor missing from {where}"
+
+
+def test_inspect_dispatcher_decorated_and_helpers_are_not():
+    """The dispatcher owns the lock and the ledger row -- exactly once each.
+
+    Re-decorating a helper would re-enter a lock the dispatcher already holds
+    and write a second `tool_calls` row per user action. `_logged` uses
+    functools.wraps, so a decorated callable carries `__wrapped__`; a bare
+    `def` does not. `@mcp.tool()` returns fn unchanged, so the dispatcher is
+    the `_logged` wrapper.
+    """
+    from server.tools.repo import _workspace as _ws
+
+    for helper in (_ws._inspect_status, _ws._inspect_diff):
+        assert not hasattr(helper, "__wrapped__"), (
+            f"{helper.__name__} gained a decorator; the dispatcher already "
+            "holds the tree lock and the ledger write"
+        )
+    assert hasattr(_ws.workspace_inspect, "__wrapped__"), (
+        "workspace_inspect lost its decorators"
+    )
+    for helper in (_ws._inspect_status, _ws._inspect_diff):
+        assert callable(helper), f"{helper.__name__} did not survive the split"
+
+
+def test_inspect_leading_args_match_the_serializer_contract():
+    """`_workspace_serialized` calls `func(token, proposal_id, name, *args)`.
+
+    It RE-PACKS the leading three arguments instead of forwarding them, so
+    anything it decorates must keep those three first and in that order. A
+    dispatcher that leads with `action` binds `action` to `proposal_id` and
+    resolves the wrong claim -- green in review, red only in a run.
+    `workspace_write_file` is the control: untouched here, so the pin is not
+    tautological on the function it checks.
+    """
+    import inspect
+
+    from server.tools.repo import _workspace as _ws
+
+    for fn in (_ws.workspace_inspect, _ws.workspace_write_file):
+        params = list(inspect.signature(fn).parameters)
+        assert params[:3] == ["token", "proposal_id", "name"], (
+            f"{fn.__name__} leading params are {params[:3]}, not the "
+            "token/proposal_id/name prefix the serializer re-packs"
+        )
+
+
+def test_inspect_action_set_derived_from_live_docstring():
+    """Extract the vocabulary from `__doc__`; never hardcode the tuple.
+
+    A hardcoded tuple is decoration: a third action would leave this file
+    green. `assert advertised` fails LOUD on an empty parse, so a decorator
+    change that swallows the docstring reddens instead of passing quietly.
+    """
+    import re
+
+    from server.tools.repo import _workspace as _ws
+
+    doc = _ws.workspace_inspect.__doc__ or ""
+    advertised = set(re.findall(r"action='([a-z_]+)'", doc))
+    assert advertised, f"could not parse any action from the docstring: {doc!r}"
+    assert advertised == {"status", "diff"}, advertised
+
+
+def test_inspect_docstring_drops_removed_names_keeps_survivors():
+    """After hard-remove the docstring is the agent's ONLY reference."""
+    from server.tools.repo import _workspace as _ws
+
+    doc = _ws.workspace_inspect.__doc__ or ""
+    for name in _INSPECT_REMOVED:
+        assert name not in doc, f"{name} is still advertised in the surviving doc"
+    assert "workspace_sync" in doc, (
+        "the docstring must say sync stays a separate tool, or an agent "
+        "will assume action='sync' exists"
+    )
+
+
+def test_inspect_shipped_prose_carries_no_removed_name():
+    root = Path(__file__).resolve().parent.parent
+    for rel in _INSPECT_PROSE:
+        path = root / rel
+        assert path.exists(), f"census is stale: {rel} is gone, re-run it"
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for name in _INSPECT_REMOVED:
+            assert name not in text, f"{name} is still named in {rel}"
+
+
+def test_inspect_shipped_tool_docstrings_carry_no_removed_name():
+    """The class a README-only sweep misses entirely."""
+    root = Path(__file__).resolve().parent.parent
+    for rel in _INSPECT_DOCSTRING_FILES:
+        path = root / rel
+        assert path.exists(), f"census is stale: {rel} is gone, re-run it"
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for name in _INSPECT_REMOVED:
+            assert name not in text, f"{name} still in a shipped docstring: {rel}"
+
+
 def main():
     from server.tools.repo import _workspace as wstools  # noqa: E402
 
     agents, _post_id = setup()
+    test_inspect_removed_names_absent_at_all_three_surfaces()
+    test_inspect_dispatcher_decorated_and_helpers_are_not()
+    test_inspect_leading_args_match_the_serializer_contract()
+    test_inspect_action_set_derived_from_live_docstring()
+    test_inspect_docstring_drops_removed_names_keeps_survivors()
+    test_inspect_shipped_prose_carries_no_removed_name()
+    test_inspect_shipped_tool_docstrings_carry_no_removed_name()
     test_write_read_roundtrip(agents, wstools)
     test_list_status_diff(agents, wstools)
     test_read_tools_wait_for_tree_lock(agents, wstools)
