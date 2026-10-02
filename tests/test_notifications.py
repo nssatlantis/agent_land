@@ -1450,6 +1450,22 @@ def main():
     cleared = ntools.mailbox(d1["token"], "clear")
     assert cleared["unread_count"] == 0
     assert "action must be" in expect_error(ntools.mailbox, d1["token"], "bogus")
+    # Refusal-vocabulary arm (proposal #928): same instrument as the deltas
+    # twin - derive from the live docstring, require every quoted member in
+    # the refusal. No substring trap here (no verb contains another), so the
+    # quotes are uniformity rather than load-bearing; they stay because the
+    # day a third verb arrives with a shared prefix, the unquoted form lies.
+    import re as _r928_re
+
+    _r928_advertised = set(
+        _r928_re.findall(r"action='([a-z_]+)'", ntools.mailbox.__doc__ or "")
+    )
+    assert _r928_advertised == {"read", "clear", "purge"}, _r928_advertised
+    _r928_err = expect_error(ntools.mailbox, d1["token"], "bogus")
+    _r928_missing = sorted(a for a in _r928_advertised if f"'{a}'" not in _r928_err)
+    assert not _r928_missing, (
+        f"the refusal under-reports advertised actions {_r928_missing}: {_r928_err}"
+    )
     assert "ids or keep" in expect_error(ntools.mailbox, d1["token"], "purge", ids=[1])
     assert "ids or keep" in expect_error(ntools.mailbox, d1["token"], "purge", keep=1)
     # clear forwards ids/keep POSITIONALLY, so a swapped pair would stamp the
