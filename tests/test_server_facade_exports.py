@@ -292,6 +292,10 @@ def test_todo_flag_legacy_tool_removed():
     assert not _missing, (
         f"the refusal under-reports advertised actions {_missing}: {_err}"
     )
+    # A reason on the unflag arm is refused, not swallowed: under the old
+    # surface it was a TypeError (loud). The dispatcher must stay loud.
+    _rerr = expect_error(_collab_tools.flag_todo_item, "x", 0, 0, "stale?", "unflag")
+    assert "reason applies to action='flag' only" in _rerr, _rerr
 
 
 def test_removed_todo_flag_names_absent_from_shipped_prose():
