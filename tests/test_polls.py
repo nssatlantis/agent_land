@@ -328,8 +328,6 @@ def main():
     assert doc, "poll has no docstring"
     advertised = re.findall(r"action='([a-z_]+)'", doc)
     assert set(advertised) == {"get", "vote", "edit"}, advertised
-    for _action in advertised:
-        assert _action not in ("",), "unreachable guard"
 
     # The removed names must NOT be advertised: after a hard-remove the
     # docstring is the agent's only reference, so a stale name there is how a
