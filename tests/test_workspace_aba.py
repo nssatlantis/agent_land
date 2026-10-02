@@ -191,14 +191,19 @@ def test_renew_mint_rebinds_claim_under_lock(agents):
     """The mint-under-the-tree-lock ABA fence, re-pinned on its new home.
 
     The old pin drove ``workspace_fetch_ticket`` and asserted
-    ForumError("changed while waiting for its lock"). That REFUSAL arm no
-    longer exists on the mint path, and pretending otherwise would be the
-    knowingly-red test this rewrite exists to avoid: ``_do_renew`` resolves
-    the claim BEFORE acquiring (owner-scoped, so always the caller's own)
-    and never re-checks it after. What it does instead is stamp the ticket
-    from the claim that is LIVE AT MINT, under the lock - so the property
-    to pin is the stronger one, and it is the one that matters: a ticket
-    can never be issued against a claim that has already been released.
+    ForumError("changed while waiting for its lock"). That exact REFUSAL
+    arm no longer lives in the tool layer - ``_do_renew`` resolves the
+    claim BEFORE acquiring (owner-scoped, so always the caller's own) and
+    never re-checks it after - but the refusal itself SURVIVES one layer
+    down, re-worded: ``db.mint_transfer_ticket`` re-resolves the claim and
+    refuses a released one with "no active workspace ... of yours ...
+    tickets mint on live owned claims only."
+    ``test_renew_on_released_claim_refuses`` pins that arm, so nothing in
+    this file rests on the refusal being gone. What the renew arm does
+    instead of re-checking is stamp the ticket from the claim that is LIVE
+    AT MINT, under the lock - so the property to pin here is the stronger
+    one, and it is the one that matters: a ticket can never be issued
+    against a claim that has already been released.
 
     Two arms, both real: the mint cannot complete while another holder owns
     the tree lock (the discipline half), and the ticket it hands back is
@@ -273,6 +278,82 @@ def test_renew_mint_rebinds_claim_under_lock(agents):
         workspace_tools.workspace_claim(tok, "release", pid, "mint")
     finally:
         sb.close()
+
+
+def test_renew_on_released_claim_refuses(agents):
+    """The arm this file's sibling test above used to claim was gone.
+
+    A claim replacement that RE-CLAIMS leaves a live owned claim, so the
+    mint succeeds and the ticket is stamped with the fresh id - that is
+    ``test_renew_mint_rebinds_claim_under_lock`` above. A release with no
+    replacement leaves nothing for ``db.mint_transfer_ticket`` to resolve,
+    and the refusal still fires - one layer down, carrying the db layer's
+    wording rather than the ``_workspace_serialized`` one. Pinning it is
+    what lets the sibling's docstring say "re-worded" honestly.
+
+    Construction: hold the tree lock so the renew thread parks at
+    acquisition, release the claim underneath it (the release half of
+    ``_replace_claim_under_lock``), then let the renew acquire and mint.
+
+    The tree is deliberately NOT retired. Retiring it would race
+    ``_acquire_workspace_lock``'s ``_has_git`` probe at the acquire
+    boundary, and losing that race yields the *other* legitimate message
+    ("changed while waiting for its lock"). Only the CLAIM's absence
+    causes the refusal under test, so releasing alone makes the assertion
+    land on the db wording deterministically. A future re-check in
+    ``_do_renew`` would legitimately move this message one layer up again;
+    that is a real behaviour change and should update this assertion.
+    """
+    sb = _Sandbox()
+    try:
+        tok = agents["gamma"]["token"]
+        pid = db.create_proposal(tok, "Renew Released ABA", "body")["post_id"]
+        claimed = workspace_tools.workspace_claim(tok, "claim", pid, "gone")
+        claim_id = int(claimed["claim"]["id"])
+        dest = str(claimed["tree"]["path"])
+        lock_factory = workspace_tools.workspace_lock
+        queued = threading.Event()
+        outcome = []
+
+        @contextmanager
+        def observed_lock(path, *, allow_missing=False):
+            queued.set()
+            with lock_factory(path, allow_missing=allow_missing):
+                yield
+
+        def renew():
+            try:
+                outcome.append(
+                    workspace_tools.workspace_claim(tok, "renew", pid, "gone")
+                )
+            except BaseException as exc:
+                outcome.append(exc)
+
+        with lock_factory(dest):
+            with patch.object(workspace_tools, "workspace_lock", observed_lock):
+                worker = threading.Thread(target=renew)
+                worker.start()
+                assert queued.wait(1), "renew never reached lock acquisition"
+                released = db.release_workspace(tok, pid, "gone", claim_id=claim_id)
+                assert released["status"] == "released", released
+        worker.join(5)
+        assert not worker.is_alive(), "queued renew did not finish"
+        assert len(outcome) == 1, outcome
+        res = outcome[0]
+        assert isinstance(res, db.ForumError), (
+            f"renew minted a ticket for a released claim: {res!r}"
+        )
+        assert "of yours" in str(res), res
+        assert "tickets mint on live owned claims only" in str(res), res
+        with db._conn() as conn:
+            rows = conn.execute(
+                "SELECT COUNT(*) FROM transfer_tickets WHERE proposal_id = ?",
+                (pid,),
+            ).fetchone()[0]
+        assert rows == 0, f"a refused mint still wrote {rows} ticket row(s)"
+    finally:
+        sb.close()
+    print("  renew on a released claim -> db refusal, nothing minted: ok")
 
 
 def test_read_ticket_reclaim_aba(agents):
@@ -752,6 +833,7 @@ def main():
     test_claim_workspace_rechecks_after_lock(agents)
     test_lifecycle_reclaim_reuses_path_lock(agents)
     test_renew_mint_rebinds_claim_under_lock(agents)
+    test_renew_on_released_claim_refuses(agents)
     test_read_ticket_reclaim_aba(agents)
     test_sweeper_rechecks_live_and_idle_state()
     test_lifecycle_release_waits_for_active_mutator_and_reclaims(agents)

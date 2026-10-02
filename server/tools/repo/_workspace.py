@@ -259,8 +259,22 @@ def _do_renew(
 
     # Same lock discipline as the claim arm: the ticket inherits the
     # claim, so the mint runs UNDER the tree lock, never beside it.
-    with workspace_lock(dest, allow_missing=True):
+    #
+    # Through _acquire_workspace_lock for the #B117 contract parity every
+    # other serialized mutator has: it re-checks the claim at the acquire
+    # boundary, so a replacement landing between _resolve_claim_tree and
+    # the lock surfaces the recoverable "changed while waiting for its
+    # lock" instead of minting against a tree the replacement destroyed.
+    # allow_missing is NOT granted: _resolve_claim_tree only proves
+    # isdir(dest), so a tree that lost its .git is a tree no ticket could
+    # ever carry - refusing beats minting one.
+    lock = _acquire_workspace_lock(
+        dest, token, proposal_id, name, int(record["id"])
+    )
+    try:
         tickets = mint_claim_tickets(token, record, dest, expect_shas)
+    finally:
+        lock.__exit__(None, None, None)
     out = {"claim": record}
     out.update(tickets)
     return out
@@ -339,11 +353,12 @@ def workspace_claim(
     ticket is refused on upload, a write ticket on download. Read never
     consumes, so retry downloads freely; a write BURNS its path, so
     re-uploading the same path needs action='renew'. A ticket reaches any
-    file in your tree except `.git`, the workspace manifest and
-    `.github/`, which stay refused both ways, and each file is capped at
-    FORUM_TRANSFER_MAX_FILE_MB. Uploads apply through the workspace write
-    contract (EOL-normalized, budget-checked, quiet no-op on identical
-    bytes); verify with workspace_diff, rehearse, then workspace_push.
+    file in your tree except `.git`, the workspace manifest, `.github/`
+    and symlinks, which stay refused both ways, and each file is capped
+    at FORUM_TRANSFER_MAX_FILE_MB. Uploads apply through the workspace
+    write contract (EOL-normalized, budget-checked, quiet no-op on
+    identical bytes); verify with workspace_diff, rehearse, then
+    workspace_push.
 
     `expect_shas` ({path: sha256} from a download's X-Content-Sha256
     header) pins the files an upload would overwrite, refusing the mint if

@@ -114,6 +114,11 @@ def _renew_write(tok, pid, name, expect_shas=None):
     return res["write"]["ticket"]
 
 
+def _sha256_of(path):
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
 def _req(method, ticket, fpath, body=b"", headers=None):
     header_bytes = list(headers or [])
     scope = {
@@ -1336,6 +1341,136 @@ def test_over_cap_file_refused_at_redeem_and_pin(agents):
     print("  over-cap file refused at download and at a renew pin: ok")
 
 
+def test_pin_refuses_file_that_is_not_there(agents):
+    """A pin guards an OVERWRITE, so a path the tree does not hold can
+    never be one. Without this arm getsize raises OSError and the caller
+    reads "could not read ... in the workspace" - a different sentence for
+    the same refusal, which is how a pin check rots into a mystery."""
+    pid = _prop(agents, "alpha", title="Pinabsent Xfer")
+    tok = agents["alpha"]["token"]
+    _claim(agents, pid, "pinabsent", who="alpha")
+    dest = ws._claim_dir(agents["alpha"]["agent_id"], pid, "pinabsent")
+    assert not os.path.exists(os.path.join(dest, "absent.txt")), "precondition"
+    msg = expect_error(
+        WT.workspace_claim, tok, "renew", pid, "pinabsent", {"absent.txt": "0" * 64}
+    )
+    assert "not a file in this workspace" in msg, msg
+    # The refusal is about the MISSING file, not about pins being broken:
+    # a pin on a real file at its real sha renews on the same claim.
+    WT.workspace_write_file(tok, pid, "pinabsent", "present.txt", content="v\n")
+    want = _sha256_of(os.path.join(dest, "present.txt"))
+    res = WT.workspace_claim(tok, "renew", pid, "pinabsent", {"present.txt": want})
+    assert res["write"]["ticket"], res
+    WT.workspace_claim(tok, "release", pid, "pinabsent")
+    print("  pin naming a file the tree lacks is refused at the mint: ok")
+
+
+def test_pin_refuses_a_tree_that_moved_under_it(agents):
+    """The whole point of a pin: the tree may not have moved between the
+    fetch the sha came from and the upload that would overwrite it."""
+    pid = _prop(agents, "beta", title="Pinmoved Xfer")
+    tok = agents["beta"]["token"]
+    _claim(agents, pid, "pinmoved", who="beta")
+    dest = ws._claim_dir(agents["beta"]["agent_id"], pid, "pinmoved")
+    WT.workspace_write_file(tok, pid, "pinmoved", "r.txt", content="v1\n")
+    fetched = _sha256_of(os.path.join(dest, "r.txt"))
+    WT.workspace_write_file(tok, pid, "pinmoved", "r.txt", content="v2\n")
+    assert _sha256_of(os.path.join(dest, "r.txt")) != fetched, "precondition: moved"
+    msg = expect_error(
+        WT.workspace_claim, tok, "renew", pid, "pinmoved", {"r.txt": fetched}
+    )
+    assert "tree moved since you read it" in msg, msg
+    # Positive control on the same claim: the sha the tree ACTUALLY holds
+    # renews, so the refusal above is the move and nothing else.
+    now = _sha256_of(os.path.join(dest, "r.txt"))
+    res = WT.workspace_claim(tok, "renew", pid, "pinmoved", {"r.txt": now})
+    assert res["write"]["ticket"], res
+    WT.workspace_claim(tok, "release", pid, "pinmoved")
+    print("  pin on a file that moved under the tree is refused: ok")
+
+
+def test_pins_refused_on_claim_and_mint_nothing(agents):
+    """action='claim' refuses pins BEFORE the claim is taken, so a refused
+    call must leave neither a ticket nor a claim row. The ticket half is
+    the load-bearing one - a capability minted for a call that refused is
+    the one an agent cannot see it was refused for."""
+    pid = _prop(agents, "gamma", title="PinsOnClaim Xfer")
+    tok = agents["gamma"]["token"]
+    with db._conn() as conn:
+        before = conn.execute(
+            "SELECT COUNT(*) FROM transfer_tickets WHERE proposal_id = ?", (pid,)
+        ).fetchone()[0]
+    assert before == 0, f"precondition: fresh proposal, got {before} ticket rows"
+    msg = expect_error(
+        WT.workspace_claim, tok, "claim", pid, "pinclaim", {"a.txt": "0" * 64}
+    )
+    assert "applies to action='renew'" in msg, msg
+    with db._conn() as conn:
+        after = conn.execute(
+            "SELECT COUNT(*) FROM transfer_tickets WHERE proposal_id = ?", (pid,)
+        ).fetchone()[0]
+        claims = conn.execute(
+            "SELECT COUNT(*) FROM workspace_claims"
+            " WHERE proposal_id = ? AND name = 'pinclaim' AND status = 'active'",
+            (pid,),
+        ).fetchone()[0]
+    assert after == before, f"a refused claim minted {after - before} ticket(s)"
+    assert claims == 0, "a refused claim left an active claim row behind"
+    # And the ordinary claim still works for this citizen, so the refusal
+    # above is about the pins and not about standing.
+    res = WT.workspace_claim(tok, "claim", pid, "pinclaim")
+    assert res["read"]["ticket"] and res["write"]["ticket"], res
+    WT.workspace_claim(tok, "release", pid, "pinclaim")
+    print("  pins refused on action='claim' mint no ticket and no claim: ok")
+
+
+def test_pin_stored_under_the_validated_path(agents):
+    """A pin key differing from its path only by padding is guard-clean
+    and hash-correct, so the mint must STORE it under the cleaned path.
+
+    The redeem layer looks a request up by the URL segment it was handed
+    (server/_transfer.py), so a stored ' x.py' can never match a request
+    for 'x.py'. That is a dead pin - hash-verified once at mint, then
+    incapable of ever firing - which is the exact failure _check_pins
+    exists to prevent, and the reason the key it returns must be `clean`.
+    """
+    import json as _json
+
+    pid = _prop(agents, "delta", title="Pinkey Xfer")
+    tok = agents["delta"]["token"]
+    _claim(agents, pid, "pinkey", who="delta")
+    WT.workspace_write_file(tok, pid, "pinkey", "x.py", content="X = 2\n")
+    dest = ws._claim_dir(agents["delta"]["agent_id"], pid, "pinkey")
+    want = _sha256_of(os.path.join(dest, "x.py"))
+    res = WT.workspace_claim(tok, "renew", pid, "pinkey", {" x.py": want})
+    ticket = res["write"]["ticket"]
+    with db._conn() as conn:
+        stored = conn.execute(
+            "SELECT expect_shas_json FROM transfer_tickets WHERE ticket_hash = ?",
+            (hashlib.sha256(ticket.encode()).hexdigest(),),
+        ).fetchone()["expect_shas_json"]
+    assert _json.loads(stored) == {"x.py": want}, stored
+    # The relocated pin is LIVE, not merely moved: move the file under it
+    # and upload the bytes it was taken against. A dead pin skips the
+    # check entirely and quietly applies them.
+    WT.workspace_write_file(tok, pid, "pinkey", "x.py", content="X = 9\n")
+    bad = _run(TR.transfer_upload(_req("POST", ticket, "x.py", body=b"X = 2\n")))
+    assert bad.status_code == 409, (bad.status_code, bad.body)
+    assert "stale base for" in bad.body.decode(), bad.body
+    with open(os.path.join(dest, "x.py"), "rb") as fh:
+        assert b"X = 2" not in fh.read(), "the refused upload still landed"
+    # Positive control on a fresh ticket: the pin accepts the bytes it
+    # names, so the refusal above is the pin firing and nothing else.
+    now = _sha256_of(os.path.join(dest, "x.py"))
+    ticket2 = WT.workspace_claim(
+        tok, "renew", pid, "pinkey", {" x.py": now}
+    )["write"]["ticket"]
+    ok = _run(TR.transfer_upload(_req("POST", ticket2, "x.py", body=b"X = 9\n")))
+    assert ok.status_code == 200, (ok.status_code, ok.body)
+    WT.workspace_claim(tok, "release", pid, "pinkey")
+    print("  a padded pin key is stored - and enforced - under the clean path: ok")
+
+
 def test_content_write_directory_refused(agents):
     pid = _prop(agents, "epsilon", title="Dirwrite Xfer")
     tok = agents["epsilon"]["token"]
@@ -1459,6 +1594,10 @@ def main():
     test_download_filename_sanitized()
     test_non_ascii_ticket_404s(agents)
     test_over_cap_file_refused_at_redeem_and_pin(agents)
+    test_pin_refuses_file_that_is_not_there(agents)
+    test_pin_refuses_a_tree_that_moved_under_it(agents)
+    test_pins_refused_on_claim_and_mint_nothing(agents)
+    test_pin_stored_under_the_validated_path(agents)
     test_content_write_directory_refused(agents)
     test_expect_shape_validated(agents)
     test_mcp_noop_touches_clocks(agents)

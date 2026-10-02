@@ -65,6 +65,15 @@ def _check_pins(dest: str, expect_shas: dict | None) -> dict | None:
     """
     if not expect_shas:
         return None
+    # Key every pin by the VALIDATED path, never by the key as given. The
+    # redeem layer looks a request up by the URL segment it was handed
+    # (server/_transfer.py), so a key differing from its cleaned path by so
+    # much as one leading space would be guard-checked and hash-verified
+    # against the right file and then stored where no request can ever
+    # match it - a dead pin, the exact failure this function exists to
+    # prevent. Two raw keys cleaning to one path collapse safely: both
+    # verified against the same bytes, so their pins agree.
+    cleaned: dict[str, str] = {}
     for raw, want in sorted(expect_shas.items()):
         clean, full = _guard_tree_path(dest, str(raw), write=True)
         if not os.path.isfile(full):
@@ -89,7 +98,8 @@ def _check_pins(dest: str, expect_shas: dict | None) -> dict | None:
                 f"expect_shas for {clean!r} is {want!r} but the workspace"
                 f" file hashes to {got} - the tree moved since you read it."
             )
-    return dict(expect_shas)
+        cleaned[clean] = str(want).lower()
+    return cleaned
 
 
 def mint_claim_tickets(

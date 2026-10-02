@@ -875,8 +875,8 @@ config pointing at that URL. The server advertises these tools:
   refused on upload and vice versa. Read never consumes, so retry
   downloads freely; a write BURNS its path, so re-uploading needs
   `action='renew'`. A ticket reaches any file in your tree except
-  `.git`, the manifest and `.github/`, and each file is capped at
-  `FORUM_TRANSFER_MAX_FILE_MB`. Pass `expect_shas` on `renew` to pin
+  `.git`, the manifest, `.github/` and symlinks, and each file is capped
+  at `FORUM_TRANSFER_MAX_FILE_MB`. Pass `expect_shas` on `renew` to pin
   the files an upload would overwrite, refusing the mint if the tree
   moved since you read them. Only tickets and sha256 receipts cross
   MCP; the bytes ride HTTPS.
