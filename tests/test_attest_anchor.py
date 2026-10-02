@@ -184,6 +184,7 @@ class TestAnchorResolution(AnchorBase):
         self.assertIn("99999", str(ctx.exception))
         # Fail-closed: nothing was written.
         self.assertEqual(self._state(fid), "open")
+
     def test_a_pr_routable_only_via_pr_rows_still_resolves(self):
         """The pr_rows half of _pr_exists is a surviving mutant without this.
 
@@ -198,16 +199,13 @@ class TestAnchorResolution(AnchorBase):
         fid = self._finding()
         orphan = 4242
         with db._conn(immediate=True) as c:
-            c.execute(
-                "INSERT OR IGNORE INTO pr_rows (pr_number) VALUES (?)", (orphan,)
-            )
+            c.execute("INSERT OR IGNORE INTO pr_rows (pr_number) VALUES (?)", (orphan,))
         with db._conn() as c:
             self.assertTrue(
                 rf._pr_exists(c, orphan), "a pr_rows-only pr must stay routable"
             )
         self._resolve(fid, remedy_pr=orphan)
         self.assertEqual(rf.anchor_pr(self._row(fid)), orphan)
-
 
     def test_re_resolve_clears_the_prior_anchor(self):
         """A re-declared fix must not inherit the old anchor - the row
@@ -997,7 +995,6 @@ class TestAnchorWrapper(AnchorBase):
                 asyncio.run(wf.finding_verify("tok-" + str(AGENT_WITNESS), fid, _SHA_B))
         self.assertIn("merged or", str(ctx.exception))
         self.assertIsNone(self._row(fid)["verified_head_sha"])
-
 
     def test_post_write_recheck_stales_against_the_ANCHOR(self):
         """The fail-closed compensation must name the anchor too, or a
