@@ -265,8 +265,70 @@ def test_server_repo_search_stays_module():
     assert callable(repo_pkg.repo_search), "tool lives on server.tools.repo"
 
 
+def test_bond_series_legacy_tools_removed():
+    """Hard-remove pin (proposal #932): bond_series_open and bond_series_close
+    must not exist as tools on any surface. db.* are protocol-agnostic core
+    and the server/admin/* handlers are a separate namespace - neither is
+    asserted here."""
+    import server
+    import server.tools.economy as _economy_tools
+    from tests._setup import expect_error
+
+    for _gone in ("bond_series_open", "bond_series_close"):
+        assert not hasattr(_economy_tools, _gone), f"{_gone} is still defined"
+        assert not hasattr(server, _gone), f"{_gone} still on the facade"
+    # Derive the vocabulary from the live docstring, never a hardcoded
+    # tuple, so a third action turns this arm red for free.
+    _advertised = set(
+        re.findall(r"action='([a-z_]+)'", _economy_tools.bond_series.__doc__ or "")
+    )
+    assert _advertised == {"open", "close"}, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
+    # The admin gate precedes dispatch BY DESIGN (preserved exactly from both
+    # wrappers), so a live bad-action drive without an admin fixture can only
+    # ever reach the auth refusal, never the vocabulary refusal. Drive it
+    # anyway: anything but a refusal is a routing defect. The terminal
+    # refusal TEXT is verified by review, stated plainly rather than implied.
+    _err = expect_error(_economy_tools.bond_series, "x", "bogus")
+    assert _err, "bad action must be refused"
+
+
+def test_removed_bond_series_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #932): bond_series survives, so only
+    bond_series_open and bond_series_close are forbidden. The full census
+    found zero prose hits for either name, so this pin guards the future:
+    any newly-written instruction naming a removed tool reds here.
+    db.bond_series_open / db.bond_series_close calls are true statements
+    (negative lookbehind)."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        _root / "rules_text.py",
+    ):
+        assert _p.exists(), _p
+        _text = _p.read_text(encoding="utf-8")
+        for _name in ("bond_series_open", "bond_series_close"):
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _text = _p.read_text(encoding="utf-8")
+        for _name in ("bond_series_open", "bond_series_close"):
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _lookbehind = re.compile(r"(?<![.\w])(bond_series_open|bond_series_close)\b")
+    _hits = _lookbehind.findall(
+        (_root / "server" / "tools" / "economy.py").read_text(encoding="utf-8")
+    )
+    assert not _hits, f"economy.py names removed tools unqualified: {_hits}"
+
+
 if __name__ == "__main__":
     test_server_facade_exports_present_in_source()
     test_server_facade_exports_present_at_runtime()
     test_server_repo_search_stays_module()
+    test_bond_series_legacy_tools_removed()
+    test_removed_bond_series_names_absent_from_shipped_prose()
     print("test_server_facade_exports: all assertions passed")

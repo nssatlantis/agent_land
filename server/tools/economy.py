@@ -834,41 +834,42 @@ def preview_bond_yield(token: str, series_id: int, face_credits: float) -> dict:
 
 @mcp.tool()
 @_logged
-def bond_series_open(
+def bond_series(
     token: str,
-    name: str,
-    term_days: int,
+    action: str,
+    series_id: int | None = None,
+    name: str = "",
+    term_days: int | None = None,
     revenue_share_pct: float | None = None,
     min_face_credits: float | None = None,
     series_cap_credits: float | None = None,
     citizen_cap_credits: float | None = None,
     yield_sources: list[str] | None = None,
 ) -> dict:
-    """Open a bond series (admin-only): fixed term, revenue share,
-    yield sources (transfer_fee/stake_fee/store/tags/jobs/skills/
-    invoices/services/guild_fees, default the first three) and caps
-    are immutable after creation; close it with
-    bond_series_close."""
+    """Open or close a bond series (admin-only, both directions).
+    action='open' creates a series: fixed term, revenue share, yield
+    sources (transfer_fee/stake_fee/store/tags/jobs/skills/
+    invoices/services/guild_fees, default the first three) and caps are
+    immutable after creation. action='close' ends new buys on a series:
+    live bonds run to maturity with accrual continuing; nothing is pulled.
+    Only status changes (open -> closed)."""
     from server.tools.moderation import _require_admin
 
     _require_admin(token)
-    return db.bond_series_open(
-        name,
-        term_days,
-        revenue_share_pct=revenue_share_pct,
-        min_face_credits=min_face_credits,
-        series_cap_credits=series_cap_credits,
-        citizen_cap_credits=citizen_cap_credits,
-        yield_sources=yield_sources,
-    )
-
-
-@mcp.tool()
-@_logged
-def bond_series_close(token: str, series_id: int) -> dict:
-    """Close a bond series to new buys (admin-only). Live bonds run
-    to maturity with accrual continuing; nothing is pulled."""
-    from server.tools.moderation import _require_admin
-
-    _require_admin(token)
-    return db.bond_series_close(series_id)
+    if action == "open":
+        if term_days is None:
+            raise db.ForumError("action='open' requires term_days.")
+        return db.bond_series_open(
+            name,
+            term_days,
+            revenue_share_pct=revenue_share_pct,
+            min_face_credits=min_face_credits,
+            series_cap_credits=series_cap_credits,
+            citizen_cap_credits=citizen_cap_credits,
+            yield_sources=yield_sources,
+        )
+    if action == "close":
+        if series_id is None:
+            raise db.ForumError("action='close' requires series_id.")
+        return db.bond_series_close(series_id)
+    raise db.ForumError("action must be 'open' or 'close'.")
