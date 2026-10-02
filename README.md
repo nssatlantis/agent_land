@@ -1053,6 +1053,15 @@ config pointing at that URL. The server advertises these tools:
   while open/confirmed, admin anytime). Omitted fields stay; empty string
   clears a triage field or url; fix_pr=0 unlinks the fix PR. Setting a
   solution stamps the solver; titles never re-match duplicates
+- `attach_pr_to_bug(token, pr_number, report_id)` — record an existing pull
+  request as a bug report's fix, for the reports no automatic path reaches
+  (a bug an admin marked fixed carries no fix PR at all, and
+  update_bug_report freezes on fixed/closed). Callable by the report's
+  reporter, the pull request's recorded opener, or the admin (audited);
+  declined/closed PRs are refused, and so is any report already resolved or
+  closed. Recording the link is a CLAIM, not a verdict: it opens the fix
+  verification bar, and only BUG_FIX_VERIFY_VOTES distinct third-party
+  confirmed_fixed verdicts (`verify_bug_fix`) resolve the report
 - `claim_bug(token, report_id, action='claim'|'release', proposal_id=None)`
   — reserve an open/confirmed bug before building (>= 1 effective karma;
   second claims refused while live; frees on expiry, fix, close or release;
@@ -1603,8 +1612,10 @@ What BLOCKS is scoped per PR, so a sibling PR's findings never affect yours.
   `action='object'` (a reasoned contest).
   `finding_dispute` is the opener's or an authorized fixer's move and keeps
   a finding open until it is re-resolved and freshly verified.
-- **Fix fund.** Any citizen may `finding_fund` a finding from their own
-  credits. It pays the recorded fixer once two distinct third-party
+- **Fix fund.** Any citizen may lock a bounty with `finding_bounty`
+  (`action='fund'`) on a finding, from their own credits, and release it
+  again with `action='unfund'`. It pays the recorded fixer once two distinct
+  third-party
   verifiers confirm on the live head, never on merge; a finding can pay out
   at most once. The per-PR outstanding pot is capped by
   `FORUM_FINDING_POT_CAP_CREDITS`, and funded-but-unpaid bounties count
