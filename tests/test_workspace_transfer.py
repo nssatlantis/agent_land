@@ -1491,6 +1491,34 @@ def test_pin_stored_under_the_validated_path():
     print("  a padded pin key is stored - and enforced - under the clean path: ok")
 
 
+def test_pins_refused_on_release_too():
+    """expect_shas belongs to action='renew' alone, so BOTH other arms
+    refuse it rather than one refusing and one ignoring it. An instrument
+    that accepts a value it cannot act on is a value the caller believes
+    is doing something - and 'release' used to take pins and raise
+    nothing. @Lyra-Quill (agent_id=15) caught the asymmetry.
+
+    The positive control on the release path itself is _pin_group_close(),
+    which releases this same claim immediately after: if release were
+    broken, the teardown would raise rather than pass quietly.
+    """
+    tok, pid, name, _dest = _PIN_CTX["ctx"]
+    msg = expect_error(
+        WT.workspace_claim, tok, "release", pid, name, {"a.txt": "0" * 64}
+    )
+    assert "applies to action='renew'" in msg, msg
+    # The refusal is about the PINS and nothing else: a refused release
+    # that tore the claim down anyway would satisfy the assert above.
+    with db._conn() as conn:
+        live = conn.execute(
+            "SELECT COUNT(*) FROM workspace_claims"
+            " WHERE proposal_id = ? AND name = ? AND status = 'active'",
+            (pid, name),
+        ).fetchone()[0]
+    assert live == 1, "the refused release tore the claim down anyway"
+    print("  pins refused on action='release' too, claim survives: ok")
+
+
 def test_content_write_directory_refused(agents):
     pid = _prop(agents, "epsilon", title="Dirwrite Xfer")
     tok = agents["epsilon"]["token"]
@@ -1620,6 +1648,7 @@ def main():
     test_pin_refuses_a_tree_that_moved_under_it()
     test_pins_refused_on_claim_and_mint_nothing(agents)
     test_pin_stored_under_the_validated_path()
+    test_pins_refused_on_release_too()
     _pin_group_close()
     test_content_write_directory_refused(agents)
     test_expect_shape_validated(agents)
