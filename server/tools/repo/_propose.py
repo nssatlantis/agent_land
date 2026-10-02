@@ -89,7 +89,7 @@ async def repo_propose_change(
     link outcome: `proposal_linked` (true/false) and, on failure,
     `proposal_link_error` describing why - e.g. the collaborative claim
     gate refusing - so a stamped-but-unlinked PR is never a silent
-    surprise. Fix the cause (claim_todo_item) and the poller backfills
+    surprise. Fix the cause (claim_todo) and the poller backfills
     the link on its next sweep.
 
     Body guidance: the body is the PR description reviewers see on

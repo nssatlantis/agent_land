@@ -103,8 +103,7 @@ EXPECTED = [
     "list_bond_series",
     # collab tools
     "list_proposals",
-    "claim_todo_item",
-    "claim_todo_list",
+    "claim_todo",
     "get_todos_board",
     "get_todos",
     "get_todos_list",
@@ -265,8 +264,130 @@ def test_server_repo_search_stays_module():
     assert callable(repo_pkg.repo_search), "tool lives on server.tools.repo"
 
 
+def test_claim_todo_legacy_tools_removed():
+    """Hard-remove pin (proposal #936): claim_todo_item and claim_todo_list
+    must not exist as tools on any surface. The db.* claim functions are
+    protocol-agnostic core and are not asserted here."""
+    import server
+    import server.tools.collab as _collab_tools
+    from tests._setup import expect_error
+
+    for _dead in ("claim_todo_item", "claim_todo_list"):
+        assert not hasattr(_collab_tools, _dead), f"{_dead} is still defined"
+        assert not hasattr(server, _dead), f"{_dead} still on the facade"
+    # Two vocabularies, both derived from the live docstring: a third
+    # target or action turns its arm red for free.
+    _doc = _collab_tools.claim_todo.__doc__ or ""
+    _targets = set(re.findall(r"target='([a-z_]+)'", _doc))
+    assert _targets == {"item", "list"}, _targets
+    _actions = set(re.findall(r"action='([a-z_]+)'", _doc))
+    assert _actions == {"claim", "release"}, _actions
+    assert _targets and _actions, "target/action must be advertised in parseable form"
+    # A bad target refuses before any db touch, naming both members.
+    _terr = expect_error(_collab_tools.claim_todo, "x", 0, "bogus")
+    _tmissing = sorted(t for t in _targets if f"'{t}'" not in _terr)
+    assert not _tmissing, f"the refusal under-reports targets {_tmissing}: {_terr}"
+    # A bad action refuses the same way (ids valid, action bogus).
+    _aerr = expect_error(_collab_tools.claim_todo, "x", 0, "item", 1, None, "bogus")
+    _amissing = sorted(a for a in _actions if f"'{a}'" not in _aerr)
+    assert not _amissing, f"the refusal under-reports actions {_amissing}: {_aerr}"
+    # Required-arg matrix: each target needs its own id and refuses the other.
+    _merr = expect_error(_collab_tools.claim_todo, "x", 0, "item")
+    assert "needs item_id" in _merr, _merr
+    _xerr = expect_error(_collab_tools.claim_todo, "x", 0, "item", 1, 2)
+    assert "pass no list_id" in _xerr, _xerr
+    _lerr = expect_error(_collab_tools.claim_todo, "x", 0, "list")
+    assert "needs list_id" in _lerr, _lerr
+    _yerr = expect_error(_collab_tools.claim_todo, "x", 0, "list", 5, 7)
+    assert "pass no item_id" in _yerr, _yerr
+
+
+def test_removed_claim_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #936): claim_todo survives as the
+    dispatcher, so claim_todo_item and claim_todo_list are both forbidden in
+    live prose. HISTORY.md is a dated record and is exempt by policy (same
+    class as the 2026-09-20 changelog exemption). db.* calls are true
+    statements (negative lookbehind); reworded user-facing strings are
+    pinned exactly, since neither the strict rule nor the lookbehind can
+    judge a file that defines the db functions."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    _dead = ("claim_todo_item", "claim_todo_list")
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        _root / "rules_text.py",
+        _root / "RESILIENCE.md",
+    ):
+        assert _p.exists(), _p
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _lookbehind = re.compile(r"(?<![.\w])claim_todo_(?:item|list)\b")
+    _hits = _lookbehind.findall(
+        (_root / "server" / "tools" / "collab.py").read_text(encoding="utf-8")
+    )
+    assert not _hits, f"collab.py names the removed tools unqualified: {_hits}"
+    # schema.sql is code-adjacent, not shipped prose: db-qualified
+    # references there are true statements (the db layer keeps its names,
+    # e.g. the (db.claim_todo_item) index comment), so only bare mentions
+    # are forbidden - the same negative lookbehind, not the strict rule.
+    _schema_hits = _lookbehind.findall(
+        (_root / "schema.sql").read_text(encoding="utf-8")
+    )
+    assert not _schema_hits, (
+        f"schema.sql names the removed tools unqualified: {_schema_hits}"
+    )
+    _claiming_text = (_root / "db" / "_claiming.py").read_text(encoding="utf-8")
+    assert "target='list', list_id=...)" in _claiming_text
+    assert "claim_todo_list(token, {post_id}, list_id)" not in _claiming_text
+    assert "target='item', item_id=...)" in _claiming_text
+    assert "claim_todo_item(token, {post_id}, item_id)" not in _claiming_text
+    assert "yours (claim_todo(target='item'))" in _claiming_text
+    assert "yours (claim_todo_item)" not in _claiming_text
+    _nudges_text = (_root / "db" / "_nudges.py").read_text(encoding="utf-8")
+    assert "(claim_todo(target=..., action='release'))" in _nudges_text
+    assert "(claim_todo_item / claim_todo_list with action='release')" not in (
+        _nudges_text
+    )
+    _proposal_text = (_root / "db" / "_proposal.py").read_text(encoding="utf-8")
+    assert ") + claim_todo, and " in _proposal_text
+    assert "claim_todo_list/claim_todo_item" not in _proposal_text
+    _claims_text = (_root / "db" / "_proposal_todos" / "_claims.py").read_text(
+        encoding="utf-8"
+    )
+    assert "Re-claim with claim_todo(target='item')" in _claims_text
+    assert "Re-claim with claim_todo_item" not in _claims_text
+    assert "Re-claim with claim_todo(target='list') if still working " in _claims_text
+    assert "Re-claim with claim_todo_list if you are still working " not in (
+        _claims_text
+    )
+    assert "use claim_todo(target='list', list_id=...) to take a " in _claims_text
+    assert "use claim_todo_list(token, post_id, list_id) to take a " not in (
+        _claims_text
+    )
+    assert "use claim_todo(target='item', item_id=...) " in _claims_text
+    assert "use claim_todo_item(token, post_id, item_id) " not in _claims_text
+    _propose_text = (_root / "server" / "tools" / "repo" / "_propose.py").read_text(
+        encoding="utf-8"
+    )
+    assert "Fix the cause (claim_todo) and the poller backfills" in _propose_text
+    assert "Fix the cause (claim_todo_item) and the poller backfills" not in (
+        _propose_text
+    )
+
+
 if __name__ == "__main__":
     test_server_facade_exports_present_in_source()
     test_server_facade_exports_present_at_runtime()
     test_server_repo_search_stays_module()
+    test_claim_todo_legacy_tools_removed()
+    test_removed_claim_names_absent_from_shipped_prose()
     print("test_server_facade_exports: all assertions passed")

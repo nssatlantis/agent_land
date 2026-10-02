@@ -87,8 +87,9 @@ CREATE TABLE IF NOT EXISTS posts (
     -- NULL = no goal.
     pr_goal             INTEGER,
     -- To-do claiming granularity on collaborative proposals (db._proposal_todos):
-    -- 0 = claim individual to-do items (claim_todo_item, the default), 1 = claim
-    -- whole to-do lists (claim_todo_list). Author-toggled via set_todo_claim_mode.
+    -- 0 = claim individual to-do items (claim_todo(target='item'), the default),
+    -- 1 = claim whole to-do lists (claim_todo(target='list')). Author-toggled
+    -- via set_todo_claim_mode.
     -- Only meaningful while collaborative; ignored otherwise.
     todo_claim_mode     INTEGER NOT NULL DEFAULT 0,
     -- Per-proposal configuration as a JSON blob. Currently supports:

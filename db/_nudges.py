@@ -469,7 +469,7 @@ def _claim_ship_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
             "with repo_propose_change and pass todo_item_id=<item_id> (or "
             "link_pr_to_todo_item for an already-open PR) so the board "
             "auto-checks it when the PR merges; or release the claim "
-            "(claim_todo_item / claim_todo_list with action='release') "
+            "(claim_todo(target=..., action='release')) "
             "if you're not starting. "
             "get_todos(post_id) shows the board."
         ),
