@@ -726,6 +726,8 @@ from db._review_findings import (  # noqa: F401,E402
     refund_dying_finding_bounties,
     resolved_finding_candidates,
     reviewer_blockers,
+    unresolved_findings_by_pr,
+    unresolved_findings_for_pr,
     verifiable_by_me,
     verified_anchor_pr,
     verifier_floor_met,

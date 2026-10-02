@@ -560,9 +560,40 @@ def test_both_renderers_agree_on_the_denominators():
     the admin process.  That makes drift possible, so the invariant is PINNED
     instead: for the same input, both render the same 'n/q' pairs.  This is
     the #B17 shape (one fact, two renderers, one silently wrong) closed with a
-    test rather than with an architectural promise."""
+    test rather than with an architectural promise.
+
+    One limit of a parity pin, learned here: it can only catch the two
+    renderers DISAGREEING, never agreeing wrongly.  Both copies once gated
+    the second bar on `confirmed or disputed`, so a merged-but-unverified
+    0/3 round rendered no bar on either surface while this test stayed
+    green - the fixture only ever carried verdicts.  And a fixture only
+    exercises the states it carries: None was the negative case, and NO
+    CALLER SUPPLIES None, so that arm stayed green through a regression that
+    announced a merged fix on every report that has none.  So the fixture now
+    carries every state production really sends - an opened round with no
+    verdicts, and a never-fixed report - and each renderer is asserted
+    separately rather than only against its twin.
+
+    The third lesson is the one that cost a review round, and it is about the
+    CENSUS rather than the pin: fixing the never-fixed population taught the
+    fixture two states and stopped.  The gate moved from `quorum` (always
+    true) to `state`, which is TRUE for a bug whose fix PR is still OPEN -
+    because fix_pr is stamped at PR-open and _fix_round_state's only
+    merge-adjacent input is that PR NUMBER.  So the new gate traded one false
+    "fix merged" for another and the pin stayed green, because the fixture
+    held a merged fix and a never-fixed report and no IN-FLIGHT bug - which
+    is the normal condition of every bug being worked on.  Three populations,
+    not two: the same lesson as the _JOBS_COLS census, wearing behaviour.
+
+    The receipt below is what makes that checkable rather than asserted in
+    prose: `in_flight` and `unfilled` are asserted EQUAL, which proves no
+    fixture built over the round dict can ever discriminate a merged fix from
+    an open one - so the gate has to read something outside the round.  It is
+    also a tripwire in the right direction: if a future change gives the round
+    dict a real merged bit, these two stop being equal and the assert fires
+    with instructions to gate on that instead."""
     from server.admin._bugs import _bug_confidence_bar as admin_bar
-    from viewer._bugs import _two_bars
+    from viewer._bugs import _fix_round_cell, _two_bars
 
     rnd = {
         "quorum": 3,
@@ -572,20 +603,146 @@ def test_both_renderers_agree_on_the_denominators():
         "pending": 2,
         "state": "pending",
     }
+    # A MERGED fix nobody has judged yet: the state both renderers used to
+    # drop entirely, and the one this fixture did not carry.
+    unfilled = {
+        "quorum": 3,
+        "reopen_quorum": 2,
+        "confirmed": 0,
+        "disputed": 0,
+        "pending": 3,
+        "state": "pending",
+    }
+    # The IN-FLIGHT bug: fix_pr recorded at PR-open, PR still open, zero
+    # verdicts.  bug_fix_round cannot tell this apart from `unfilled`, and
+    # the equality assert below is the proof - so it is literally the same
+    # dict, and only the report's own status differs.
+    in_flight = dict(unfilled)
+    # A report with no fix merged.  bug_fix_round sets quorum for EVERY
+    # report, so this shape carries one too - it is what production supplies.
+    never_fixed = {
+        "quorum": 3,
+        "reopen_quorum": 2,
+        "confirmed": 0,
+        "disputed": 0,
+        "pending": 3,
+        "state": "not_fixed",
+    }
+    # A FULLY-VERIFIED report: the fourth population, and the one that
+    # matters most because it is where the LIFECYCLE ENDS.  `fixed` is
+    # transient - `_apply_fix_verdict` writes status='resolved' in the same
+    # transaction that makes the round state `resolved` - so a gate reading
+    # `== "fixed"` drops the bar here, on every bug whose fix was verified.
+    # The status is a SET, and this row is what pins the second member.
+    verified = {
+        "quorum": 3,
+        "reopen_quorum": 2,
+        "confirmed": 3,
+        "disputed": 0,
+        "pending": 0,
+        "state": "resolved",
+    }
+    # THE RECEIPT.  If this ever fails, the round dict grew a merged signal
+    # and the renderers should gate on that rather than on report status.
+    assert in_flight == unfilled, (
+        "the in-flight and merged-unverified rounds are no longer "
+        f"indistinguishable - gate on the new signal instead: "
+        f"{in_flight} vs {unfilled}"
+    )
     for conf in (0, 2, 3, 5):
-        for round_ in (None, rnd):
-            viewer_html = _two_bars(conf, 3, round_)
-            admin_html = admin_bar(conf, 3, round_)
+        for status, round_ in (
+            ("confirmed", None),
+            ("fixed", rnd),
+            ("fixed", unfilled),
+            ("confirmed", in_flight),
+            ("confirmed", never_fixed),
+            ("resolved", verified),
+        ):
+            viewer_html = _two_bars(conf, 3, round_, status)
+            admin_html = admin_bar(conf, 3, round_, status)
             assert viewer_html == admin_html, (
-                f"renderers disagree at confidence={conf} round={round_}:\n"
-                f"viewer: {viewer_html}\nadmin:  {admin_html}"
+                f"renderers disagree at confidence={conf} status={status} "
+                f"round={round_}:\nviewer: {viewer_html}\nadmin:  {admin_html}"
             )
     # And the second bar actually appears once a round has started, with the
     # real numbers - a bar that renders nothing is a silent regression.
-    assert "fix verified: 1/3" in _two_bars(3, 3, rnd)
-    assert "1 of 2 said not fixed" in _two_bars(3, 3, rnd)
-    assert "fix verified" not in _two_bars(3, 3, None), (
-        "an unopened second bar must not render a misleading empty one"
+    assert "fix verified: 1/3" in _two_bars(3, 3, rnd, "fixed")
+    assert "1 of 2 said not fixed" in _two_bars(3, 3, rnd, "fixed")
+    # A MERGED open round is an OBLIGATION, not an absence, so both surfaces
+    # must render it.  Asserted on each renderer separately because parity is
+    # exactly what hid this in the first place.
+    for render, name in ((_two_bars, "viewer"), (admin_bar, "admin")):
+        empty_html = render(3, 3, unfilled, "fixed")
+        assert "awaiting verdicts: 0/3" in empty_html, (
+            f"{name} drops the fix bar on a merged-but-unverified round: {empty_html}"
+        )
+    # ...and it must not borrow the started round's label, or 0/3 reads as
+    # "zero of three found the fix works" instead of "nobody has checked yet".
+    assert "fix verified: 0/3" not in _two_bars(3, 3, unfilled, "fixed"), (
+        "an unfilled round is a missing result, not a negative one"
+    )
+    # THE IN-FLIGHT ARM, and the one that reds on the state-only gate.  Same
+    # round dict as the arm above; the ONLY difference is that the fix PR has
+    # not merged, so nothing here may say a fix merged.
+    for render, name in ((_two_bars, "viewer"), (admin_bar, "admin")):
+        inflight_html = render(3, 3, in_flight, "confirmed")
+        assert "fix merged" not in inflight_html, (
+            f"{name} claims a fix merged while the PR is still open: {inflight_html}"
+        )
+        assert "awaiting verdicts" not in inflight_html, (
+            f"{name} renders a fix bar for an unmerged fix: {inflight_html}"
+        )
+    for render, name in ((_two_bars, "viewer"), (admin_bar, "admin")):
+        blank_html = render(3, 3, never_fixed, "confirmed")
+        assert "awaiting verdicts" not in blank_html, (
+            f"{name} claims a fix merged on a report that has none: {blank_html}"
+        )
+        assert "fix verified" not in blank_html, (
+            f"{name} renders a fix bar for state=not_fixed: {blank_html}"
+        )
+    # THE TERMINUS, and the positive control the three absence arms above
+    # never had.  Those arms all assert a bar is ABSENT, so every one of
+    # them is satisfied by a gate that never fires - which is exactly how a
+    # gate can drop the bar from a 3/3-verified bug and leave the suite
+    # green.  This one asserts the bar is PRESENT, and it carries the
+    # `resolved` status that `fixed` stops being the instant the round
+    # completes.
+    for render, name in ((_two_bars, "viewer"), (admin_bar, "admin")):
+        done_html = render(3, 3, verified, "resolved")
+        assert "fix verified: 3/3" in done_html, (
+            f"{name} drops the fix bar on a fully-verified report: {done_html}"
+        )
+    # The detail cell is a THIRD renderer with its own gate, and it is the
+    # one that stated the opposite of the truth: on a 3/3 bug it printed
+    # "no fix has merged yet".  Both of its branches are pinned here, in
+    # each direction, because neither was pinned in either direction before.
+    resolved_cell = _fix_round_cell({"status": "resolved", "fix_round": verified})
+    assert "resolved - 3/3 third parties confirmed the fix" in resolved_cell, (
+        f"the detail cell drops a verified fix: {resolved_cell}"
+    )
+    assert "no fix has merged yet" not in resolved_cell, (
+        f"the detail cell denies a merged fix on a 3/3 bug: {resolved_cell}"
+    )
+    never_cell = _fix_round_cell({"status": "confirmed", "fix_round": never_fixed})
+    assert "no fix has merged yet" in never_cell, (
+        f"the detail cell drops the never-fixed branch: {never_cell}"
+    )
+    # A status the caller forgot is the fail-closed direction: no second bar
+    # rather than a confident one.  Axiom's #107 point: passing "" EXPLICITLY
+    # pins empty-string handling, not the DEFAULT, so the two-file default
+    # mutation survived 25/25.  This arm OMITS the argument, and the line
+    # under it is the positive control that keeps it from being vacuous -
+    # without it, "no bar" would also be satisfied by a gate that never
+    # fires.
+    assert "fix verified" not in _two_bars(3, 3, rnd), (
+        "the DEFAULT report status must render no fix bar (fail closed)"
+    )
+    assert "fix verified" not in admin_bar(3, 3, rnd), (
+        "the DEFAULT report status must render no fix bar (fail closed)"
+    )
+    assert "fix verified: 1/3" in _two_bars(3, 3, rnd, "fixed"), (
+        "CONTROL: the arm above is vacuous unless an explicit status DOES "
+        "render the bar"
     )
     # A disabled gate renders nothing rather than 0/0.
     assert _two_bars(0, 0, None) == ""

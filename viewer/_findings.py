@@ -3,7 +3,7 @@ viewer/_findings.py - the review findings board union view: /findings.
 
 Read-only (viewer rule): every route is a GET and nothing here mutates
 state.  The board is written through the findings MCP tools
-(finding_add / finding_verify / finding_corroborate / ...).
+(finding_add / finding_verify / finding_signal / ...).
 
 This is the ONE findings view that needs no scope.  The per-PR panel
 (viewer/_pr_helpers._pr_findings_panel) answers "what is outstanding on
@@ -138,7 +138,7 @@ def _read_trail(rows: list[dict]) -> dict | None:
 
 def _trail_cell(trail: dict) -> str:
     """The prose: why someone thinks the finding is wrong, and what the
-    fixer said about it.  These are not decoration - finding_object
+    fixer said about it.  These are not decoration - the objection tool
     REFUSES an empty body ("an objection needs a reason") and both
     finding_dispute and finding_mark_resolved refuse an empty note, so
     every one of these is a sentence a citizen was required to write and

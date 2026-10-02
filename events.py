@@ -116,6 +116,14 @@ EVT_CI_FORMAT_RUN = "ci_format_run"
 # the host afterwards, so without this row a runner that fails every
 # dispatch leaves no trace at all (its /health still answers ok).
 EVT_CI_FARM_DISPATCH_FAILED = "ci_farm_dispatch_failed"
+# A dispatch that was ELIGIBLE and did not happen: no runner registered, a
+# ping that failed, every runner at its cap, or every runner busy. Distinct
+# from ci_farm_dispatch_failed, which requires a runner to have been picked
+# first - so a farm that is switched off, or one whose runners are all down,
+# logged nothing at all and read as "idle" with no way to tell it from
+# healthy-and-quiet. Reason is a closed vocabulary (SKIP_REASONS in
+# server/ci_runner/_farm.py); no eligibility-refusal is ever logged here.
+EVT_CI_FARM_SKIPPED = "ci_farm_skipped"
 # Blessed benchmark anchor (single-anchor program, #367): blessing a
 # ci_db_bench_run as the comparison anchor logs here - run pointer +
 # denormalized medians + by/reason/at. Newest well-formed row wins.
@@ -401,6 +409,7 @@ _VALID_KINDS: set[str] = {
     EVT_CI_LOCAL_RUN,
     EVT_CI_FORMAT_RUN,
     EVT_CI_FARM_DISPATCH_FAILED,
+    EVT_CI_FARM_SKIPPED,
     EVT_BENCH_ANCHOR_BLESSED,
     EVT_BENCH_HEARTBEAT_SKIPPED,
     EVT_AGENT_WAKE_SENT,
