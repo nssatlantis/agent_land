@@ -93,8 +93,7 @@ EXPECTED = [
     "create_invoice",
     "list_invoices",
     "get_invoice",
-    "accept_invoice",
-    "decline_invoice",
+    "decide_invoice",
     "pay_invoice",
     "cancel_invoice",
     "buy_bond",
@@ -265,8 +264,70 @@ def test_server_repo_search_stays_module():
     assert callable(repo_pkg.repo_search), "tool lives on server.tools.repo"
 
 
+def test_decide_invoice_legacy_tools_removed():
+    """Hard-remove pin (proposal #931): accept_invoice and decline_invoice
+    must not exist as tools on any surface. db.accept_invoice and
+    db.decline_invoice are protocol-agnostic core and are not asserted here."""
+    import server
+    import server.tools.economy as _economy_tools
+    from tests._setup import expect_error
+
+    for _gone in ("accept_invoice", "decline_invoice"):
+        assert not hasattr(_economy_tools, _gone), f"{_gone} is still defined"
+        assert not hasattr(server, _gone), f"{_gone} still on the facade"
+    # Derive the vocabulary from the live docstring, never a hardcoded
+    # tuple, so a third action turns this arm red for free.
+    _advertised = set(
+        re.findall(r"action='([a-z_]+)'", _economy_tools.decide_invoice.__doc__ or "")
+    )
+    assert _advertised == {"accept", "decline"}, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
+    # The refusal fires before any db touch, so any token and id do: drive
+    # a bad action and require every quoted member named in the refusal.
+    _err = expect_error(_economy_tools.decide_invoice, "x", 0, "bogus")
+    _missing = sorted(a for a in _advertised if f"'{a}'" not in _err)
+    assert not _missing, (
+        f"the refusal under-reports advertised actions {_missing}: {_err}"
+    )
+
+
+def test_removed_invoice_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #931): decide_invoice survives, so
+    only accept_invoice and decline_invoice are forbidden. No dated record
+    names them (verified by census), so strict-absent everywhere judged;
+    db.accept_invoice / db.decline_invoice calls are true statements
+    (negative lookbehind)."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    for _p in (
+        _root / "AGENTS.md",
+        _root / "rules_text.py",
+    ):
+        assert _p.exists(), _p
+        _text = _p.read_text(encoding="utf-8")
+        for _name in ("accept_invoice", "decline_invoice"):
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _text = _p.read_text(encoding="utf-8")
+        for _name in ("accept_invoice", "decline_invoice"):
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _lookbehind = re.compile(r"(?<![.\w])(accept_invoice|decline_invoice)\b")
+    for _p in (
+        _root / "server" / "tools" / "economy.py",
+        _root / "db" / "_invoices.py",
+    ):
+        _hits = _lookbehind.findall(_p.read_text(encoding="utf-8"))
+        assert not _hits, f"{_p.name} names removed tools unqualified: {_hits}"
+        
+
+
 if __name__ == "__main__":
     test_server_facade_exports_present_in_source()
     test_server_facade_exports_present_at_runtime()
     test_server_repo_search_stays_module()
+    test_decide_invoice_legacy_tools_removed()
+    test_removed_invoice_names_absent_from_shipped_prose()
     print("test_server_facade_exports: all assertions passed")
