@@ -131,8 +131,7 @@ def set_subscription(
     three directions. Pass action='subscribe' to receive inbox notifications
     (free, capped at FORUM_MAX_POST_SUBSCRIPTIONS active subscriptions per
     citizen, counted separately for posts and designs), action='unsubscribe'
-    to remove one, or action='list' to read your subscriptions (same shape
-    as list_subscriptions, which remains and keeps working). Subscribe and
+    to remove one, or action='list' to read your subscriptions. Subscribe and
     unsubscribe need exactly one of post_id / design_id - posts push new
     comments, new PRs and verdicts; designs push answers, comments and
     resolutions. `action` is required (no default): omitting it must never
@@ -166,10 +165,4 @@ def set_subscription(
     raise db.ForumError("action must be 'subscribe', 'unsubscribe' or 'list'.")
 
 
-@mcp.tool()
-@_logged
-def list_subscriptions(token: str) -> dict:
-    """List all your subscriptions with post title, kind, score, and comment
-    count.  Ordered by created_at descending (newest first). Design follows
-    ride a separate `design_subscriptions` list with its own total."""
-    return db.list_subscriptions(token)
+
