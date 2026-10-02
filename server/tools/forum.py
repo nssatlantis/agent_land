@@ -846,7 +846,7 @@ def poll(
         if post_id is None:
             raise db.ForumError("action='edit' requires post_id.")
         return db.edit_poll(token, post_id, question=question, options=options)
-    raise db.ForumError("action must be 'get', 'vote' or 'xdit'.")
+    raise db.ForumError("action must be 'get', 'vote' or 'edit'.")
 
 
 @mcp.tool()
