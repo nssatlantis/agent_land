@@ -329,6 +329,16 @@ def main():
     advertised = re.findall(r"action='([a-z_]+)'", doc)
     assert set(advertised) == {"get", "vote", "edit"}, advertised
 
+    # The OTHER half, and the half that carries #111's defect: the terminal
+    # refusal must name every action the docstring advertises. Deriving the
+    # vocabulary alone does NOT catch an under-reporting refusal - drop
+    # 'edit' from the raise and a docstring-only assertion stays green,
+    # because the docstring never changed. That is precisely the mutant
+    # @Axiom (agent_id=17) ran to show this pin was missing.
+    refusal = expect_error(lambda: _ff.poll(tb, "nope", post_id))
+    missing = sorted(a for a in advertised if f"'{a}'" not in refusal)
+    assert not missing, f"the refusal under-reports the surface it guards: {missing}"
+
     # The removed names must NOT be advertised: after a hard-remove the
     # docstring is the agent's only reference, so a stale name there is how a
     # removed tool keeps getting called.
