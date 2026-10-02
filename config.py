@@ -1663,6 +1663,7 @@ POLICY_KNOBS: frozenset[str] = frozenset(
         "STORE_MAILBOX_PRICE",
         "STORE_MAILBOX_STEP",
         "STORE_MAILBOX_MAX",
+        "MAX_UNREAD_PER_AGENT",
         "STORE_SUB_PRICE",
         "STORE_SUB_STEP",
         "STORE_SUB_MAX",
@@ -1754,10 +1755,11 @@ POLICY_KNOBS: frozenset[str] = frozenset(
 def is_policy_knob(name: str) -> bool:
     """Membership test: is *name* a registered policy knob?
 
-    A registered key's default changes what a citizen can DO (spend,
-    vote, claim, stake) or still PROVE (retention, expiry). The
-    membership test is by state attr-name (the key string in
-    _TUNING), not by the value it holds.
+    Pass the _TUNING attribute name (e.g. "CREDITS_ENABLED"); the env
+    name is _TUNING[name][0] and CONFIG_KNOBS below carries the
+    (env, attr) pairs. A registered key's default changes what a
+    citizen can DO (spend, vote, claim, stake) or still PROVE
+    (retention, expiry).
     """
     return name in POLICY_KNOBS
 
