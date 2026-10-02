@@ -375,6 +375,7 @@ def finding_withdraw(
     conn: sqlite3.Connection,
     finding_id: int,
     actor_id: int,
+    note: str = "",
 ) -> dict:
     """Finder-only retraction of an open finding.  Terminal: the row is
     recorded as withdrawn, never deleted.  Karma-neutral, annotation-level.
@@ -385,10 +386,13 @@ def finding_withdraw(
         raise ForumError("only the finder may withdraw their own finding")
     if row["state"] != "open":
         raise ForumError(f"only open findings can be withdrawn (state: {row['state']})")
+    if note:
+        _note(conn, finding_id, actor_id, note)
     conn.execute(
         "UPDATE review_findings SET state = 'withdrawn' WHERE id = ?",
         (finding_id,),
     )
+    refund_dying_finding_bounties(conn, [finding_id])
     log_event(
         EVT_FINDING_WITHDRAWN,
         actor_agent_id=actor_id,

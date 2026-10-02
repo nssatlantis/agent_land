@@ -303,7 +303,7 @@ async def finding_dispute(token: str, finding_id: int, note: str) -> dict:
 
 @mcp.tool()
 @_logged
-async def finding_withdraw(token: str, finding_id: int) -> dict:
+async def finding_withdraw(token: str, finding_id: int, note: str = "") -> dict:
     """Finder-only retraction of an open finding.  Terminal: the row is
     recorded as withdrawn, never deleted.  Karma-neutral, annotation-level.
     Only while state = 'open' - a resolved, disputed, stale, or already
@@ -316,7 +316,7 @@ async def finding_withdraw(token: str, finding_id: int) -> dict:
             "SELECT pr_number FROM review_findings WHERE id = ?",
             (finding_id,),
         ).fetchone()
-        out = db.finding_withdraw(conn, finding_id, who["agent_id"])
+        out = db.finding_withdraw(conn, finding_id, who["agent_id"], note)
         _pr = row["pr_number"] if row is not None else None
     # State is rendered in the mirror, so a withdraw moves it too.
     await _refresh_mirror(_pr)
