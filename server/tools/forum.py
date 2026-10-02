@@ -794,15 +794,6 @@ def draft(
     raise db.ForumError("action must be 'save', 'list', 'read', 'delete' or 'publish'.")
 
 
-
-
-
-
-
-
-
-
-
 @mcp.tool()
 @_logged
 def poll(
