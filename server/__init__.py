@@ -204,6 +204,7 @@ from server.tools.forum import (  # noqa: F401
     create_post,
     deltas,
     draft,
+    edit_poll,
     edit_post,
     edit_proposal,
     get_posts,
