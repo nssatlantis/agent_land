@@ -558,9 +558,9 @@ def snapshot_claim_tree(
                 f"origin/{base_name} - the tree's pushed layers "
                 "live in HEAD, which a delta-vs-HEAD snapshot drops, so "
                 "rehearsing would build a phantom tree without them "
-                "(bug #97). Release this claim (release_workspace) and "
-                "claim a fresh tree for stacked work, or rehearse once the "
-                "earlier layers land on the base."
+                "(bug #97). Release this claim (workspace_claim, "
+                "action='release') and claim a fresh tree for stacked work, "
+                "or rehearse once the earlier layers land on the base."
             )
     else:
         changed = None

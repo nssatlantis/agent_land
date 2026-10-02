@@ -1,6 +1,7 @@
 """Focused workspace ABA regressions for the mutator-lock PR."""
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -23,7 +24,6 @@ import db._workspace_claims as claim_db  # noqa: E402
 import github._gitops as gh  # noqa: E402
 import github._workspaces as ws  # noqa: E402
 import server._transfer as transfer  # noqa: E402
-import server.tools.repo._transfer as ticket_tools  # noqa: E402
 import server.tools.repo._workspace as workspace_tools  # noqa: E402
 from tests._setup import db, expect_error, setup  # noqa: E402
 
@@ -132,7 +132,9 @@ def test_claim_workspace_rechecks_after_lock(agents):
 
         def claim():
             try:
-                outcome.append(workspace_tools.claim_workspace(tok, pid, "dev"))
+                outcome.append(
+                    workspace_tools.workspace_claim(tok, "claim", pid, "dev")
+                )
             except BaseException as exc:
                 outcome.append(exc)
 
@@ -146,7 +148,7 @@ def test_claim_workspace_rechecks_after_lock(agents):
         assert "changed while waiting" in str(outcome[0]), outcome
         current = db.get_workspace(tok, pid, "dev")
         assert current["id"] == replacement["claim"]["id"], (current, replacement)
-        workspace_tools.release_workspace(tok, pid, "dev")
+        workspace_tools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
 
@@ -156,7 +158,7 @@ def test_lifecycle_reclaim_reuses_path_lock(agents):
     try:
         tok = agents["alpha"]["token"]
         pid = db.create_proposal(tok, "Lifecycle Path Lock", "body")["post_id"]
-        claimed = workspace_tools.claim_workspace(tok, pid, "dev")
+        claimed = workspace_tools.workspace_claim(tok, "claim", pid, "dev")
         old_id = int(claimed["claim"]["id"])
         result = []
 
@@ -185,16 +187,34 @@ def test_lifecycle_reclaim_reuses_path_lock(agents):
         sb.close()
 
 
-def test_fetch_ticket_mint_rechecks_claim(agents):
+def test_renew_mint_rebinds_claim_under_lock(agents):
+    """The mint-under-the-tree-lock ABA fence, re-pinned on its new home.
+
+    The old pin drove ``workspace_fetch_ticket`` and asserted
+    ForumError("changed while waiting for its lock"). That REFUSAL arm no
+    longer exists on the mint path, and pretending otherwise would be the
+    knowingly-red test this rewrite exists to avoid: ``_do_renew`` resolves
+    the claim BEFORE acquiring (owner-scoped, so always the caller's own)
+    and never re-checks it after. What it does instead is stamp the ticket
+    from the claim that is LIVE AT MINT, under the lock - so the property
+    to pin is the stronger one, and it is the one that matters: a ticket
+    can never be issued against a claim that has already been released.
+
+    Two arms, both real: the mint cannot complete while another holder owns
+    the tree lock (the discipline half), and the ticket it hands back is
+    bound to the replacement, never to the released record (the safety
+    half, which a stale pre-lock record would have failed).
+    """
     sb = _Sandbox()
     try:
         tok = agents["beta"]["token"]
-        pid = db.create_proposal(tok, "Mint ABA", "body")["post_id"]
-        claimed = workspace_tools.claim_workspace(tok, pid, "mint")
+        pid = db.create_proposal(tok, "Renew ABA", "body")["post_id"]
+        claimed = workspace_tools.workspace_claim(tok, "claim", pid, "mint")
         old_id = int(claimed["claim"]["id"])
         dest = str(claimed["tree"]["path"])
         lock_factory = workspace_tools.workspace_lock
         acquire_attempted = threading.Event()
+        minted = threading.Event()
         outcome = []
 
         @contextmanager
@@ -203,27 +223,54 @@ def test_fetch_ticket_mint_rechecks_claim(agents):
             with lock_factory(path, allow_missing=allow_missing):
                 yield
 
-        def mint():
+        def renew():
             try:
-                ticket_tools.workspace_fetch_ticket(tok, pid, "mint", ["README.md"])
+                outcome.append(
+                    workspace_tools.workspace_claim(tok, "renew", pid, "mint")
+                )
             except BaseException as exc:
                 outcome.append(exc)
+            finally:
+                minted.set()
 
         with lock_factory(dest):
             with patch.object(workspace_tools, "workspace_lock", observed_lock):
-                worker = threading.Thread(target=mint)
+                worker = threading.Thread(target=renew)
                 worker.start()
                 assert acquire_attempted.wait(1)
-                _replacement, marker = _replace_claim_under_lock(
+                assert not minted.wait(0.2), (
+                    "the mint completed while another holder owned the tree lock"
+                )
+                replacement, marker = _replace_claim_under_lock(
                     tok, pid, "mint", dest, old_id
                 )
-        worker.join(2)
+        worker.join(5)
         assert not worker.is_alive(), "queued ticket mint did not finish"
         assert len(outcome) == 1, outcome
-        assert isinstance(outcome[0], db.ForumError), outcome
-        assert "changed while waiting for its lock" in str(outcome[0]), outcome
+        res = outcome[0]
+        assert not isinstance(res, BaseException), (
+            f"renew after a mid-wait replacement: {type(res).__name__}: {res}"
+        )
+        # Both scopes came back, and each is stamped with the claim that
+        # held the tree when it was minted.
+        fresh_id = int(replacement["id"])
+        digests = [
+            hashlib.sha256(res[scope]["ticket"].encode()).hexdigest()
+            for scope in ("read", "write")
+        ]
+        with db._conn() as conn:
+            stamped = conn.execute(
+                "SELECT scope, claim_id FROM transfer_tickets"
+                " WHERE ticket_hash IN (?, ?)",
+                digests,
+            ).fetchall()
+        assert len(stamped) == 2, stamped
+        assert {row["scope"]: int(row["claim_id"]) for row in stamped} == {
+            "read": fresh_id,
+            "write": fresh_id,
+        }, (stamped, old_id, fresh_id)
         assert marker.read_text(encoding="utf-8") == "replacement\n"
-        workspace_tools.release_workspace(tok, pid, "mint")
+        workspace_tools.workspace_claim(tok, "release", pid, "mint")
     finally:
         sb.close()
 
@@ -233,10 +280,10 @@ def test_read_ticket_reclaim_aba(agents):
     try:
         tok = agents["beta"]["token"]
         pid = db.create_proposal(tok, "ABA Download", "body")["post_id"]
-        workspace_tools.claim_workspace(tok, pid, "dl")
+        claimed = workspace_tools.workspace_claim(tok, "claim", pid, "dl")
         workspace_tools.workspace_write_file(tok, pid, "dl", "note.txt", "old\n")
         old = db.get_workspace(tok, pid, "dl")
-        ticket = ticket_tools.workspace_fetch_ticket(tok, pid, "dl", ["note.txt"])
+        ticket = claimed["read"]
         original_read = ws.read_transfer_bytes
         fresh = {}
 
@@ -331,7 +378,7 @@ def test_lifecycle_release_waits_for_active_mutator_and_reclaims(agents):
     try:
         tok = agents["alpha"]["token"]
         pid = db.create_proposal(tok, "Lifecycle Mutator", "body")["post_id"]
-        claimed = workspace_tools.claim_workspace(tok, pid, "dev")
+        claimed = workspace_tools.workspace_claim(tok, "claim", pid, "dev")
         old_id = int(claimed["claim"]["id"])
         dest = str(claimed["tree"]["path"])
         lock_factory = workspace_tools.workspace_lock
@@ -377,10 +424,10 @@ def test_lifecycle_release_waits_for_active_mutator_and_reclaims(agents):
         assert not releaser.is_alive()
         assert not isinstance(active_result[0], BaseException), active_result
         assert release_result == [1], release_result
-        replacement = workspace_tools.claim_workspace(tok, pid, "dev")
+        replacement = workspace_tools.workspace_claim(tok, "claim", pid, "dev")
         assert int(replacement["claim"]["id"]) != old_id
         assert not Path(dest, "stale.txt").exists()
-        workspace_tools.release_workspace(tok, pid, "dev")
+        workspace_tools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
 
@@ -390,7 +437,7 @@ def test_lifecycle_release_waits_for_active_transfer_and_reclaims(agents):
     try:
         tok = agents["beta"]["token"]
         pid = db.create_proposal(tok, "Lifecycle Transfer", "body")["post_id"]
-        claimed = workspace_tools.claim_workspace(tok, pid, "dev")
+        claimed = workspace_tools.workspace_claim(tok, "claim", pid, "dev")
         old_id = int(claimed["claim"]["id"])
         dest = str(claimed["tree"]["path"])
         entered = threading.Event()
@@ -436,10 +483,10 @@ def test_lifecycle_release_waits_for_active_transfer_and_reclaims(agents):
         assert not releaser.is_alive()
         assert not isinstance(transfer_result[0], BaseException), transfer_result
         assert release_result == [1], release_result
-        replacement = workspace_tools.claim_workspace(tok, pid, "dev")
+        replacement = workspace_tools.workspace_claim(tok, "claim", pid, "dev")
         assert int(replacement["claim"]["id"]) != old_id
         assert not Path(dest, "transfer.txt").exists()
-        workspace_tools.release_workspace(tok, pid, "dev")
+        workspace_tools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
 
@@ -449,7 +496,7 @@ def test_queued_async_mutator_rechecks_claim(agents):
     try:
         tok = agents["alpha"]["token"]
         pid = db.create_proposal(tok, "Queued Async ABA", "body")["post_id"]
-        claimed = workspace_tools.claim_workspace(tok, pid, "dev")
+        claimed = workspace_tools.workspace_claim(tok, "claim", pid, "dev")
         claim_id = int(claimed["claim"]["id"])
         dest = str(claimed["tree"]["path"])
         lock_factory = workspace_tools.workspace_lock
@@ -494,7 +541,7 @@ def test_queued_async_mutator_rechecks_claim(agents):
             assert not Path(dest, "stale.txt").exists()
 
         asyncio.run(run_reclaim())
-        workspace_tools.release_workspace(tok, pid, "dev")
+        workspace_tools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
 
@@ -504,7 +551,7 @@ def test_queued_sync_mutator_rechecks_claim(agents):
     try:
         tok = agents["beta"]["token"]
         pid = db.create_proposal(tok, "Queued Sync ABA", "body")["post_id"]
-        claimed = workspace_tools.claim_workspace(tok, pid, "dev")
+        claimed = workspace_tools.workspace_claim(tok, "claim", pid, "dev")
         claim_id = int(claimed["claim"]["id"])
         dest = str(claimed["tree"]["path"])
         lock_factory = workspace_tools.workspace_lock
@@ -546,7 +593,7 @@ def test_queued_sync_mutator_rechecks_claim(agents):
         assert not invoked.is_set()
         assert marker.read_text(encoding="utf-8") == "replacement\n"
         assert not Path(dest, "stale.txt").exists()
-        workspace_tools.release_workspace(tok, pid, "dev")
+        workspace_tools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
 
@@ -565,7 +612,7 @@ def test_acquire_window_replacement_surfaces_forum_error_async(agents):
     try:
         tok = agents["gamma"]["token"]
         pid = db.create_proposal(tok, "B117 acquire window async", "body")["post_id"]
-        claimed = workspace_tools.claim_workspace(tok, pid, "dev")
+        claimed = workspace_tools.workspace_claim(tok, "claim", pid, "dev")
         claim_id = int(claimed["claim"]["id"])
         lock_factory = workspace_tools.workspace_lock
         invoked = threading.Event()
@@ -616,7 +663,7 @@ def test_acquire_window_replacement_surfaces_forum_error_sync(agents):
     try:
         tok = agents["delta"]["token"]
         pid = db.create_proposal(tok, "B117 acquire window sync", "body")["post_id"]
-        claimed = workspace_tools.claim_workspace(tok, pid, "dev")
+        claimed = workspace_tools.workspace_claim(tok, "claim", pid, "dev")
         claim_id = int(claimed["claim"]["id"])
         lock_factory = workspace_tools.workspace_lock
         invoked = threading.Event()
@@ -665,7 +712,7 @@ def test_acquire_window_infra_fault_stays_loud(agents):
     try:
         tok = agents["epsilon"]["token"]
         pid = db.create_proposal(tok, "B117 infra fault stays loud", "body")["post_id"]
-        workspace_tools.claim_workspace(tok, pid, "dev")
+        workspace_tools.workspace_claim(tok, "claim", pid, "dev")
         lock_factory = workspace_tools.workspace_lock
 
         async def noop_write(token, proposal_id, name):
@@ -693,7 +740,7 @@ def test_acquire_window_infra_fault_stays_loud(agents):
             assert "no workspace tree held" in str(exc), exc
         else:
             raise AssertionError("expected RepoError with the claim intact")
-        workspace_tools.release_workspace(tok, pid, "dev")
+        workspace_tools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
     print("  acquire-window infra fault stays loud (RepoError): ok")
@@ -704,7 +751,7 @@ def main():
     test_stale_release_cas(agents)
     test_claim_workspace_rechecks_after_lock(agents)
     test_lifecycle_reclaim_reuses_path_lock(agents)
-    test_fetch_ticket_mint_rechecks_claim(agents)
+    test_renew_mint_rebinds_claim_under_lock(agents)
     test_read_ticket_reclaim_aba(agents)
     test_sweeper_rechecks_live_and_idle_state()
     test_lifecycle_release_waits_for_active_mutator_and_reclaims(agents)
