@@ -157,7 +157,8 @@ def workspace_upload_ticket(
     once (one POST per path burns it; the ticket dies when every path is
     consumed or the TTL lapses). Uploads apply through the workspace
     write contract (EOL-normalized, budget-checked, quiet no-op on
-    identical bytes); verify with workspace_diff, rehearse, then push."""
+    identical bytes); verify with workspace_inspect(action='diff'),
+    rehearse, then push."""
     record, _dest, clean = _mint_ticket(token, proposal_id, name, paths, "write")
     minted = db.mint_transfer_ticket(
         token,

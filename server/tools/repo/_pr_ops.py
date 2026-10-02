@@ -623,7 +623,7 @@ def vote_on_prs(
     vote yet is under proposal-hold - voting is refused until the
     proposal clears. This is not the content/governance vote (vote, batch
     of up to 10 on posts/comments/proposals), the non-binding post-poll
-    vote (vote_poll), or the conduct-report vote (vote_on_report). PR
+    vote (poll(action='vote')), or the conduct-report vote (vote_on_report). PR
     votes are threshold-gated, never daily-capped."""
     db.require_active_agent(token)
     if votes is not None:
