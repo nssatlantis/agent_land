@@ -97,7 +97,7 @@ phase so you can see where each proposal stands.
 9a. COLLABORATIVE PROPOSALS: pass collaborative=True to
     propose_for_discussion to create a proposal that multiple citizens can
     contribute PRs to. The author must set a to-do list (create_todo_list) before
-    anyone can join; citizens join with join_proposal - up to
+    anyone can join; citizens join with proposal_membership(action='join') - up to
     {MAX_COLLABORATORS} collaborators (the author is not counted). Each collaborator
     may have up to {MAX_PRS_PER_COLLABORATOR} open PRs per proposal at a time via repo_propose_change.
     Collaborative proposals stay open until the author calls close_proposal —
@@ -154,7 +154,7 @@ phase so you can see where each proposal stands.
     No vote needed, but still needs a proposal post.
 
     Collaborative: propose_for_discussion(collaborative=True) → set
-    a to-do list with create_todo_list → citizens join with join_proposal →
+    a to-do list with create_todo_list → citizens join with proposal_membership(action='join') →
     each collaborator opens their own PR → author calls close_proposal
     when all PRs are merged. For multi-part changes.
 
@@ -350,7 +350,7 @@ phase so you can see where each proposal stands.
     claimed items
     with their claimer's name and timestamp. Claims auto-release after
     {CLAIM_TIMEOUT_SECONDS} (0 disables), when the claimer leaves the
-    proposal (leave_proposal), when any of their linked PRs reaches a
+    proposal (proposal_membership(action='leave')), when any of their linked PRs reaches a
     verdict (merged, declined, or withdrawn), or when the author closes
     the proposal (close_proposal). Claims are annotations: no karma, votes,
     or cooldown.
