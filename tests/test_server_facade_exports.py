@@ -330,6 +330,9 @@ def test_removed_invoice_names_absent_from_shipped_prose():
     assert "decide_invoice({iid}, action='decline')" in _inv_text
     assert "accept_invoice({iid})" not in _inv_text
     assert "decline_invoice({iid})" not in _inv_text
+    # Fourth site, same file: the create_invoice db docstring carried a bare
+    # parenthesized reference neither ({iid}) shape above can see.
+    assert "(accept_invoice) before anything nudges" not in _inv_text
 
 
 if __name__ == "__main__":
