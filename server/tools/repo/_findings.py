@@ -456,8 +456,8 @@ async def _refresh_mirror(pr_number: int | None) -> None:
     refresh is a no-op, which is why the push PATHS alone would have bought
     almost nothing and the board writes are what matter.
     corroboration (_signal_corroborate) and finding_fund/_unfund are NOT
-    triggers, because the renderer reads neither
-    corroboration counts nor bounties today.  That is a statement about the current renderer, not a
+    triggers, because the renderer reads neither corroboration counts nor
+    bounties today.  That is a statement about the current renderer, not a
     permanent rule: if it ever renders them, this list has to grow.
 
     Never fails a board write.  mirror_findings_to_pr already degrades to
