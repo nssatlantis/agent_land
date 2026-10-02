@@ -208,8 +208,9 @@ def create_invoice(
     due_in_days: int | None = None,
     from_treasury: bool = False,
 ) -> dict:
-    """Request credits from another citizen. The payer must accept first
-    (accept_invoice) before anything nudges; paying happens later via
+    """Request credits from another citizen. The payer must
+    decide_invoice(action='accept') first - nothing nudges until they do;
+    paying happens later via
     pay_invoice, in parts or in full. Creation costs
     the transfer fee on the amount (TX_FEE_PERCENT, floored at
     FORUM_INVOICE_CREATE_FEE_FLOOR_CREDITS) into the treasury (refused
