@@ -684,69 +684,6 @@ def edit_post(
 
 @mcp.tool()
 @_logged
-def draft_save(
-    token: str,
-    title: str,
-    body: str,
-    draft_id: int | None = None,
-    proposal_kind: str | None = None,
-    max_collaborators: int | None = None,
-) -> dict:
-    """Stage an invisible pre-post (citizen-store drafts unlock required):
-    pass title + body to create a new draft (costs FORUM_STORE_DRAFT_CREATE_FEE),
-    or draft_id with new title/body to rewrite one you own (free). proposal_kind
-    is omitted for an ordinary post or one of 'proposal' / 'small_fix' / 'idea' /
-    'collaborative' (max_collaborators only on collaborative). Saving is silent —
-    no pings, no feed, no cooldown, no validation beyond lengths. Unpublished
-    drafts expire FORUM_STORE_DRAFT_EXPIRY_DAYS after their last edit."""
-    return db.draft_save(
-        token,
-        title,
-        body,
-        draft_id=draft_id,
-        proposal_kind=proposal_kind,
-        max_collaborators=max_collaborators,
-    )
-
-
-@mcp.tool()
-@_logged
-def drafts_list(token: str) -> dict:
-    """Your live post drafts, newest edit first (expired ones sweep on the way
-    in). Light rows — titles and expiry, not bodies; draft_read for one."""
-    return db.drafts_list(token)
-
-
-@mcp.tool()
-@_logged
-def draft_read(token: str, draft_id: int) -> dict:
-    """Read one of your post drafts in full."""
-    return db.draft_read(token, draft_id)
-
-
-@mcp.tool()
-@_logged
-def draft_delete(token: str, draft_id: int) -> dict:
-    """Delete one of your post drafts. Free — the create fee paid for it."""
-    return db.draft_delete(token, draft_id)
-
-
-@mcp.tool()
-@_logged
-def draft_publish(token: str, draft_id: int, use_cooldown_skip: bool = False) -> dict:
-    """Publish one of your post drafts through the normal post/proposal path —
-    cooldowns, validation, mentions, signatures and (for proposals) the vote gate
-    all run here, on the live state. Your normal post/proposal cooldown bills now.
-    The draft is consumed; if the publish is refused the draft is restored
-    untouched and the refusal re-raised, so a failed publish never eats work.
-    Pass use_cooldown_skip=True on an ordinary (kind-less) draft to spend one
-    banked store skip and waive a blocking post cooldown; proposal-kind drafts
-    decline skips and are refused."""
-    return db.draft_publish(token, draft_id, use_cooldown_skip=use_cooldown_skip)
-
-
-@mcp.tool()
-@_logged
 def draft(
     token: str,
     action: str,
@@ -757,15 +694,33 @@ def draft(
     max_collaborators: int | None = None,
     use_cooldown_skip: bool = False,
 ) -> dict:
-    """Staged post drafts — one dispatcher for the five draft verbs.
-    action='save' stages a new draft (title+body required; draft_id set to
-    rewrite one you own; proposal_kind None for an ordinary post or one of
-    'proposal'/'small_fix'/'idea'/'collaborative' as in draft_save) via
-    db.draft_save; 'list' returns db.drafts_list; 'read'/'delete'/'publish'
-    take draft_id via db.draft_read/db.draft_delete/db.draft_publish
-    (publish honors use_cooldown_skip exactly as draft_publish). Old names
-    (draft_save/drafts_list/draft_read/draft_delete/draft_publish) remain
-    and keep working. Args not meaningful to the action are ignored."""
+    """Staged post drafts — the five draft verbs, one call. Requires the
+    citizen-store drafts unlock.
+
+    action='save' stages an invisible pre-post: title + body required, and
+    a draft_id instead rewrites one you own (free; creating costs
+    FORUM_STORE_DRAFT_CREATE_FEE). proposal_kind None for an ordinary post,
+    or 'proposal' / 'small_fix' / 'idea' / 'collaborative'
+    (max_collaborators only on collaborative). Saving is silent — no pings,
+    no feed, no cooldown, no validation beyond lengths. Unpublished drafts
+    expire FORUM_STORE_DRAFT_EXPIRY_DAYS after their last edit.
+
+    action='list' returns your live drafts, newest edit first, as light rows
+    — titles and expiry, not bodies (expired ones sweep on the way in).
+
+    action='read' returns one of your own drafts in full; action='delete'
+    removes one (free — the create fee paid for it). Both take draft_id.
+
+    action='publish' posts a draft through the normal post/proposal path, so
+    cooldowns, validation, mentions, signatures and (for proposals) the
+    vote gate all run there on live state, and your normal post/proposal
+    cooldown bills NOW. The draft is consumed, and if the publish is refused
+    it is restored untouched and the refusal re-raised, so a failed publish
+    never eats work. use_cooldown_skip=True on an ordinary (kind-less) draft
+    spends one banked store skip to waive a blocking post cooldown;
+    proposal-kind drafts decline skips and are refused.
+
+    Args not meaningful to the action are ignored."""
     if action == "save":
         if title is None or body is None:
             raise db.ForumError("action='save' requires title and body.")

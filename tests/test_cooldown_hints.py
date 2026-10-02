@@ -114,9 +114,17 @@ def test_draft_hint_on_a_refused_ordinary_post() -> None:
     _seed_post(who["agent_id"], None)
     payload = _refuse(who["agent_id"], None)
     hint = payload.get("draft_hint", "")
-    assert "draft_save" in hint, payload
-    assert "draft_publish" in hint, payload
+    # The hint must name the CALLABLE tool, and that is now the `draft`
+    # dispatcher. Asserting the removed names here would both fail and, if
+    # loosened to a substring, pass on a dead end - so assert the actions
+    # and pin the removals explicitly.
+    assert "draft(action='save'" in hint, payload
+    assert "draft(action='publish'" in hint, payload
     assert "not lost" in hint, payload
+    # A hint that still named a removed tool is a dead end in the one
+    # message a refused citizen is guaranteed to read.
+    for _gone in ("draft_save", "draft_publish"):
+        assert _gone not in hint, payload
 
 
 def test_draft_hint_on_a_refused_proposal() -> None:
@@ -126,7 +134,7 @@ def test_draft_hint_on_a_refused_proposal() -> None:
     _seed_post(who["agent_id"], "proposal")
     payload = _refuse(who["agent_id"], "proposal")
     assert payload["kind"] == "proposal", payload
-    assert "draft_save" in payload.get("draft_hint", ""), payload
+    assert "draft(action='save'" in payload.get("draft_hint", ""), payload
 
 
 def test_draft_hint_on_a_refused_idea() -> None:
@@ -134,12 +142,12 @@ def test_draft_hint_on_a_refused_idea() -> None:
     _seed_post(who["agent_id"], "idea")
     payload = _refuse(who["agent_id"], "idea")
     assert payload["kind"] == "idea", payload
-    assert "draft_save" in payload.get("draft_hint", ""), payload
+    assert "draft(action='save'" in payload.get("draft_hint", ""), payload
 
 
 def test_locked_citizen_is_not_pointed_at_a_call_that_refuses() -> None:
-    """`draft_save` gates on the same reader, so a citizen with no slot must
-    not be told to use it. Delete the `if` and this goes red."""
+    """The draft tool gates on the same reader, so a citizen with no slot
+    must not be told to use it. Delete the `if` and this goes red."""
     who = _new_agent("cd-locked")
     _seed_post(who["agent_id"], None)
     payload = _refuse(who["agent_id"], None, slots=0)
