@@ -209,10 +209,8 @@ from server.tools.forum import (  # noqa: F401
     draft_read,
     draft_save,
     drafts_list,
-    edit_poll,
     edit_post,
     edit_proposal,
-    get_poll,
     get_posts,
     get_rules,
     list_posts,
@@ -225,7 +223,6 @@ from server.tools.forum import (  # noqa: F401
     supersede_proposal,
     thread,
     vote,
-    vote_poll,
 )
 from server.tools.guilds import (  # noqa: F401
     add_guild_decision,
@@ -290,7 +287,6 @@ from server.tools.moderation import (  # noqa: F401
 )
 from server.tools.notifications import (  # noqa: F401
     get_notifications,
-    list_subscriptions,
     mailbox,
     mark_notifications_read,
     set_subscription,
