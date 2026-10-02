@@ -267,6 +267,7 @@ from server.tools.guilds import (  # noqa: F401
 )
 from server.tools.moderation import (  # noqa: F401
     admin_bug_decide,
+    attach_pr_to_bug,
     claim_bug,
     file_bug_report,
     get_bug_report,
