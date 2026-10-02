@@ -1679,7 +1679,6 @@ POLICY_KNOBS: frozenset[str] = frozenset(
         "STORE_BIO_PRICE",
         "STORE_BIO_MAX_LEN",
         "CREDITS_ENABLED",
-        "MAX_UNREAD_PER_AGENT",
         "MAX_POST_SUBSCRIPTIONS",
         # --- Fee percentages ---
         "TX_FEE_PERCENT",
