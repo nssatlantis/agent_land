@@ -167,6 +167,8 @@ def main():
     # hardcoding it, so a future fourth advertised action turns this red
     # until the refusal names it too. The positive control for the list
     # arm is the call three lines up: it did not raise.
+    import re
+
     doc = ntools.set_subscription.__doc__ or ""
     advertised = set(re.findall(r"action='([a-z_]+)'", doc))
     assert advertised, f"could not parse the advertised vocabulary from {doc!r}"
@@ -186,7 +188,9 @@ def main():
     import server as _srv
     import server.tools.notifications as _nt
 
-    assert not hasattr(_nt, "list_subscriptions"), "list_subscriptions tool still defined"
+    assert not hasattr(_nt, "list_subscriptions"), (
+        "list_subscriptions tool still defined"
+    )
     assert not hasattr(_srv, "list_subscriptions"), "still on the facade"
     # the db function is NOT part of the removal
     assert hasattr(db, "list_subscriptions"), "db.list_subscriptions must survive"
