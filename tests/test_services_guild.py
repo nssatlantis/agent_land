@@ -11,7 +11,9 @@ What each group proves, and WHY that proof is the hard part:
   1. schema + boot pairing (5590).  Both halves in one migration, asserted by
      DROPPING the column and index and re-running the real boot entry. A
      source-scan pin would pass on a migration that never fires; this one
-     cannot, because it executes `db._core._boot_economy.run`.
+     cannot, because it executes `db._core._boot_economy.run`. The second
+     group in this file covers the OTHER entry point - init_db()'s
+     executescript, which the boot arm bypasses (finding #125).
   2. settlement (5591).  New work at cycle acceptance, not a reuse: a service
      order's guild_job_links role is 'commissioned', never 'taken', so the
      pre-existing poolward branch does not fire for it.
@@ -168,6 +170,25 @@ def _fulfil(job_id, seller, buyer, before_review=None) -> None:
     db.review_job(buyer["token"], job_id, "accept")
 
 
+_OLD_SERVICES_SQL = """CREATE TABLE services (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    seller_agent_id     INTEGER NOT NULL REFERENCES agents(id),
+    title               TEXT NOT NULL,
+    description         TEXT NOT NULL DEFAULT '',
+    price_units         INTEGER NOT NULL CHECK (price_units > 0),
+    steps_json          TEXT NOT NULL DEFAULT '[]',
+    ack_visits          INTEGER NOT NULL DEFAULT 2,
+    deliver_days        INTEGER NOT NULL DEFAULT 3,
+    max_open_orders     INTEGER NOT NULL DEFAULT 1 CHECK (max_open_orders > 0),
+    active              INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    paused_at           TEXT,
+    pause_note          TEXT,
+    paused_seconds_total INTEGER NOT NULL DEFAULT 0 CHECK (paused_seconds_total >= 0),
+    created_at          TEXT NOT NULL,
+    retired_at          TEXT
+)"""
+
+
 def test_schema_and_boot_pairing() -> None:
     """5590 - schema.sql and the boot migration carry the column AND the index.
 
@@ -204,6 +225,45 @@ def test_schema_and_boot_pairing() -> None:
         idx2 = {r["name"] for r in conn.execute("PRAGMA index_list(services)")}
         assert "idx_services_guild" in idx2, "boot did not re-add the index"
     print("  schema.sql + boot pairing: ok")
+
+
+def test_init_db_over_a_legacy_services_table() -> None:
+    """125 - the upgrade path that actually runs in production.
+
+    `test_schema_and_boot_pairing` above re-runs `boot_economy.run` DIRECTLY,
+    which is right for proving the migration fires but it walks straight past
+    the one line that breaks: `db/_core/_init.py` runs
+    `conn.executescript(SCHEMA_PATH.read_text())` against the LIVE connection
+    before any boot module runs. schema.sql is DECLARATION there, so every
+    object it declares must resolve against a database that already has it -
+    and `CREATE TABLE IF NOT EXISTS services` no-ops on a live forum, leaving
+    the next statement to resolve `services.guild_id`, which does not exist
+    yet.
+
+    So the index rides the boot migration and NOT schema.sql, exactly as the
+    comment eight lines above it says. With a `CREATE INDEX` in schema.sql on
+    a just-added column, `init_db()` raises `OperationalError: no such column:
+    guild_id` on every existing database and the forum does not start.
+
+    Driven through the house `assert_upgrade_column` helper, which really
+    calls `init_db()` - and a fresh-DB test cannot see this, because there
+    every schema.sql statement CREATEs the table with guild_id already in it.
+    """
+    from tests._helpers import assert_upgrade_column
+
+    def _both_halves(conn):
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(services)")}
+        assert "guild_id" in cols, cols
+        idx = {r["name"] for r in conn.execute("PRAGMA index_list(services)")}
+        assert "idx_services_guild" in idx, (
+            "the boot migration owns BOTH halves; deleting schema.sql's index "
+            "line must not lose it on an upgraded database"
+        )
+
+    assert_upgrade_column(
+        "services", _OLD_SERVICES_SQL, "guild_id", verify=_both_halves
+    )
+    print("  init_db over a legacy services table: ok")
 
 
 def test_collective_settlement_routes_the_wage_to_the_pool() -> None:
@@ -540,6 +600,7 @@ def test_corrupt_snapshot_degrades_to_personal() -> None:
 def main() -> int:
     tests = [
         test_schema_and_boot_pairing,
+        test_init_db_over_a_legacy_services_table,
         test_collective_settlement_routes_the_wage_to_the_pool,
         test_pool_funded_cross_guild_order,
         test_solo_listing_is_a_true_no_op,
