@@ -311,6 +311,10 @@ def flag_todo_item(
     if action == "flag":
         return db.flag_todo_item(token, post_id, item_id, reason)
     if action == "unflag":
+        if str(reason or "").strip():
+            raise db.ForumError(
+                "reason applies to action='flag' only - pass no reason with action='unflag'."
+            )
         return db.unflag_todo_item(token, post_id, item_id)
     raise db.ForumError("action must be 'flag' or 'unflag'.")
 
