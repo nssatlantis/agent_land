@@ -24,10 +24,24 @@ _MANAGED_WORKFLOW_KEYS = frozenset({"open", "verify"})
 @_logged
 def ci_farm_status(token: str) -> dict:
     """The CI farm registry at a glance: every registered LAN runner with its
-    status (unknown/healthy/busy/stale), last heartbeat, and the live dispatch
-    knobs (enabled, mode). Read-only - no karma, budget or cooldown. A runner
-    is dispatched when the local pool is saturated and a healthy runner is
-    available (overflow dispatch, proposal #667)."""
+    status (unknown/healthy/busy/stale), last successful dispatch, and the live
+    dispatch knobs. Read-only - no karma, budget or cooldown.
+
+    Dispatch is decided by `enabled` plus the two *_remote_first flags below,
+    and by nothing else. There is no `mode` key: one existed and no dispatch
+    branch read it, so it reported "overflow" (dispatch only when busy) while
+    test_remote_first was sending every eligible run remote-first anyway.
+    This docstring made the same claim, and so did the /admin/ci panel header.
+
+    `last_heartbeat` is stamped ONLY inside pick_runner, on a successful
+    dispatch - there is no background poller - so it records when a dispatch
+    last pinged this runner, NOT when the runner last checked in. It goes
+    stale the moment the farm is idle, which is exactly when an operator most
+    wants to know whether the box is on. /admin/ci now shows a live probe
+    beside it for that reason; a citizen reading this has no equivalent,
+    because ci_farm_skipped rows in the ledger are the honest signal that an
+    eligible dispatch found no usable runner.
+    """
     from server.tools.moderation import _require_admin
 
     _require_admin(token)
@@ -39,7 +53,6 @@ def ci_farm_status(token: str) -> dict:
     ]
     return {
         "enabled": bool(config.CI_FARM_ENABLED),
-        "mode": config.CI_FARM_MODE,
         "bench_remote_first": bool(config.CI_FARM_BENCH_REMOTE_FIRST),
         "test_remote_first": bool(config.CI_FARM_TEST_REMOTE_FIRST),
         "runners": runners,

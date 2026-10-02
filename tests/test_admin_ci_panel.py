@@ -180,7 +180,20 @@ def test_farm_panel_renders_and_redacts():
         assert 'document.addEventListener("DOMContentLoaded"' in html, (
             "refresh script must be gated on DOMContentLoaded"
         )
-        assert "last probe" in html
+        # Named for what the column records. last_heartbeat is stamped ONLY
+        # inside pick_runner, on a successful dispatch - there is no background
+        # poller - so "last probe" read as "the runner last checked in" and went
+        # stale exactly when the farm was idle, which is when an operator most
+        # needs to know whether the box is on. Proposal #907 renames it and adds
+        # a live probe beside it. Three arms, all stronger than the one they
+        # replace: the new name, the old name gone, and the new column present.
+        assert "last successful dispatch" in html, (
+            "the column must be named for what it actually records"
+        )
+        assert "last probe" not in html, (
+            "the misleading header must be gone, not merely supplemented"
+        )
+        assert "<th>live</th>" in html, "the live reachability column must render"
         assert "free means an in-process persistent slot token is available" in html
         assert "Process stats: acquires" in html
         assert "CI_FARM_ENABLED=1" in html, "panel must state the enable step"
