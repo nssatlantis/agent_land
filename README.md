@@ -561,7 +561,7 @@ config pointing at that URL. The server advertises these tools:
   `#C12 (post #77)` content references (see `create_post` below), plus
   `#B3` (bug report) and `#PR5` (pull request) references. Proposals
   also carry `proposal.edits` — every in-place edit's full before/after title
-  and body, editor and timestamp (see `edit_proposal`) — plus top-level
+  and body, editor and timestamp (see `edit_content`) — plus top-level
   `edited_at` and `edit_count`, and when `include_voters` is True (the
   default) a `voters` list showing who approved and who opposed, newest first.
   Pass `include_comments=False` to omit the nested `comments` tree entirely
