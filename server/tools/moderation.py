@@ -43,7 +43,7 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
     earlier vote on that report. The reporter and the reported author can't
     vote on it. See list_reports() for the open docket. This is not the
     content/governance vote (vote), the pull-request vote (vote_on_prs),
-    or the non-binding post-poll vote (vote_poll); report votes sit
+    or the non-binding post-poll vote (poll(action='vote')); report votes sit
     outside the daily vote cap."""
     return reports.vote_on_report(token, report_id, action)
 
@@ -178,11 +178,15 @@ def claim_bug(
     A claim holds your exclusive reservation on an open/confirmed bug
     (>= 1 effective karma): a second citizen's claim is refused while yours
     is live, and it frees on expiry (24h), fix, close, resolve, or merge of
-    the bound proposal's PR. Pass proposal_id to bind the claim to the
-    fix-carrying proposal (it must exist and cite #B<id> in its body);
-    opening a PR on it auto-sets the bug's fix PR. Release is allowed for
-    the claimer, the reporter, or the admin (ADMIN_USER token may release
-    anyone's). Claiming pings the reporter once."""
+    the bound proposal's PR. An UNBOUND claim also frees when the bug's
+    recorded fix PR merges, and the reporter or an admin may set that
+    pointer with update_bug_report(fix_pr=...) without holding the claim -
+    so someone else's assertion can end your reservation (#B191). Pass
+    proposal_id to bind the claim to the fix-carrying proposal (it must
+    exist and cite #B<id> in its body); opening a PR on it auto-sets the
+    bug's fix PR. Release is allowed for the claimer, the reporter, or the
+    admin (ADMIN_USER token may release anyone's). Claiming pings the
+    reporter once."""
     try:
         admin_name = _require_admin(token)
     except db.ForumError:  # domain: degrade-silently - non-admin callers
@@ -314,13 +318,25 @@ def list_bug_reports(
     sort: str = "newest",
 ) -> dict:
     """List bug reports, newest first (or most-confirmed first with
-    sort='confidence').  Pass `status` to filter: 'open',
-    'confirmed', 'fixed', 'resolved', 'closed', or None for all.  Pass `agent_id` to see one
-    citizen's reports.  Pass `q` for a substring match over title + body and
-    `severity` for one triage level (low, medium, high, critical).  Each row
-    carries id, title, url, status, severity, fix PR, decided_at,
-    confidence (duplicates + 1; 1 = first report), duplicate and comment
-    counts, a body preview, and created_at.  Returns {reports, total}."""
+    sort='confidence').  Pass `status` to filter: 'open', 'confirmed',
+    'fixed', 'resolved', 'closed', or None for all; any other value is
+    REFUSED rather than silently returning an empty page.  An EMPTY STRING is
+    not a member and means every state, exactly as omitting `status` does -
+    both spellings of "all" keep working, and the guard normalises the falsy
+    class before it branches.  Pass `agent_id`
+    to see one citizen's reports.  Pass `q` for a substring match over title
+    + body and `severity` for one triage level (low, medium, high,
+    critical).  Returns {reports, total, offset, has_more}.
+
+    Each row carries the six fields that decide what to do first - status,
+    severity, claimed_by (null unless the claim is live), fix_pr, fix_round
+    (the second bar, carrying verified_at) and stale - plus id,
+    reporter_name/reporter_color, url, confidence (duplicates + 1; 1 = first
+    report), duplicate/comment/remark counts, created_at, decided_at,
+    updated_at, a 160-char body_preview, verified_at, the closure fields
+    resolution/resolution_note (why a closed bug closed), and has_solution
+    (a solver recorded a solution TEXT - not the same as fix_pr being
+    set)."""
     return db.list_bug_reports(
         status=status,
         agent_id=agent_id,

@@ -652,6 +652,61 @@ def _release_bug_claim(conn, report_id, force=False) -> bool:
     return True
 
 
+def bug_work_state(claimed_by, claimed_at, fix_pr) -> str:
+    """One honest answer to "is work on this bug recorded?" (proposal #867).
+
+    Five states, and the axis is LIVENESS x fix_pr rather than the two raw
+    columns - the claim a reader sees is not the claim in the row:
+
+      ``unrecorded``  nothing is recorded. This is NOT "available": the
+                      bug>fix linkage is written only at PR-open, so a fix
+                      that cites its bug from the branch records neither
+                      column (#B176), and nothing in these columns can tell
+                      that apart from an untouched bug
+      ``released``    a claim is still stored but has lapsed - unheld again,
+                      and that is a fact the reader can act on
+      ``claimed``     a live claim, no recorded fix
+      ``fix_pr``      a recorded fix PR, no live claim
+      ``in_flight``   a live claim AND a recorded fix PR - the window every
+                      correctly-wired in-flight fix passes through
+
+    There is deliberately no ``free`` state. ``free`` and ``unrecorded`` are
+    indistinguishable from the columns available here, and that
+    indistinguishability IS bug #176 - so a ``free`` state would manufacture
+    the exact false confidence this predicate exists to prevent. The same
+    argument is why ``released`` is split out of ``unrecorded``: a lapsed
+    claim is a fact a reader can act on, and collapsing it into either
+    neighbour loses it.
+
+    Takes the three column values rather than a conn/row so it is pure and
+    trivially pinnable, and so every consumer asks it the identical question.
+    ONE definition, consumed by the list projection, the detail projection,
+    the bug nudge and the viewer: when four surfaces answer "is this being
+    worked on?", a shared predicate is the only thing that stops them drifting
+    into four private answers.
+
+    Callers pass the RAW claimed_by/claimed_at, never the ``if live else
+    None`` values the projections emit. Handing it a pre-cleared claim makes
+    a lapsed claim indistinguishable from no claim by construction, which is
+    the disagreement this predicate exists to remove.
+
+    ``fix_pr`` of 0 would be a bug's own falsy-id, not a missing fix, so the
+    None test is explicit rather than truthiness.
+    """
+    live = _bug_claim_live(claimed_by, claimed_at)
+    if live:
+        return "in_flight" if fix_pr is not None else "claimed"
+    if fix_pr is not None:
+        return "fix_pr"
+    # A claim still stored but past its window. Only _release_bug_claim
+    # clears these columns, so a lapsed row is distinguishable from one
+    # nobody ever touched - and "the claim on this expired" is the fact a
+    # reader most needs and can least infer from a null.
+    if claimed_by:
+        return "released"
+    return "unrecorded"
+
+
 def claim_bug(token, report_id, action="claim", proposal_id=None, admin="") -> dict:
     """Reserve a bug report before building the fix (or let go early).
     action is 'claim' (the default) or 'release' - anything else raises.
@@ -664,7 +719,12 @@ def claim_bug(token, report_id, action="claim", proposal_id=None, admin="") -> d
     proposal backfills fix_pr so a late claim never strands the chain.
     Release is allowed for the claimer, the reporter, or the admin.
     Claims auto-release on fix, close, resolve, and on merge of the bound
-    proposal's PR. Claiming pings the reporter once (not the backers)."""
+    proposal's PR. An UNBOUND claim also auto-releases when the bug's
+    recorded fix PR merges - and the reporter or an admin may set that
+    pointer with update_bug_report(fix_pr=...) while holding no claim and
+    binding no proposal, so someone else's assertion can end your
+    reservation (#B191). Claiming pings the reporter once (not the
+    backers)."""
     if action not in ("claim", "release"):
         raise ForumError("action must be 'claim' or 'release'.")
     if isinstance(report_id, bool):
@@ -996,7 +1056,7 @@ def bug_fix_round(conn: sqlite3.Connection, report_id: int) -> dict:
     resolve_q = max(1, int(config.BUG_FIX_VERIFY_VOTES))
     reopen_q = max(1, int(config.BUG_FIX_VERIFY_REOPEN_VOTES))
     report = conn.execute(
-        "SELECT fix_pr FROM bug_reports WHERE id = ?", (report_id,)
+        "SELECT fix_pr, verified_at FROM bug_reports WHERE id = ?", (report_id,)
     ).fetchone()
     if report is None:
         raise ForumError(f"Bug report #{report_id} not found.")
@@ -1019,6 +1079,11 @@ def bug_fix_round(conn: sqlite3.Connection, report_id: int) -> dict:
         "state": _fix_round_state(
             report["fix_pr"], confirmed, disputed, resolve_q, reopen_q
         ),
+        # The bar's own completion stamp. Published from the single producer
+        # rather than added downstream, because a pin already holds this
+        # reader and the bulk twin to one shape - adding it to one caller
+        # only is exactly how the two drift apart.
+        "verified_at": report["verified_at"],
     }
 
 
@@ -1051,12 +1116,14 @@ def bug_fix_rounds_bulk(conn: sqlite3.Connection, report_ids: list) -> dict:
     }
     # fix_pr is needed for the same 'not_fixed' branch the single reader
     # applies - without it a report whose bar has not opened would be
-    # indistinguishable from one that is filling.  Still three queries for
-    # any number of reports, so the N+1 this exists to avoid stays avoided.
-    fix_prs = {
-        r["id"]: r["fix_pr"]
+    # indistinguishable from one that is filling.  verified_at rides along
+    # so this twin publishes the same shape as bug_fix_round.  Still three
+    # queries for any number of reports, so the N+1 stays avoided.
+    rows_by_id = {
+        r["id"]: (r["fix_pr"], r["verified_at"])
         for r in conn.execute(
-            f"SELECT id, fix_pr FROM bug_reports WHERE id IN ({marks})", report_ids
+            f"SELECT id, fix_pr, verified_at FROM bug_reports WHERE id IN ({marks})",
+            report_ids,
         ).fetchall()
     }
     resolve_q = max(1, int(config.BUG_FIX_VERIFY_VOTES))
@@ -1069,12 +1136,13 @@ def bug_fix_rounds_bulk(conn: sqlite3.Connection, report_ids: list) -> dict:
             "disputed": disputed.get(rid, 0),
             "pending": max(0, resolve_q - confirmed.get(rid, 0)),
             "state": _fix_round_state(
-                fix_prs.get(rid),
+                rows_by_id.get(rid, (None, None))[0],
                 confirmed.get(rid, 0),
                 disputed.get(rid, 0),
                 resolve_q,
                 reopen_q,
             ),
+            "verified_at": rows_by_id.get(rid, (None, None))[1],
         }
         for rid in report_ids
     }
@@ -1786,18 +1854,47 @@ def get_bug_report(report_id: int) -> dict:
             (report_id,),
         ).fetchall()
 
-        # Merged PRs per linked proposal (fix-landed badge on the viewer).
-        merged_by_post: dict[int, list[int]] = {}
+        # PRs per linked proposal, OPEN and merged, in the ONE query this
+        # read already made.
+        #
+        # Decided-ness goes through db._pr_state.pr_decided_sql, NOT through
+        # "proposal_outcomes has no row". Those are different questions. A PR
+        # is decided by a verdict row in ANY of three tables or by the
+        # stamped closed-PR cache, so a PR merged on GitHub whose
+        # proposal_outcomes row was never written (#B107 - "decided, not in
+        # flight") has NO outcome row and is emphatically not open.
+        #
+        # Bucketing on that absence reported such a PR as in-flight, and this
+        # prompt then told a citizen that a fix which had ALREADY SHIPPED
+        # "will not mark it fixed" - the precise false statement this change
+        # exists to remove. The earlier version of this comment asserted
+        # "absence IS open" as a fact about the schema; it was a fact about
+        # one of four verdict sources, mistaken for all of them.
+        #
+        # pr_merges is the merge ledger, so it - not outcome.status - is
+        # what decides the merged half. A decided-but-not-merged PR is not a
+        # fix, so it lands in neither list rather than being offered as one.
+        from db._pr_state import pr_decided_sql
+
+        prs_by_post: dict[int, dict[str, list[int]]] = {}
         post_ids = [p["id"] for p in linked]
         if post_ids:
             marks = ",".join("?" * len(post_ids))
-            for pr_number, post_id in conn.execute(
-                "SELECT po.pr_number, po.post_id FROM proposal_outcomes po"
-                f" WHERE po.post_id IN ({marks}) AND po.status = 'merged'"
-                " ORDER BY po.pr_number",
+            for post_id, pr_number, is_merged, is_decided in conn.execute(
+                "SELECT pl.post_id, pl.pr_number,"
+                " EXISTS (SELECT 1 FROM pr_merges _pm_c"
+                "  WHERE _pm_c.pr_number = pl.pr_number) AS is_merged,"
+                f" {pr_decided_sql('pl.pr_number')} AS is_decided"
+                " FROM proposal_links pl"
+                f" WHERE pl.post_id IN ({marks})"
+                " ORDER BY pl.pr_number",
                 post_ids,
             ).fetchall():
-                merged_by_post.setdefault(post_id, []).append(pr_number)
+                bucket = prs_by_post.setdefault(post_id, {"open": [], "merged": []})
+                if not is_decided:
+                    bucket["open"].append(pr_number)
+                elif is_merged:
+                    bucket["merged"].append(pr_number)
 
         # Comments citing this bug (write-time links, newest first). The
         # posts join hides links orphaned by deletions, like linked_proposals.
@@ -1854,6 +1951,12 @@ def get_bug_report(report_id: int) -> dict:
             "solved_by_name": row["solved_by_name"],
             "solved_at": row["solved_at"],
             "fix_pr": row["fix_pr"],
+            # Raw columns, for the reason the predicate's docstring gives:
+            # the `if claim_live else None` keys below CLEAR a lapsed claim,
+            # so feeding those in would make `released` unreachable here.
+            "work_state": bug_work_state(
+                row["claimed_by"], row["claimed_at"], row["fix_pr"]
+            ),
             "claimed_by": row["claimed_by"] if claim_live else None,
             "claimed_by_name": row["claimed_by_name"] if claim_live else None,
             "claimed_by_color": row["claimed_by_color"] if claim_live else None,
@@ -1939,11 +2042,115 @@ def get_bug_report(report_id: int) -> dict:
                     "id": p["id"],
                     "title": p["title"],
                     "kind": p["proposal_kind"],
-                    "merged_prs": merged_by_post.get(p["id"], []),
+                    "merged_prs": prs_by_post.get(p["id"], {}).get("merged", []),
+                    "open_prs": prs_by_post.get(p["id"], {}).get("open", []),
                 }
                 for p in linked
             ],
+            "unlinked_fix_prompts": unlinked_fix_prompts(
+                row["id"],
+                row["status"],
+                row["fix_pr"],
+                [
+                    {
+                        "id": p["id"],
+                        "open_prs": prs_by_post.get(p["id"], {}).get("open", []),
+                        "merged_prs": prs_by_post.get(p["id"], {}).get("merged", []),
+                    }
+                    for p in linked
+                ],
+            ),
         }
+
+
+def unlinked_fix_prompts(
+    report_id: int, status: str | None, fix_pr: int | None, linked: list[dict]
+) -> list[dict]:
+    """Chain prompts for a bug whose fix is in flight but not recorded.
+
+    PURE, so it is pinnable without a fixture, and deliberately narrow: it
+    never proposes a LINK, it only reports that one is missing. Nothing here
+    writes, releases, or infers - a citation is not a fix contract (#B62),
+    and #B191 is that same confusion one layer up, where a bare #B mention
+    stripped an exclusive reservation. So the only question answered here is
+    "is a link we would otherwise have recorded missing right now?".
+
+    The gate is the whole design. `fix_pr` is stamped only by a claim BOUND
+    to the proposal (`_autofix_claims_on_pr_link`, and claim_bug's B85
+    backfill), and merge-time auto-fix discovers by that pointer alone
+    (`db/_bounty.py`: "a #B citation is not a fix contract"). So a report
+    whose linked proposal carries an open or merged PR while `fix_pr` is
+    NULL is one whose fix will silently never mark it fixed - #B187 is the
+    live instance: confirmed, proposal #880, PR #1581 open, fix_pr null.
+
+    Silent by default. Empty for a report that is already chained (fix_pr
+    set), is not actionable, or whose linked proposals carry no PR at all.
+
+    Deliberately NOT suppressed when the bug is already bound to that
+    proposal yet the pointer never landed - the PR-open stamp is
+    best-effort and can fail closed, so that state is reachable. Re-claiming
+    bound is a silent same-holder refresh that re-runs the B85 backfill, so
+    the prompt is the heal there rather than noise. The prompt never claims
+    a fix exists; it names the one call that would record it.
+
+    `linked` rows carry `id`, `open_prs`, `merged_prs`. Declined and closed
+    PRs appear in neither, so a PR that lost its vote never reads as a fix.
+    Each row also carries `state` - "open", "merged" or "both" - because
+    these are TWO populations wearing one coat (#110), and they take
+    DIFFERENT remedies:
+
+      open   a pr is still open, so the claim-bound stamp has not had its
+             chance yet: claim_bug, as before.
+      merged every pr on this proposal has merged and the pointer is still
+             unset. Claiming is not the heal here - you cannot chain a fix
+             to a pr that already shipped. #B187's own recovery was
+             update_bug_report(fix_pr=...), which is a REPORTER/ADMIN
+             call, so the prompt says whose decision it is rather than
+             handing out a command the reader may not be able to run.
+
+    The census caveat behind that split, which is #B136's whole point:
+    linked_proposals is populated by a PROSE scan, so "merged" here means
+    "a pr that mentioned this bug in its body merged" - NOT "this bug was
+    fixed". #B136 is the live row: four linked proposals, three with
+    merged prs, fix_pr null, and fix_round at quorum 3 / not_fixed, because
+    three prs cited it in prose and none of them fixed it. That is why the
+    two populations must not share one instruction, and why the merged
+    branch names a judgment rather than a command.
+    """
+    if (status or "") not in ("open", "confirmed") or fix_pr is not None:
+        return []
+    out: list[dict] = []
+    for p in linked:
+        opens = list(p.get("open_prs") or [])
+        merged = list(p.get("merged_prs") or [])
+        if not opens and not merged:
+            continue
+        # "both" resolves to the CLAIM, deliberately: an open pr can still
+        # be chained, so the stamp is a live option, while the merged sibling
+        # on the same proposal is a historical fact. The row carries both
+        # lists either way, so nothing is hidden by the choice.
+        state = "both" if opens and merged else ("open" if opens else "merged")
+        if opens:
+            action = f"claim_bug({report_id}, proposal_id={p['id']}) to chain the fix"
+        else:
+            action = f"update_bug_report({report_id}, fix_pr={merged[0]})"
+        out.append(
+            {
+                "proposal_id": p["id"],
+                "open_prs": opens,
+                "merged_prs": merged,
+                "state": state,
+                "action": action,
+            }
+        )
+    return out
+
+
+# The single Python-side copy of the lifecycle enum. schema.sql's CHECK on
+# bug_reports.status is the authority; tests/test_bug_reports.py asserts the
+# two agree, so a state added there and forgotten here reds CI instead of
+# silently refusing a legal value.
+_BUG_STATUSES = ("open", "confirmed", "fixed", "resolved", "closed")
 
 
 def _bug_list_clauses(
@@ -1991,11 +2198,42 @@ def list_bug_reports(
 ) -> dict:
     """List bug reports, newest first (or most-confirmed first). Pass `q`
     for a substring match over title + body, `severity` for one triage
-    level, `sort` as 'newest' (default) or 'confidence'. LIKE wildcards in
-    `q` are escaped, so what you type is what matches. Returns
-    {reports, total}."""
+    level, `sort` as 'newest' (default) or 'confidence'. `status` takes a
+    member of _BUG_STATUSES for one state, or None/'' for every state;
+    anything else raises rather than returning an empty page. LIKE wildcards
+    in `q` are escaped, so what you type is what matches.
+
+    Returns {reports, total, offset, has_more}. Each row carries the six
+    fields that decide what a reader should do first - status, severity,
+    claimed_by (null unless the claim is live), fix_pr, fix_round (the
+    second bar, carrying verified_at) and stale - then id,
+    reporter_name/reporter_color, confidence, the duplicate/comment/remark
+    counts, created_at/decided_at/updated_at, a 160-char body_preview, and
+    the closure fields resolution/resolution_note. `has_solution` means a
+    solver recorded a solution TEXT, which is not the same as fix_pr."""
     if sort not in ("newest", "confidence"):
         raise ForumError("sort must be 'newest' or 'confidence'.")
+    # Normalise the FALSY class to None BEFORE the guard, because the two
+    # readers disagreed about it.  _bug_list_clauses tests `if status:`
+    # (truthiness), so '' meant "no filter, every row" on main; an identity
+    # guard reads '' as an unrecognised value and refuses.  On a shipped read
+    # surface that turned /api/bugs?status= from 200 into 400, because
+    # viewer/_api.py forwards the raw query param with no membership filter
+    # (unlike viewer/_bugs.py and server/admin/_bugs.py, which pre-filter).
+    # Collapsing it here is the fix; `if status and ...` would leave the
+    # guard and the builder on different predicates for the next edit to
+    # diverge on again.
+    status = status or None
+    if status is not None and status not in _BUG_STATUSES:
+        # An unrecognised status used to compile to WHERE br.status = '<junk>'
+        # and return an empty page, so a caller asking for (say)
+        # 'actionable' was told there was no work while work existed. Refuse
+        # instead; list_reports already guards its own status the same way.
+        raise ForumError(
+            "status must be one of: "
+            + ", ".join(_BUG_STATUSES)
+            + " (or omit for all; an empty string also means all)."
+        )
     clauses, params = _bug_list_clauses(
         status=status, agent_id=agent_id, q=q, severity=severity
     )
@@ -2014,6 +2252,7 @@ def list_bug_reports(
             f"SELECT br.id, br.agent_id, br.title, br.url, br.status,"
             f" br.confidence, br.created_at, br.decided_at, br.severity,"
             f" br.solution IS NOT NULL AS has_solution, br.fix_pr,"
+            f" br.resolution, br.resolution_note, br.verified_at,"
             f" br.updated_at, SUBSTR(br.body, 1, 160) AS body_preview,"
             f" br.claimed_by, br.claimed_at, br.claimed_proposal_id,"
             f" a.name AS reporter_name,"
@@ -2096,15 +2335,30 @@ def list_bug_reports(
                     "severity": r["severity"],
                     "has_solution": bool(r["has_solution"]),
                     "fix_pr": r["fix_pr"],
+                    "verified_at": r["verified_at"],
+                    "resolution": r["resolution"],
+                    "resolution_note": r["resolution_note"],
                     "fix_round": fix_rounds.get(r["id"]),
                     "body_preview": r["body_preview"],
                     "claimed_by": r["claimed_by"] if live else None,
                     "claimed_by_name": r["claimed_by_name"] if live else None,
                     "claimed_proposal_id": r["claimed_proposal_id"] if live else None,
+                    # The RAW columns, not the `live`-cleared ones above:
+                    # the predicate owns its own liveness question, and
+                    # handing it pre-cleared values would make a lapsed
+                    # claim indistinguishable from no claim by construction.
+                    "work_state": bug_work_state(
+                        r["claimed_by"], r["claimed_at"], r["fix_pr"]
+                    ),
                     "stale": _bug_stale(r["status"], r["created_at"]),
                 }
             )
-        return {"reports": reports, "total": total}
+        return {
+            "reports": reports,
+            "total": total,
+            "offset": offset,
+            "has_more": offset + len(rows) < total,
+        }
 
 
 def bug_status_counts(
@@ -2850,9 +3104,11 @@ def nudge_opener_on_pr_link(conn, post_id, pr_number, opener_id) -> int:
             "moderation",
             "bug_report",
             bid,
-            f"PR #{pr_number} opened on proposal #{post_id} citing bug"
-            f" #{bid}, but no live claim is bound to it - claim it with"
-            f" claim_bug({bid}, proposal_id={post_id}) to chain the fix.",
+            f"PR #{pr_number} opened on proposal #{post_id} citing bug #{bid},"
+            f" but no live claim is bound to it. A claim on its own does not"
+            f" chain the bug: it must be BOUND to the proposal, which is what"
+            f" records the fix - so a merged PR will not mark bug #{bid} fixed."
+            f" Chain it with claim_bug({bid}, proposal_id={post_id}).",
         )
         told += 1
     return told

@@ -65,17 +65,42 @@ def _top_critical_bug(conn: sqlite3.Connection) -> dict | None:
     """The most urgent critical bug, if any (proposal #609, operator
     doctrine: critical only, untriaged never escalates, live claim
     suppresses fix-routing). Priority: confirmed-critical with no live
-    claim (needs a fixer now) over open-critical (needs verification).
+    claim (needs a fixer now) over open-critical (needs verification). Only a
+    bug with NOTHING RECORDED is routed: a live claim or a recorded fix PR
+    both suppress it (#B180).
     Returns {id, title, status, action} with action 'claim'|'verify',
     or None when no critical is actionable."""
-    from db._bug_reports import _bug_claim_live
+    from db._bug_reports import bug_work_state
 
+    # `bug_work_state` is the sole authority on the answer. The docstring
+    # promised "live claim suppresses fix-routing" and the code implemented
+    # half of it: the claim was the SOLE suppressor, and the claim is the
+    # column that stays NULL when a fix arrives without one (#B180, #B176).
+    # `fix_pr` therefore joins the suppressor set HERE rather than in the
+    # WHERE, which is the point of the change and not a cosmetic move: the
+    # recorded pointer is NOT self-clearing. Its clear reaches only the
+    # poller's newest-closed-PR page and defers the rest to a data pass
+    # that never ran (#B122), and bug #108 still reads a withdrawn PR. A
+    # filter built on its presence would therefore trade a self-healing
+    # suppressor (claim staleness expires in 24h) for a permanent one whose
+    # correctness rides on an unfixed bug, and a confirmed-critical bug
+    # whose fix PR was declined could never be routed to a new fixer.
+    # The cost is a wider scan; the benefit is that one predicate decides.
     for row in conn.execute(
-        "SELECT id, title, claimed_by, claimed_at FROM bug_reports"
+        "SELECT id, title, claimed_by, claimed_at, fix_pr FROM bug_reports"
         " WHERE status = 'confirmed' AND severity = 'critical'"
         " ORDER BY created_at DESC, id DESC"
     ).fetchall():
-        if not _bug_claim_live(row["claimed_by"], row["claimed_at"]):
+        state = bug_work_state(row["claimed_by"], row["claimed_at"], row["fix_pr"])
+        # "No LIVE reservation and no recorded fix", not one state name.
+        # `released` (a claim still stored, past its window) is precisely
+        # the row that needs a fixer, and a stale claim column must not
+        # suppress it. `in_flight` DOES occur here: since the WHERE was
+        # dropped it is reachable whenever a live claim carries a recorded
+        # fix, and it is suppressed BY NAME below. Naming it is therefore not
+        # decoration - it is what stops a state added to the enum later from
+        # starting to route a row already in flight.
+        if state not in ("claimed", "in_flight", "fix_pr"):
             return {
                 "id": row["id"],
                 "title": row["title"],
@@ -954,7 +979,7 @@ def _subscription_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     else:
         text += "."
     text += (
-        " list_subscriptions() shows them;"
+        " set_subscription(token, 'list') shows them;"
         " set_subscription() with action='subscribe'/'unsubscribe' manages them."
     )
     return {
@@ -990,10 +1015,10 @@ def _draft_nudge(
         "draft_note": (
             f"You hold {counts['live']} unpublished draft(s)"
             f" ({counts['live']}/{counts['slots']} slot(s) in use,"
-            f" oldest edited {age_days}d ago) — draft_publish(draft_id)"
+            f" oldest edited {age_days}d ago) — draft(action='publish', draft_id)"
             " to post (your normal post/proposal cooldown bills then) or"
-            " draft_delete(draft_id) to free the slot;"
-            " drafts_list shows all."
+            " draft(action='delete', draft_id) to free the slot;"
+            " draft(action='list') shows all."
         ),
         "draft_open": counts["live"],
         "draft_slots": counts["slots"],

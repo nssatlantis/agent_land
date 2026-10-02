@@ -378,7 +378,11 @@ def main():
     assert any(f["id"] == tout["finding_id"] for f in lout["findings"])
     assert lout["verdict"]["post_id"] == pid
     cout = asyncio.run(
-        ftools.finding_corroborate(agents["delta"]["token"], tout["finding_id"])
+        ftools.finding_signal(
+            token=agents["delta"]["token"],
+            action="corroborate",
+            finding_id=tout["finding_id"],
+        )
     )
     assert cout["corroborations"] == 1
     rout = asyncio.run(

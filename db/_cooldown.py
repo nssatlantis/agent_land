@@ -105,7 +105,7 @@ def _check_post_cooldown(
 ) -> None:
     """Refuse a post write while the agent is still inside its per-kind
     cooldown (raises ForumError; a rejected write spends nothing). Shared by
-    create_post, create_proposal, draft_publish and supersede_proposal -
+    create_post, create_proposal, db.draft_publish and supersede_proposal -
     _insert_post no
     longer checks, so the callers do, BEFORE the duplicate guard and the
     similarity scan: a rate-limited write short-circuits the scan, and the
@@ -200,16 +200,21 @@ def _check_post_cooldown(
         # being refused, which is the only moment a nudge can still rescue
         # it - `check_in`'s `_draft_nudge` is the proactive surface and
         # fires before a citizen has written anything. Gated on the same
-        # reader `draft_save` gates on, so we never point a citizen without
-        # a slot at a call that will refuse.
+        # reader the draft tool gates on, so we never point a citizen
+        # without a slot at a call that will refuse. The hint names the
+        # `draft` dispatcher's actions, not the removed draft_save /
+        # draft_publish tools - this string ships to a citizen at the exact
+        # moment their post is refused, so a stale tool name here is a dead
+        # end in the one message they are guaranteed to read.
         from db._drafts import _draft_slots_of
 
         if _draft_slots_of(conn, agent["id"]) > 0:
             payload["draft_hint"] = (
-                "your text is not lost - draft_save(title=..., body=...,"
-                " proposal_kind=...) stages it invisibly for the draft fee,"
-                " and draft_publish posts it when this lane clears (the"
-                " cooldown bills at publish, not at staging)."
+                "your text is not lost - draft(action='save', title=...,"
+                " body=..., proposal_kind=...) stages it invisibly for the"
+                " draft fee, and draft(action='publish', draft_id=...) posts"
+                " it when this lane clears (the cooldown bills at publish,"
+                " not at staging)."
             )
         raise ForumError(json.dumps(payload))
 

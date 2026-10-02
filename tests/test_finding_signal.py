@@ -1,0 +1,284 @@
+"""finding_signal dispatcher (proposal #905) - Tier 1B, findings signal pair.
+
+The load-bearing pin here is the tool-usage ledger: ONE user action must
+record exactly ONE tool_calls row, named for the tool the caller invoked.
+That is the whole reason the two bodies were lifted into undecorated
+helpers instead of the dispatcher calling the decorated tools - a second
+wrapper would write a second row under its own __name__ and double-count
+the census this cleanup program measures itself against.
+"""
+
+import asyncio
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+_TMP = Path(tempfile.mkdtemp(prefix="agentland_test_signal_"))
+os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
+os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from tests._setup import db, setup  # noqa: E402
+
+# The ledger reader needs GROUP BY. Without it SQLite returns ONE row whose
+# bare `tool` column is an arbitrary pick and whose COUNT(*) is the grand
+# total - which looks exactly like a plausible dict and silently compares
+# nothing. It is the reason this file asserts per-tool counts.
+_SIGNAL = ("finding_signal", "finding_corroborate", "finding_object")
+
+
+def _earn(agents, post_id, name, n=3, voter="alpha"):
+    for _ in range(n):
+        c = db.create_comment(agents[name]["token"], post_id, "karma seed")
+        db.vote(agents[voter]["token"], "comment", c["comment_id"], 1)
+
+
+def _ledger():
+    with db._conn() as conn:
+        rows = conn.execute(
+            "SELECT tool, COUNT(*) AS n, MIN(agent_id) AS who"
+            " FROM tool_calls WHERE tool IN (?, ?, ?) GROUP BY tool",
+            _SIGNAL,
+        ).fetchall()
+    return {r["tool"]: (r["n"], r["who"]) for r in rows}
+
+
+def _rows(table, finding_id):
+    with db._conn() as conn:
+        return conn.execute(
+            f"SELECT * FROM {table} WHERE finding_id = ?",
+            (finding_id,),
+        ).fetchall()
+
+
+def main():
+    from server.tools.repo import _findings as ftools
+
+    agents, post_id = setup()
+    _earn(agents, post_id, "beta")
+    _earn(agents, post_id, "gamma")
+    pid = db.create_proposal(
+        agents["alpha"]["token"], "Signal fixture", "Body.", small_fix=True
+    )["post_id"]
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO proposal_links (pr_number, post_id, opened_by_agent_id)"
+            " VALUES (4242, ?, ?)",
+            (pid, agents["alpha"]["agent_id"]),
+        )
+
+    # Stub the mirror projection so no test touches the network, and so the
+    # trigger can be observed behaviourally through the dispatcher (the AST
+    # pin in test_findings_mirror.py checks the wiring, not the effect).
+    mirrors = []
+
+    async def _fake_refresh(number):
+        mirrors.append(number)
+
+    ftools._refresh_mirror = _fake_refresh
+
+    fid = asyncio.run(
+        ftools.finding_add(
+            token=agents["alpha"]["token"],
+            post_id=pid,
+            pr_number=4242,
+            category="bug",
+            finding_class="other",
+            check="signal fixture finding",
+            flip_path="nothing to do here " * 8,
+            paths=["server/tools/repo/_findings.py"],
+        )
+    )["finding_id"]
+    mirrors.clear()
+
+    # Tokens are passed as KEYWORDS on purpose: server/_mcp.py::_agent_id_for
+    # reads kwargs["token"] only, so a positional token logs a null agent.
+    # MCP always invokes tools by keyword, so keyword form is production.
+    def signal(who, action, body=""):
+        return asyncio.run(
+            ftools.finding_signal(token=who, action=action, finding_id=fid, body=body)
+        )
+
+    # --- one action, ONE ledger row, named for the tool called ---------
+    # The discriminator: routing the dispatcher back through the decorated
+    # tools would add a second row under their names.
+    out = signal(agents["gamma"]["token"], "corroborate")
+    led = _ledger()
+    assert led.get("finding_signal", (0,))[0] == 1, led
+    assert "finding_corroborate" not in led, led
+    assert "finding_object" not in led, led
+    assert led["finding_signal"][1] == agents["gamma"]["agent_id"], led
+    assert out == {"finding_id": fid, "corroborations": 1}, out
+
+    out = signal(agents["beta"]["token"], "object", "the check is misread")
+    led = _ledger()
+    assert led["finding_signal"][0] == 2, led
+    assert "finding_corroborate" not in led, led
+    assert "finding_object" not in led, led
+    # Each action keeps its OWN key. A normalized `count` would break every
+    # existing caller of the two legacy tools.
+    assert out == {"finding_id": fid, "objections": 1}, out
+    assert "corroborations" not in out, out
+
+    # --- body and finding_id are genuinely forwarded -------------------
+    stored = _rows("finding_objections", fid)
+    assert len(stored) == 1, [dict(r) for r in stored]
+    assert stored[0]["body"] == "the check is misread", dict(stored[0])
+    assert stored[0]["agent_id"] == agents["beta"]["agent_id"], dict(stored[0])
+    corr = _rows("finding_corroborations", fid)
+    assert len(corr) == 1, [dict(r) for r in corr]
+    assert corr[0]["agent_id"] == agents["gamma"]["agent_id"], dict(corr[0])
+
+    # --- the objection still pings the finder, and still re-projects ----
+    assert mirrors == [4242], mirrors
+    # Counted by ACTOR, not recipient: alpha is both the finder and the
+    # proposal's opener, so finding_add already mailed them about their own
+    # finding. A plain "did the finder get any mail" assert would therefore
+    # pass with the objection ping deleted - it would be decoration.
+    with db._conn() as conn:
+        pings = conn.execute(
+            "SELECT COUNT(*) AS n FROM notifications"
+            " WHERE agent_id = ? AND actor_agent_id = ?",
+            (agents["alpha"]["agent_id"], agents["beta"]["agent_id"]),
+        ).fetchone()["n"]
+    assert pings == 1, f"objection must ping the finder exactly once ({pings})"
+
+    # corroboration is the deliberate NON-trigger: no mirror row.
+    mirrors.clear()
+    signal(agents["beta"]["token"], "corroborate")
+    assert mirrors == [], mirrors
+
+    # --- refusals keep db's own text; the dispatcher restates nothing ---
+    try:
+        signal(agents["beta"]["token"], "object", "   ")
+        raise AssertionError("blank reason must refuse")
+    except db.ForumError as exc:
+        assert "an objection needs a reason" in str(exc), str(exc)
+
+    try:
+        signal(agents["beta"]["token"], "shrug")
+        raise AssertionError("unknown action must refuse")
+    except db.ForumError as exc:
+        assert "action must be 'corroborate' or 'object'." in str(exc), str(exc)
+
+    # own-finding refusal survives routing on BOTH actions
+    for act, msg in (
+        ("corroborate", "cannot corroborate your own finding"),
+        ("object", "cannot object to your own finding"),
+    ):
+        try:
+            signal(agents["alpha"]["token"], act, "my own finding")
+            raise AssertionError(f"{act} on own finding must refuse")
+        except db.ForumError as exc:
+            assert msg in str(exc), (act, str(exc))
+
+    # --- hard-remove: the legacy tool names are GONE ---------------------
+    # Not "still work" but "no longer exist": the whole point of this
+    # program is a SMALLER tool surface, and `signal` is on
+    # tool_cleanup.md's hard-remove list. A pin that asserted the aliases
+    # worked would have made the retention look intentional - and this is
+    # the assertion that turns a future re-add red.
+    #
+    # Checked at the three surfaces a tool can leak from: the defining
+    # module, the package facade, and the top-level facade.
+    import server as _srv
+    import server.tools.repo as _rp
+
+    for _gone in ("finding_corroborate", "finding_object"):
+        assert not hasattr(ftools, _gone), f"{_gone} is still defined"
+        assert not hasattr(_rp, _gone), f"{_gone} is still re-exported"
+        assert not hasattr(_srv, _gone), f"{_gone} is still on the facade"
+
+    # --- the surface: no client-supplied kind, body is action-optional --
+    import inspect
+
+    sig = inspect.signature(ftools.finding_signal)
+    assert list(sig.parameters) == ["token", "action", "finding_id", "body"], sig
+    assert sig.parameters["body"].default == "", sig
+
+    # The docstring is a shipped string every agent reads, so the action
+    # contract must be discoverable and the removed names must NOT be.
+    #
+    # EXTRACTED, not substring-tested: "object" is a substring of
+    # "objection"/"objections" and "corroborate" of "corroborations", both of
+    # which already appear in this docstring - so the substring form passes
+    # on a docstring documenting NEITHER action value. Deriving the set also
+    # turns a fourth action red, which is the class closer already used for
+    # poll in #1597.
+    import re
+
+    doc = ftools.finding_signal.__doc__ or ""
+    assert set(re.findall(r"action='([a-z_]+)'", doc)) == {"corroborate", "object"}
+    # The removed names must NOT be advertised: an agent reading the tool
+    # list has only this docstring to go on, and a stale mention here is
+    # exactly how a removed tool keeps getting called.
+    assert "finding_corroborate" not in doc, doc
+    assert "finding_object" not in doc, doc
+    # ...and it must name the tools that DID survive, since the signal
+    # verbs are useless without knowing which tools move state.
+    assert "finding_mark_resolved" in doc, doc
+    assert "finding_dispute" in doc, doc
+    assert "finding_verify" in doc, doc
+
+    no_removed_signal_names_in_user_facing_text()
+    print("finding_signal: ok")
+
+
+def no_removed_signal_names_in_user_facing_text() -> None:
+    """A removed tool must not survive in any text an agent is told to read.
+
+    The docstring pin covers exactly ONE surface, and that is what made the
+    class look closed: both names were out of `finding_signal.__doc__` and
+    `rules_text.py`, and both were still advertised in `AGENTS.md`,
+    `workflows/code-review.md` and `docs/review-standards.md` (finding #119).
+    With the legacy wrappers gone the tool list is an agent's ONLY reference,
+    so a surviving name in an instruction surface is a dead end the reader
+    has no way to diagnose.
+
+    Two ways this must NOT over-reach, and how it avoids them:
+
+    * `finding_objected` is an EVENT name and `finding_objections` a TABLE
+      name, both deliberately untouched.  A bare substring test would demand
+      deleting those too and break the event system.  The negative lookahead
+      is what separates the tool from its own derivatives.
+    * The pin is deliberately STRICT, and a `db.`-qualified mention is a hit
+      too: none of these surfaces may cite the identifier at all, because
+      they are read by agents and an agent can only call tools.  Note the
+      regex has no start anchor, so qualifying the name would not have
+      hidden it anyway - a prefix strip would have been dead code dressed
+      as a policy.  Stating the strictness is the honest form, and it is
+      why `viewer/_findings.py`'s comment describes the refusal without
+      naming the function.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    surfaces = [
+        root / "README.md",
+        root / "AGENTS.md",
+        root / "docs" / "review-standards.md",
+        root / "rules_text.py",
+        root / "viewer" / "_findings.py",
+    ]
+    surfaces += sorted((root / "workflows").glob("*.md"))
+
+    gone = {
+        "finding_corroborate": re.compile(r"finding_corroborate(?!d)"),
+        "finding_object": re.compile(r"finding_object(?!ed|ions)"),
+    }
+    for path in surfaces:
+        assert path.exists(), f"census surface vanished: {path}"
+        text = path.read_text(encoding="utf-8")
+        for name, pat in gone.items():
+            hit = pat.search(text)
+            assert hit is None, (
+                f"{name} still advertised in {path.name}: "
+                f"{text[max(0, hit.start() - 60) : hit.end() + 60]!r}"
+            )
+
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)

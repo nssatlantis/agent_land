@@ -877,15 +877,65 @@ def run_checks(
     # the base_ref overlay - dispatching it as mode=main would return the
     # wrong tree's numbers as the overlay result. That is a correctness guard,
     # not caution, and the asymmetry with the test lane above is deliberate.
-    if (
+    # Named-tree runs are farm-eligible (proposal #907). The payload is the
+    # UNION of the tree's stored deltas and this request's own, because the
+    # local path resets the tree to current origin/<base> and replays
+    # stored-then-incoming, and the runner's local path does the same to a
+    # fresh clone of that same ref - so the union is what makes the two trees
+    # equal. Shipping only the newest delta would measure a different tree than
+    # the one the local path runs, which is the failure this gate exists to
+    # avoid. A tree that cannot be reproduced is refused, not guessed at, and
+    # the refusal is logged so "the farm was not used" stays answerable.
+    #
+    # KNOWN GAP, stated rather than hidden: this lane does NOT verify after
+    # dispatch that the runner ran the same base sha the local tree did. The
+    # structural argument above is what carries parity. Passing base_ref here
+    # would have enabled try_dispatch's existing executed_base_sha check, but
+    # that path requires the runner to echo base_ref as the branch name, which
+    # is unverified on the live runner - and getting it wrong makes every tree
+    # dispatch fall back to local, i.e. P2 silently delivering nothing. The
+    # residual exposure is narrow: origin/main moving between the runner's
+    # clone and the local prepare. Closing it properly is a follow-on that
+    # needs the runner's /health and /run response shape read first.
+    # Eligibility FIRST, then the payload. This block used to sit ABOVE the
+    # gate, which broke the skip row's own contract twice over: with the farm
+    # switched off (CI_FARM_ENABLED defaults to 0) every named-tree run still
+    # wrote a public ci_farm_skipped/ineligible_tree row, asserting a farm
+    # interaction that never happened - the exact "a shape the gate refused by
+    # design" that SKIP_REASONS' comment forbids. It also paid for the whole
+    # payload read to produce it (manifest, every stored delta blob, and a
+    # UTF-8 encode of up to 5 MiB just to measure a ceiling), on checks="format"
+    # too, which the tree block never filtered.
+    farm_eligible = (
         not is_bench
         and checks == "tests"
         and pr_number is None
-        and tree is None
         and base_ref is None
         and config.CI_FARM_ENABLED
         and config.CI_FARM_TEST_REMOTE_FIRST
-    ):
+    )
+    farm_files = files
+    if farm_eligible and tree is not None:
+        # Deferred, house idiom (see db/_pr_vote.py): github is not a
+        # module-level import of this file, and this block is NOT inside the
+        # dispatch try/except - a NameError here would escape run_checks and
+        # take the whole builder lane with it.
+        import github as _gh
+
+        farm_files, tree_reason = _farm_mod.tree_payload(
+            agent_id, tree, files, _gh.base_branch()
+        )
+        if farm_files is None:
+            _farm_mod.log_skip(
+                tree_reason or "ineligible_tree",
+                "test",
+                checks,
+                agent_id,
+                name,
+                tree=str(tree),
+            )
+
+    if farm_eligible and (tree is None or farm_files is not None):
         try:
             test_result = _farm_mod.try_dispatch(
                 checks=checks,
@@ -893,7 +943,7 @@ def run_checks(
                 branch_mode=False,
                 is_bench=False,
                 pr_number=None,
-                files=files,
+                files=farm_files,
                 tree=None,
                 quiet=quiet,
                 agent_id=agent_id,
