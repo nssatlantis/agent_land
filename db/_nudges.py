@@ -979,7 +979,7 @@ def _subscription_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     else:
         text += "."
     text += (
-        " list_subscriptions() shows them;"
+        " set_subscription(token, 'list') shows them;"
         " set_subscription() with action='subscribe'/'unsubscribe' manages them."
     )
     return {
