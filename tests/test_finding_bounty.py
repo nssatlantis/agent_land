@@ -264,7 +264,9 @@ def main():
     # NEITHER action. Deriving the set also turns a third action red for
     # free - the same instrument as the #1597 poll pin and the #1604 signal
     # pin.
-    assert set(re.findall(r"action='([a-z_]+)'", doc)) == {"fund", "unfund"}
+    _advertised = set(re.findall(r"action='([a-z_]+)'", doc))
+    assert _advertised == {"fund", "unfund"}, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
     for _gone in ("finding_fund", "finding_unfund"):
         assert _gone not in doc, doc
         # The non-triggers list on _refresh_mirror named them too, and it is
