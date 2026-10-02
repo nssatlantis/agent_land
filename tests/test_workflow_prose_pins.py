@@ -44,6 +44,15 @@ _REMOVED = frozenset(
         "proposals_ready_to_merge",
         "repo_pr_commits",
         "create_poll",
+        "request_guild_cosign",
+        "confirm_guild_cosign",
+        "request_guild_subsidy",
+        "decide_guild_subsidy",
+        "create_guild_poll",
+        "vote_guild_poll",
+        "post_guild_chat",
+        "list_guild_chat",
+        "delete_guild_chat",
     }
 )
 

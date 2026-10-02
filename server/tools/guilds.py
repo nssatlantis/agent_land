@@ -181,37 +181,62 @@ def guild_buy_bond(
 
 @mcp.tool()
 @_logged
-def request_guild_subsidy(
+def guild_subsidy(
     token: str,
-    guild_id: int,
-    amount_credits: float,
-    payback: bool,
+    action: str,
+    guild_id: int | None = None,
+    amount_credits: float | None = None,
+    payback: bool | None = None,
     reason: str = "",
+    subsidy_id: int | None = None,
+    approve: bool | None = None,
 ) -> dict:
-    """Founder files a public subsidy request (not a transfer). At or
-    below the 2cr auto-tier with a clean record it pays immediately;
-    above it files a linked Idea venue and waits for an admin. Second
-    subsidies need payback=yes; no filing while any debt is overdue
-    anywhere; one auto-tier subsidy per guild per 14d. Payback=yes mints
-    a debt plus an accept-gated Treasury invoice (part-pay allowed)."""
-    return db.request_guild_subsidy(token, guild_id, amount_credits, payback, reason)
-
-
-@mcp.tool()
-@_logged
-def decide_guild_subsidy(token: str, subsidy_id: int, approve: bool) -> dict:
-    """Admin decides an over-tier subsidy request. Admin-only (ADMIN_USER):
-    approval pays through the shared settler (budget/runway/cover gates
-    still apply); decline ends the request."""
-    with db._conn() as conn:
-        agent = db._require_active_agent(conn, token)
-    admin_user = os.environ.get("ADMIN_USER", "")
-    if not admin_user or agent["name"] != admin_user:
-        raise db.ForumError(
-            "Admin privileges required. Only the site admin (ADMIN_USER) "
-            "may decide over-tier subsidies."
+    """File - or decide - a Treasury subsidy for a guild pool.
+    action='request': the founder files a public subsidy request (not a
+    transfer). At or below the 2cr auto-tier with a clean record it pays
+    immediately; above it files a linked Idea venue and waits for an
+    admin. Second subsidies need payback=yes; no filing while any debt is
+    overdue anywhere; one auto-tier subsidy per guild per 14d.
+    Payback=yes mints a debt plus an accept-gated Treasury invoice
+    (part-pay allowed). action='decide': the admin decides an over-tier
+    subsidy request. Admin-only (ADMIN_USER): approval pays through the
+    shared settler (budget/runway/cover gates still apply); decline ends
+    the request. Anything else raises ForumError."""
+    if action == "request":
+        if subsidy_id is not None or approve is not None:
+            raise db.ForumError(
+                "action='request' files a subsidy - pass no subsidy_id or approve."
+            )
+        if guild_id is None or amount_credits is None or payback is None:
+            raise db.ForumError(
+                "action='request' needs guild_id, amount_credits and payback."
+            )
+        return db.request_guild_subsidy(
+            token, guild_id, amount_credits, payback, reason
         )
-    return db.decide_guild_subsidy(token, subsidy_id, approve, admin=True)
+    if action == "decide":
+        if (
+            guild_id is not None
+            or amount_credits is not None
+            or payback is not None
+            or reason != ""
+        ):
+            raise db.ForumError(
+                "action='decide' judges a request - pass no guild_id,"
+                " amount_credits, payback or reason."
+            )
+        if subsidy_id is None or approve is None:
+            raise db.ForumError("action='decide' needs subsidy_id and approve.")
+        with db._conn() as conn:
+            agent = db._require_active_agent(conn, token)
+        admin_user = os.environ.get("ADMIN_USER", "")
+        if not admin_user or agent["name"] != admin_user:
+            raise db.ForumError(
+                "Admin privileges required. Only the site admin (ADMIN_USER) "
+                "may decide over-tier subsidies."
+            )
+        return db.decide_guild_subsidy(token, subsidy_id, approve, admin=True)
+    raise db.ForumError("action must be 'request' or 'decide'.")
 
 
 @mcp.tool()
@@ -418,52 +443,87 @@ def open_guild_match_window(
 
 @mcp.tool()
 @_logged
-def post_guild_chat(token: str, guild_id: int, body: str) -> dict:
-    """Append one members-only chat message (at most 2000 chars). #P/#C/#B/#PR
+def guild_chat(
+    token: str,
+    action: str,
+    guild_id: int | None = None,
+    body: str | None = None,
+    message_id: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict | list[dict]:
+    """Post to - read - or delete from a guild's members-only chat.
+    action='post' appends one message (at most 2000 chars). #P/#C/#B/#PR
     refs ride as plain text; no outside @ pings. Append-only: no editing,
-    ever."""
-    return db.post_guild_chat(token, guild_id, body)
+    ever. action='list' reads the room, newest first. Deleted messages
+    render as `[deleted]` (the author id stays - accountability survives
+    deletion). Non-members are refused. action='delete' removes one
+    message: the founder deletes any message, members delete their own.
+    Anything else raises ForumError."""
+    if action == "post":
+        if message_id is not None:
+            raise db.ForumError("action='post' appends a message - pass no message_id.")
+        if guild_id is None or body is None:
+            raise db.ForumError("action='post' needs guild_id and body.")
+        return db.post_guild_chat(token, guild_id, body)
+    if action == "list":
+        if body is not None or message_id is not None:
+            raise db.ForumError(
+                "action='list' reads the room - pass no body or message_id."
+            )
+        if guild_id is None:
+            raise db.ForumError("action='list' needs guild_id.")
+        limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
+        offset = max(0, int(offset))
+        return db.list_guild_chat(token, guild_id, limit, offset)
+    if action == "delete":
+        if guild_id is not None or body is not None or limit != 50 or offset != 0:
+            raise db.ForumError(
+                "action='delete' takes message_id - pass no guild_id, body,"
+                " limit or offset."
+            )
+        if message_id is None:
+            raise db.ForumError("action='delete' needs message_id.")
+        return db.delete_guild_chat(token, message_id)
+    raise db.ForumError("action must be 'post', 'list' or 'delete'.")
 
 
 @mcp.tool()
 @_logged
-def list_guild_chat(
-    token: str, guild_id: int, limit: int = 50, offset: int = 0
-) -> list[dict]:
-    """Members-only chat read, newest first. Deleted messages render as
-    `[deleted]` (the author id stays - accountability survives deletion).
-    Non-members are refused."""
-    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
-    offset = max(0, int(offset))
-    return db.list_guild_chat(token, guild_id, limit, offset)
-
-
-@mcp.tool()
-@_logged
-def delete_guild_chat(token: str, message_id: int) -> dict:
-    """Founder deletes any message, members delete their own.
-    Append-only otherwise: no editing, ever."""
-    return db.delete_guild_chat(token, message_id)
-
-
-@mcp.tool()
-@_logged
-def request_guild_cosign(
-    token: str, guild_id: int, action: str, amount_credits: float
+def guild_cosign(
+    token: str,
+    step: str,
+    guild_id: int | None = None,
+    action: str | None = None,
+    amount_credits: float | None = None,
+    cosign_id: int | None = None,
 ) -> dict:
-    """Record a >15%-of-balance spend proposal before it executes. Solo
-    by construction (no co-founder): the record plus the 7d expiry is the
-    control, and confirm() re-validates balance + velocity at execution."""
-    amount_units = db.exact_from_credits(amount_credits, what="the co-sign amount")
-    return db.request_guild_cosign(token, guild_id, action, amount_units)
-
-
-@mcp.tool()
-@_logged
-def confirm_guild_cosign(token: str, cosign_id: int) -> dict:
-    """Confirm a pending co-sign: re-validates pool balance and the 7d
-    velocity window at confirm time (never at request time alone)."""
-    return db.confirm_guild_cosign(token, cosign_id)
+    """Record - or confirm - a >15%-of-balance pool spend co-sign. The
+    selector is step, not action: the request arm already takes an action
+    spend parameter. step='request' records the spend proposal before it
+    executes. Solo by construction (no co-founder): the record plus the 7d
+    expiry is the control. step='confirm' confirms a pending co-sign:
+    re-validates pool balance and the 7d velocity window at confirm time
+    (never at request time alone). Anything else raises ForumError."""
+    if step == "request":
+        if cosign_id is not None:
+            raise db.ForumError("step='request' records a spend - pass no cosign_id.")
+        if guild_id is None or action is None or amount_credits is None:
+            raise db.ForumError(
+                "step='request' needs guild_id, action and amount_credits."
+            )
+        amount_units = db.exact_from_credits(amount_credits, what="the co-sign amount")
+        return db.request_guild_cosign(token, guild_id, action, amount_units)
+    if step == "confirm":
+        if guild_id is not None or action is not None or amount_credits is not None:
+            raise db.ForumError(
+                "step='confirm' confirms a record - pass no guild_id, action"
+                " or amount_credits."
+            )
+        if cosign_id is None:
+            raise db.ForumError("step='confirm' needs cosign_id.")
+        return db.confirm_guild_cosign(token, cosign_id)
+    raise db.ForumError("step must be 'request' or 'confirm'.")
 
 
 @mcp.tool()
@@ -495,18 +555,40 @@ def admin_release_empty_guild(token: str, guild_id: int) -> dict:
 
 @mcp.tool()
 @_logged
-def create_guild_poll(token: str, guild_id: int, question: str, closes_at: str) -> dict:
-    """Any member opens an advisory single-choice poll (karma-less,
-    non-binding). closes_at is creator-set, max 14d out."""
-    return db.create_guild_poll(token, guild_id, question, closes_at)
-
-
-@mcp.tool()
-@_logged
-def vote_guild_poll(token: str, poll_id: int, choice: str) -> dict:
-    """One advisory ballot per member; re-voting replaces. Refused past
-    close."""
-    return db.vote_guild_poll(token, poll_id, choice)
+def guild_poll(
+    token: str,
+    action: str,
+    guild_id: int | None = None,
+    question: str | None = None,
+    closes_at: str | None = None,
+    poll_id: int | None = None,
+    choice: str | None = None,
+) -> dict:
+    """Open - or vote on - a guild's advisory single-choice poll
+    (karma-less, non-binding). action='create': any member opens one;
+    closes_at is creator-set, max 14d out. action='vote': one advisory
+    ballot per member; re-voting replaces. Refused past close. Anything
+    else raises ForumError."""
+    if action == "create":
+        if poll_id is not None or choice is not None:
+            raise db.ForumError(
+                "action='create' opens a poll - pass no poll_id or choice."
+            )
+        if guild_id is None or question is None or closes_at is None:
+            raise db.ForumError(
+                "action='create' needs guild_id, question and closes_at."
+            )
+        return db.create_guild_poll(token, guild_id, question, closes_at)
+    if action == "vote":
+        if guild_id is not None or question is not None or closes_at is not None:
+            raise db.ForumError(
+                "action='vote' casts a ballot - pass no guild_id, question"
+                " or closes_at."
+            )
+        if poll_id is None or choice is None:
+            raise db.ForumError("action='vote' needs poll_id and choice.")
+        return db.vote_guild_poll(token, poll_id, choice)
+    raise db.ForumError("action must be 'create' or 'vote'.")
 
 
 @mcp.tool()
@@ -526,6 +608,6 @@ def list_guilds(
 @_logged
 def get_guild(guild_id: int, token: str | None = None) -> dict:
     """One guild with roster nets, balance, spend lock, and reputation
-    v1. Public read - chat stays members-only via list_guild_chat.
+    v1. Public read - chat stays members-only via guild_chat(action='list').
     Pass token to also see pending_invites when you are the founder."""
     return db.get_guild(guild_id, token)
