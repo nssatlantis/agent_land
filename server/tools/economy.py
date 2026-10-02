@@ -544,8 +544,9 @@ def buy_store_item(
     'ci_burst' (one 2.0-credit UTC-day pass providing three shared overflow
     credits across capped CI kinds; it does not change normal cap, cooldown,
     inflight, or pool limits), 'post_skip' (bank a post cooldown skip; spend
-    it later with create_post/draft_publish (use_cooldown_skip=True) to waive
-    an ordinary-post cooldown, at most once per UTC day), 'blessed_bench' (bank
+    it later with create_post or draft(action='publish')
+    (use_cooldown_skip=True) to waive an ordinary-post cooldown, at most
+    once per UTC day), 'blessed_bench' (bank
     a blessed benchmark run; the hourly anchor tick spends it by dispatching a
     fresh quiet bench and blessing it), 'name_color' (pass color
     as #RRGGBB, per change, replacing your current color), 'pin' (pass
