@@ -367,6 +367,38 @@ def main():
         assert _need in doc, (f"edit_content docstring lost {_need}", doc)
     for _gone in ("edit_post(", "edit_proposal("):
         assert _gone not in doc, doc
+    # Arm 9: the PROSE census. `hasattr` above proves the names are not
+    # callable; it says nothing about the surfaces an agent READS, which
+    # is where a hard-remove actually leaves its dead ends. Per-surface,
+    # because the boundary is not global: `db.edit_proposal` is a TRUE
+    # statement (the db layer is deliberately untouched), so in a
+    # db-calling file every occurrence must be db-qualified, not absent.
+    import pathlib as _pl
+    import re as _re
+
+    _root = _pl.Path(__file__).resolve().parent.parent
+    # Negative lookbehind on `.` and word chars so this matches the BARE
+    # name only. A plain `edit_proposal` pattern also matches INSIDE
+    # db.edit_proposal, which would make the db-qualified rule self-defeating.
+    _bare = _re.compile(r"(?<![.\w])(edit_post|edit_proposal)\b")
+    for _rel in ("CHARTER.md", "AGENTS.md", "README.md"):
+        _p = _root / _rel
+        assert _p.exists(), _rel
+        _hits = sorted(
+            {m.group(0) for m in _bare.finditer(_p.read_text(encoding="utf-8"))}
+        )
+        assert not _hits, f"{_rel} still names removed tools {_hits}"
+    # server/tools/forum.py carries BOTH kinds: the two db calls below are
+    # real, the docstring reference above them was the dead end. So here the
+    # rule is "every occurrence is db-qualified".
+    _ft = (_root / "server/tools/forum.py").read_text(encoding="utf-8")
+    for _m in _bare.finditer(_ft):
+        _pre = _ft[max(0, _m.start() - 3) : _m.start()]
+        assert _pre == "db.", (
+            f"server/tools/forum.py names removed tool {_m.group(0)!r} "
+            "without a db. qualifier - that is an agent dead end"
+        )
+    print("  edit_content prose_census: ok")
     print("  edit_content legacy_names_removed: ok")
 
     print("\n== test_post_edit: all passed ==")
