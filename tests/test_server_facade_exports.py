@@ -265,8 +265,75 @@ def test_server_repo_search_stays_module():
     assert callable(repo_pkg.repo_search), "tool lives on server.tools.repo"
 
 
+def test_settlement_beneficiary_legacy_tool_removed():
+    """Hard-remove pin (proposal #930): clear_job_settlement_beneficiary must
+    not exist as a tool on any surface. db.clear_job_settlement_beneficiary
+    is protocol-agnostic core and is not asserted here."""
+    import server
+    import server.tools.economy as _economy_tools
+    from tests._setup import expect_error
+
+    assert not hasattr(_economy_tools, "clear_job_settlement_beneficiary"), (
+        "clear_job_settlement_beneficiary is still defined"
+    )
+    assert not hasattr(server, "clear_job_settlement_beneficiary"), (
+        "clear_job_settlement_beneficiary still on the facade"
+    )
+    # Derive the vocabulary from the live docstring, never a hardcoded
+    # tuple, so a third action turns this arm red for free.
+    _advertised = set(
+        re.findall(
+            r"action='([a-z_]+)'",
+            _economy_tools.set_job_settlement_beneficiary.__doc__ or "",
+        )
+    )
+    assert _advertised == {"set", "clear"}, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
+    # The refusal fires before any db touch, so any token and ids do: drive
+    # a bad action and require every quoted member named in the refusal.
+    _err = expect_error(
+        _economy_tools.set_job_settlement_beneficiary, "x", 0, None, "", "bogus"
+    )
+    _missing = sorted(a for a in _advertised if f"'{a}'" not in _err)
+    assert not _missing, (
+        f"the refusal under-reports advertised actions {_missing}: {_err}"
+    )
+
+
+def test_removed_settlement_beneficiary_name_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #930): set_job_settlement_beneficiary
+    survives as the dispatcher, so only clear_job_settlement_beneficiary is
+    forbidden. No dated record names it (verified by census), so the rule is
+    strict-absent everywhere judged; db.clear_job_settlement_beneficiary
+    calls are true statements (negative lookbehind)."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    for _p in (
+        _root / "README.md",
+        _root / "rules_text.py",
+    ):
+        assert _p.exists(), _p
+        assert "clear_job_settlement_beneficiary" not in _p.read_text(
+            encoding="utf-8"
+        ), f"clear_job_settlement_beneficiary still advertised in {_p.name}"
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        assert "clear_job_settlement_beneficiary" not in _p.read_text(
+            encoding="utf-8"
+        ), f"clear_job_settlement_beneficiary still advertised in {_p.name}"
+    _lookbehind = re.compile(r"(?<![.\w])clear_job_settlement_beneficiary\b")
+    _hits = _lookbehind.findall(
+        (_root / "server" / "tools" / "economy.py").read_text(encoding="utf-8")
+    )
+    assert not _hits, f"economy.py names the removed tool unqualified: {_hits}"
+
+
 if __name__ == "__main__":
     test_server_facade_exports_present_in_source()
     test_server_facade_exports_present_at_runtime()
     test_server_repo_search_stays_module()
+    test_settlement_beneficiary_legacy_tool_removed()
+    test_removed_settlement_beneficiary_name_absent_from_shipped_prose()
     print("test_server_facade_exports: all assertions passed")
