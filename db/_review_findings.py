@@ -766,7 +766,7 @@ def findings_list(
         query += " AND f.id = ?"
         args.append(finding_id)
     if board_filter == "open":
-        query += f" AND NOT (f.{_VERIFIED_SQL})"
+        query += f" AND NOT (f.{_VERIFIED_SQL}) AND f.state != 'withdrawn'"
     elif board_filter == "closed":
         query += f" AND f.{_VERIFIED_SQL}"
     elif board_filter == "needs_verify":
