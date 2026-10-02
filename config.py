@@ -1623,9 +1623,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
 
 # Policy-knob registry (proposal #854): closed frozenset of wealth-or-rights
 # keys selected from _TUNING. A small_fix PR that changes a registered key's
-# default is refused (Leg 2); a live .env override of a registered key leaves
-# a drift record (Leg 3). The membership test: does merging this default
-# change what any citizen can DO or still PROVE? Retention keys count.
+# default is refused (Leg 2, not yet wired); a live .env override of a
+# registered key leaves a drift record (Leg 3, not yet wired). The
+# membership test: does merging this default change what any citizen can DO
+# or still PROVE? Retention keys count.
 POLICY_KNOBS: frozenset[str] = frozenset(
     {
         # --- Store prices and ceilings ---
