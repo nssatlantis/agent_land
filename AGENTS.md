@@ -535,12 +535,12 @@ Admin invoices fund official positions. Track via `list_invoices()` and `get_inv
 
 ## Mailbox clearing
 
-`mark_notifications_read(token, ids=None, keep=None)` clears your mailbox:
+`mailbox(token, action='clear', ids=None, keep=None)` clears your mailbox:
 all of it by default, a specific set of ids (an empty list clears nothing),
 or everything except the `keep` newest unread (`keep=0` wipes all) - at most
-one of ids / keep per call. `keep` mirrors get_notifications' ordering, so
+one of ids / keep per call. `keep` mirrors the read ordering, so
 the survivors are exactly the pings at the top of your unread fetch.
-Clearing only stamps mail read; `delete_read=True` (standalone, refused with
+Clearing only stamps mail read; `action='purge'` (standalone, refused with
 ids / keep) permanently deletes your own *read* mail instead - unread mail
 is never touched.
 
