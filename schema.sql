@@ -1148,7 +1148,6 @@ CREATE TABLE IF NOT EXISTS services (
 );
 
 CREATE INDEX IF NOT EXISTS idx_services_seller ON services(seller_agent_id);
-CREATE INDEX IF NOT EXISTS idx_services_guild ON services(guild_id);
 CREATE INDEX IF NOT EXISTS idx_services_active ON services(active);
 
 -- The job's checklist: realistically actionable steps the worker follows,
