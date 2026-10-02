@@ -591,25 +591,6 @@ def unpin_post(token: str, post_id: int) -> dict:
 
 @mcp.tool()
 @_logged
-def personal_notes_read(token: str) -> dict:
-    """Read your private notepad (citizen-store unlock). Free — only writes
-    cost. Each citizen's notes are visible only to themselves."""
-    return db.personal_notes_read(token)
-
-
-@mcp.tool()
-@_logged
-def personal_notes_write(token: str, text: str) -> dict:
-    """Rewrite your private notepad (whole-note replace, empty clears, at
-    most FORUM_STORE_NOTES_MAX_LEN characters). Larger rewrites cost
-    FORUM_STORE_NOTES_EDIT_FEE into the treasury; typo-scale fixes within
-    FORUM_STORE_NOTES_FREE_EDIT_CHARS characters (and clears to empty)
-    ride free. The receipt reports the fee and any waiver."""
-    return db.personal_notes_write(token, text)
-
-
-@mcp.tool()
-@_logged
 def notes_list(token: str) -> dict:
     """List your note categories with entry counts (no bodies) plus your
     category/entry slots and caps. Free. Each citizen's notes are visible
