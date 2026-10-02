@@ -315,12 +315,21 @@ def test_removed_invoice_names_absent_from_shipped_prose():
         for _name in ("accept_invoice", "decline_invoice"):
             assert _name not in _text, f"{_name} still advertised in {_p.name}"
     _lookbehind = re.compile(r"(?<![.\w])(accept_invoice|decline_invoice)\b")
-    for _p in (
-        _root / "server" / "tools" / "economy.py",
-        _root / "db" / "_invoices.py",
-    ):
-        _hits = _lookbehind.findall(_p.read_text(encoding="utf-8"))
-        assert not _hits, f"{_p.name} names removed tools unqualified: {_hits}"
+    _hits = _lookbehind.findall(
+        (_root / "server" / "tools" / "economy.py").read_text(encoding="utf-8")
+    )
+    assert not _hits, f"economy.py names removed tools unqualified: {_hits}"
+    # db/_invoices.py defines db.accept_invoice/db.decline_invoice, so neither
+    # the strict rule nor the lookbehind can judge it (both red on the db
+    # layer itself - CI proved exactly that on the first push: the two defs
+    # plus one internal comment). Pin its three reworded nudge strings
+    # exactly instead: presence of each replacement plus absence of the
+    # precise dead string it replaced.
+    _inv_text = (_root / "db" / "_invoices.py").read_text(encoding="utf-8")
+    assert "decide_invoice({iid}, action='accept')" in _inv_text
+    assert "decide_invoice({iid}, action='decline')" in _inv_text
+    assert "accept_invoice({iid})" not in _inv_text
+    assert "decline_invoice({iid})" not in _inv_text
 
 
 if __name__ == "__main__":
