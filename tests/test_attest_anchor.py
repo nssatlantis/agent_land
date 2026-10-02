@@ -184,6 +184,30 @@ class TestAnchorResolution(AnchorBase):
         self.assertIn("99999", str(ctx.exception))
         # Fail-closed: nothing was written.
         self.assertEqual(self._state(fid), "open")
+    def test_a_pr_routable_only_via_pr_rows_still_resolves(self):
+        """The pr_rows half of _pr_exists is a surviving mutant without this.
+
+        setUp seeds `proposal_links` only, so deleting the pr_rows fallback
+        reds nothing in this file - and that fallback is the whole reason a
+        remedy PR opened OUTSIDE the forum can ever be named as an anchor (the
+        #870 case, where attach_pr_to_proposal never ran). Drive the shape the
+        fallback exists for: present in pr_rows, absent from proposal_links.
+        """
+        import db._review_findings as rf
+
+        fid = self._finding()
+        orphan = 4242
+        with db._conn(immediate=True) as c:
+            c.execute(
+                "INSERT OR IGNORE INTO pr_rows (pr_number) VALUES (?)", (orphan,)
+            )
+        with db._conn() as c:
+            self.assertTrue(
+                rf._pr_exists(c, orphan), "a pr_rows-only pr must stay routable"
+            )
+        self._resolve(fid, remedy_pr=orphan)
+        self.assertEqual(rf.anchor_pr(self._row(fid)), orphan)
+
 
     def test_re_resolve_clears_the_prior_anchor(self):
         """A re-declared fix must not inherit the old anchor - the row
@@ -942,6 +966,38 @@ class TestAnchorWrapper(AnchorBase):
                 asyncio.run(wf.finding_verify("tok-" + str(AGENT_WITNESS), fid, _SHA_B))
         self.assertIn("merged or", str(ctx.exception))
         self.assertIsNone(self._row(fid)["verified_head_sha"])
+
+    def test_cross_anchored_closed_UNMERGED_remedy_still_refuses(self):
+        """The hole this pins, and the reason it needed its own arm.
+
+        The carve-out for a declared remedy was keyed on `cross_anchored`
+        rather than on `merged`, so a DECLARED remedy PR that was opened and
+        CLOSED WITHOUT MERGING was attestable: a throw-away draft whose bytes
+        are not in main and may never have contained the fix. The resolver
+        picks the anchor, so that is a route to resolving a finding against a
+        tree nobody will ever ship - the exact failure #93 exists to prevent.
+
+        The two neighbouring arms each cover HALF of this and neither covers
+        the intersection: `test_declared_remedy_on_a_merged_pr_is_accepted`
+        gives {state: closed, merged: True}, and
+        `test_closed_state_without_the_merged_flag_also_refuses` gives the
+        NON-cross-anchored closed-unmerged shape. Cross-anchored AND closed
+        without merging was constructed by no test at all.
+        """
+        import server.tools.repo._findings as wf
+
+        fid = self._finding()
+        self._resolve(fid, remedy_pr=REMEDY)
+
+        def fake_raw(pr_number, *a, **k):
+            return {"head": {"sha": _SHA_B}, "state": "closed"}
+
+        with mock.patch.object(wf.github, "_pr_raw", side_effect=fake_raw):
+            with self.assertRaises(db.ForumError) as ctx:
+                asyncio.run(wf.finding_verify("tok-" + str(AGENT_WITNESS), fid, _SHA_B))
+        self.assertIn("merged or", str(ctx.exception))
+        self.assertIsNone(self._row(fid)["verified_head_sha"])
+
 
     def test_post_write_recheck_stales_against_the_ANCHOR(self):
         """The fail-closed compensation must name the anchor too, or a
