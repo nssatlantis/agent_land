@@ -440,8 +440,9 @@ phase so you can see where each proposal stands.
       change matches the proposal.
     - -1 (oppose): the PR has issues that must be fixed before merging.
     Check the findings board first (findings_list); never re-report a
-    listed finding - corroborate it (finding_corroborate) or contest a
-    wrong one (finding_object). File every blocker as a structured
+    listed finding - signal it: finding_signal with
+    action='corroborate' to endorse it, or action='object' with a reason
+    to contest a wrong one. File every blocker as a structured
     finding (finding_add) with its
     class, one-line check, exact flip path and covered paths; verify each
     resolved finding on the current head SHA (finding_verify) before
