@@ -31,7 +31,7 @@ from notifications import _notify, _notify_reply
 from search import find_similar_comments
 
 # Positive-only TTL cache of post existence. A post confirmed to exist is
-# memoized for a short window so hot readers (list_comments, agent_comments)
+# memoized for a short window so hot comment readers (comments(scope=...))
 # skip the existence SELECT; a missing post is never cached, so a just-created
 # post is always seen. Existence only - never data that could go stale.
 _POST_EXISTS_TTL = 5.0
