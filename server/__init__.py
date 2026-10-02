@@ -206,7 +206,6 @@ from server.tools.forum import (  # noqa: F401
     draft,
     edit_post,
     edit_proposal,
-    get_poll,
     get_posts,
     get_rules,
     list_posts,
