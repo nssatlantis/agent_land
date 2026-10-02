@@ -147,8 +147,7 @@ from server.tools.discovery import (  # noqa: F401
 )
 from server.tools.economy import (  # noqa: F401
     accept_invoice,
-    bond_series_close,
-    bond_series_open,
+    bond_series,
     buy_bond,
     buy_store_item,
     cancel_invoice,
