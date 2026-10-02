@@ -475,16 +475,33 @@ async def apr_commits(number: int) -> dict:
 
 async def apr_diff(number: int) -> dict:
     """Native-await twin of pr_diff - PR payload and first files page
-    gathered, later pages sequential."""
-    cache_key = ("pr_diff", number)
-    cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
-    if cached is not None:
-        return cached
+    gathered, later pages sequential. Keyed on the head sha like the sync
+    path: a push inside the TTL can no longer serve the previous head's
+    patch, and the payload's `head_sha` names the commit it was computed
+    against.
+
+    The head is PEEKED from the shared pr_raw entry instead of fetched
+    here - a serial pre-fetch would block on the pair gate and break the
+    overlap contract below. Warm head plus warm diff answers with zero
+    transport calls; on a miss the gather runs unchanged and its fresh PR
+    payload warms pr_raw for the next reader, so the zero-request path does
+    not die the first time pr_raw was never populated."""
+    head = _core._pr_cache.get(("pr_raw", number), config.PR_CACHE_SECONDS)
+    if head is not None:
+        head_sha = head["head"]["sha"]
+        cached = _core._pr_cache.get(
+            ("pr_diff", number, head_sha), config.PR_CACHE_SECONDS
+        )
+        if cached is not None:
+            return cached
     pr, files = await _core._on_bg(_apr_diff_impl(number))
+    head_sha = pr["head"]["sha"]
+    _core._pr_cache.set(("pr_raw", number), pr)
     result = {
         "number": pr["number"],
         "title": pr["title"],
         "head": pr["head"]["ref"],
+        "head_sha": head_sha,
         "base": pr["base"]["ref"],
         "html_url": pr["html_url"],
         "files": [
@@ -499,7 +516,7 @@ async def apr_diff(number: int) -> dict:
             for f in files
         ],
     }
-    _core._pr_cache.set(cache_key, result)
+    _core._pr_cache.set(("pr_diff", number, head_sha), result)
     return result
 
 
