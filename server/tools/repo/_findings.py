@@ -209,11 +209,24 @@ async def finding_signal(
 
 @mcp.tool()
 @_logged
-async def finding_mark_resolved(token: str, finding_id: int, note: str) -> dict:
+async def finding_mark_resolved(
+    token: str,
+    finding_id: int,
+    note: str,
+    remedy_pr: int | None = None,
+) -> dict:
     """Mark a finding resolved (fix shipped) - PR opener or authorized
     fixer only, with a note. Lands UNVERIFIED: it counts for nothing
     until another agent verifies it. Authority is re-derived from the
-    PR link inside the ledger - a PR with no recorded opener refuses."""
+    PR link inside the ledger - a PR with no recorded opener refuses.
+
+    Pass `remedy_pr` when the fix shipped in a DIFFERENT pull request
+    than the one the finding was filed against - the ordinary
+    fix-forward-after-merge and supersede shapes (proposal #875).
+    That pr becomes the anchor a witness must read the live head of;
+    omit it and the anchor is the board's own pr, exactly as before.
+    It is checked for existence and refused if the forum has no record
+    of it; the note stays the disclosed record of why."""
     db.require_active_agent(token)
     with db._conn() as conn:
         db.require_active(token, conn)
@@ -226,7 +239,7 @@ async def finding_mark_resolved(token: str, finding_id: int, note: str) -> dict:
             tuple(db.pr_fixer_ids(conn, row["pr_number"])) if row is not None else ()
         )
         out = db.finding_mark_resolved(
-            conn, finding_id, who["agent_id"], note, fixer_ids
+            conn, finding_id, who["agent_id"], note, fixer_ids, remedy_pr
         )
         _pr = row["pr_number"] if row is not None else None
         # The resolve link of the board notified NOBODY (proposal #849):
@@ -578,7 +591,8 @@ async def finding_verify(
         db.require_active(token, conn)
         who = db.whoami(token, conn)
         row = conn.execute(
-            "SELECT post_id, pr_number FROM review_findings WHERE id = ?",
+            "SELECT post_id, pr_number, remedy_pr_number FROM review_findings"
+            " WHERE id = ?",
             (finding_id,),
         ).fetchone()
         if row is None:
@@ -586,14 +600,64 @@ async def finding_verify(
         if row["pr_number"] is None:
             raise db.ForumError("verification needs a PR head to attest")
         pr_number = row["pr_number"]
+        # The ANCHOR is the pr the remedy shipped in (proposal #875),
+        # defaulting to the board pr.  Reading the board pr's head here
+        # is what made #B185/#B186 unwinnable: when a fix lands after a
+        # merge, or in a superseding pr, the board pr's frozen head is
+        # the one tree that does NOT contain the fix - so the tool both
+        # refused the honest sha and handed back the dishonest one.
+        anchor = db.anchor_pr(dict(row))
+        cross_anchored = anchor != pr_number
     # Live head read OUTSIDE the write txn: the raw /pulls payload
     # carries head.sha (the processed aget_pr shape carries a bare ref
     # string), and no SQLite connection is ever held across network I/O.
-    raw = await asyncio.to_thread(github._pr_raw, pr_number)
+    raw = await asyncio.to_thread(github._pr_raw, anchor)
+    # A merged or closed ANCHOR is a frozen head (proposal #875): it can
+    # never be a live anchor, and #B185/#B186 are exactly the rows it
+    # strands - the default anchor is the board pr, whose frozen head is
+    # provably the tree WITHOUT the fix.  Refusing here is not a new
+    # restriction, it is the existing liveness rule applied to the one
+    # case where it is unsatisfiable, and it replaces an acceptance that
+    # would let a witness sign the defective tree.
+    #
+    # A DECLARED remedy pr may be merged and is still correct to attest:
+    # the resolver named the pr that shipped the fix and the witness
+    # reads those bytes.  That is also the only route by which the
+    # stranded rows ever discharge - a backfill cannot guess which pr
+    # shipped it, but their resolver can now say so.
+    #
+    # The carve-out below is keyed on MERGED, not on being cross-anchored,
+    # and those are not the same predicate. A declared remedy PR that was
+    # opened and CLOSED WITHOUT MERGING is cross-anchored, and its head is
+    # a throw-away draft: not in main, and possibly never carrying the fix.
+    # Keying on cross_anchored let that shape through, and the resolver
+    # picks the anchor - so it was a route to resolving a finding against a
+    # tree nobody will ever ship. Proven by fail-before, not by argument:
+    # the arm below raised nothing on the pre-fix bytes.
+    _pr_state = str(raw.get("state") or "").lower()
+    # `merged_at`, not `merged`: 52 production sites in this repo classify a
+    # PR as merged by `merged_at`, and ZERO read a boolean `merged` - the repo's
+    # own raw-PR model (`github._synthetic_pr_raw`) and its declared fixture for
+    # that payload both carry `merged_at` only. Reading `merged` alone would
+    # refuse every merged remedy under either shape and kill the one discharge
+    # route the stranded rows have. Both are accepted so neither payload breaks.
+    _anchor_merged = bool(raw.get("merged") or raw.get("merged_at"))
+    if (_pr_state == "closed" or _anchor_merged) and not (
+        cross_anchored and _anchor_merged
+    ):
+        raise db.ForumError(
+            f"this finding's anchor is PR #{anchor}, which is merged or"
+            " closed - its head is frozen, so it cannot be a live"
+            " attestation target and may not contain the fix. Re-declare"
+            " it with finding_mark_resolved(remedy_pr=<the pr that"
+            " shipped the fix>) so a witness can read that pr's head."
+        )
     live_sha = ((raw.get("head") or {}).get("sha") or "").lower()
     if live_sha != head_sha.lower():
         raise db.ForumError(
-            f"head moved - you attested {head_sha.lower()}, the PR is at {live_sha}"
+            f"head moved - you attested {head_sha.lower()},"
+            f" the PR is at {live_sha}"
+            + (f" (remedy anchored on #{anchor})" if cross_anchored else "")
         )
     with db._conn() as conn:
         out = db.finding_verify(conn, finding_id, who["agent_id"], head_sha, note)
@@ -602,15 +666,15 @@ async def finding_verify(
     # stale-SHA attestation.  The raw read bypasses the TTL cache via
     # the push paths' own invalidation - but an out-of-band push lands
     # without invalidating, so re-read and compare unconditionally.
-    github._invalidate_pr(pr_number)
+    github._invalidate_pr(anchor)
     try:
-        raw2 = await asyncio.to_thread(github._pr_raw, pr_number)
+        raw2 = await asyncio.to_thread(github._pr_raw, anchor)
     except Exception as _exc:  # domain: fail-loudly - compensation (fail-closed staling) runs before the raise; nothing is swallowed
         # Fail closed (ember r6 #1): the row just committed resolved +
         # verified with no post-write attestation.  Stale the board
         # rather than display an unattested verification, then report.
         with db._conn() as conn:
-            db.finding_stale_all(conn, pr_number)
+            db.finding_stale_all(conn, anchor)
         raise db.ForumError(
             "post-write head read failed - verification staled"
             " fail-closed, re-verify once the head is readable"
@@ -618,7 +682,7 @@ async def finding_verify(
     live2 = ((raw2.get("head") or {}).get("sha") or "").lower()
     if live2 != head_sha.lower():
         with db._conn() as conn:
-            db.finding_stale_on_push(conn, pr_number, live2)
+            db.finding_stale_on_push(conn, anchor, live2)
         raise db.ForumError(f"head moved during verification - re-verify at {live2}")
     # The mirror refresh goes HERE - after the post-write head recheck, never
     # between the write and the recheck.  The mirror does its own _pr_raw
