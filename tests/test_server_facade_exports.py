@@ -65,6 +65,7 @@ EXPECTED = [
     "thread",
     "poll",
     "deltas",
+    "edit_content",
     # repo tools
     "repo_list_tree",
     "repo_read_file",
