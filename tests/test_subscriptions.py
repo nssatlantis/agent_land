@@ -195,13 +195,11 @@ def main():
     # the db function is NOT part of the removal
     assert hasattr(db, "list_subscriptions"), "db.list_subscriptions must survive"
 
-    # The list capability moved onto the surviving dispatcher, so its
-    # docstring must advertise action='list' - the docstring is the agent's
-    # only reference after the hard-remove.
-    # The advertised-vocabulary check (action='list' must be parseable, and
-    # the refusal must name it) already lives in the dispatcher pin above -
-    # deliberately NOT repeated here, since a second copy of the same
-    # derivation is decoration. What that pin cannot see is the REMOVAL.
+    # The advertised-vocabulary half (action='list' parseable in the
+    # docstring, and named in the refusal) already lives in the dispatcher
+    # pin above - deliberately NOT repeated here, since a second copy of the
+    # same derivation is decoration. What that pin cannot see is the
+    # REMOVAL itself, which is the whole point of this hard-remove.
 
     print("test_subscriptions: all assertions passed")
     import shutil
