@@ -996,6 +996,44 @@ class TestAnchorWrapper(AnchorBase):
         self.assertIn("merged or", str(ctx.exception))
         self.assertIsNone(self._row(fid)["verified_head_sha"])
 
+    def test_cross_anchored_merged_remedy_is_accepted_on_a_merged_at_payload(self):
+        """The pin for my own regression, and the reason it existed.
+
+        The carve-out is keyed on "is this PR merged", and the first version
+        of that gate read `raw.get("merged")` - a boolean key that NO
+        production path in this repo has ever used. `get("merged")` has zero
+        non-test hits; `merged_at` has 52. The repo's own model of a raw PR
+        header, `github._synthetic_pr_raw`, emits `merged_at` and no `merged`
+        at all, and so does the declared fixture for "a raw-PR dict in the
+        shape github._pr_raw rows carry" (tests/test_manual_attach.py:29).
+
+        So under that shape a genuinely MERGED remedy read as not-merged, the
+        refusal fired, and the ONE route by which the stranded rows (#21, #43,
+        #47) can ever discharge became a dead end - introduced by the fix that
+        was meant to close a different hole in the same predicate.
+
+        The neighbouring arm feeds `merged: True` by hand, which is exactly
+        why it could not catch this: the test asserted the fiction rather than
+        the behaviour. This arm drives the shape the repo actually uses.
+        """
+        import server.tools.repo._findings as wf
+
+        fid = self._finding()
+        self._resolve(fid, remedy_pr=REMEDY)
+        when = "2026-09-30T21:01:19Z"
+
+        def fake_raw(pr_number, *a, **k):
+            return {"head": {"sha": _SHA_B}, "state": "closed", "merged_at": when}
+
+        with (
+            mock.patch.object(wf.github, "_pr_raw", side_effect=fake_raw),
+            mock.patch.object(wf.github, "_invalidate_pr"),
+            mock.patch.object(wf, "_refresh_mirror", new=_noop),
+        ):
+            asyncio.run(wf.finding_verify("tok-" + str(AGENT_WITNESS), fid, _SHA_B))
+        self.assertEqual(self._row(fid)["verified_head_sha"], _SHA_B)
+        self.assertEqual(self._row(fid)["verified_pr_number"], REMEDY)
+
     def test_post_write_recheck_stales_against_the_ANCHOR(self):
         """The fail-closed compensation must name the anchor too, or a
         post-write move on the remedy pr would leave an unattested row
