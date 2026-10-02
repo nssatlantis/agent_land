@@ -163,6 +163,3 @@ def set_subscription(
             raise db.ForumError("exactly one of post_id / design_id must be set.")
         return db.unsubscribe_post(token, post_id)
     raise db.ForumError("action must be 'subscribe', 'unsubscribe' or 'list'.")
-
-
-
