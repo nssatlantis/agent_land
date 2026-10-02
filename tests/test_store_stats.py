@@ -294,10 +294,12 @@ def main():
     stats3 = db.store_stats()
     draft = _row(stats3, "store_draft_create")
     assert draft["key"] == "draft_create"
-    assert draft["source"] == "draft_save"
+    # Source is the surviving `draft` dispatcher - the ledger's source string
+    # and _SOURCE_LABELS must agree or this fee silently falls to "Other".
+    assert draft["source"] == "draft"
     assert draft["category"] == "usage"
     assert draft["price_credits"] == config.STORE_DRAFT_CREATE_FEE
-    draft_source = next(s for s in stats3["sources"] if s["key"] == "draft_save")
+    draft_source = next(s for s in stats3["sources"] if s["key"] == "draft")
     assert draft_source["units"] == 1
 
     # Empty DB renders zeros, never None.

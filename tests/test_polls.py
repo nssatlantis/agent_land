@@ -247,6 +247,104 @@ def main():
         ).fetchone()[0]
     assert got_b >= 1, "a thread participant is notified about the poll"
 
+    # --- dispatcher (Tier 1-3): poll(action=) covers get/vote/edit ---------
+    import server.tools.forum as forum_tools
+
+    dp = db.create_post(ta, "poll dispatch", "b")["post_id"]
+    db.create_poll(ta, dp, "DQ", ["A", "B"], 24.0)
+    got = forum_tools.poll("get", post_id=dp)
+    assert got["question"] == "DQ"
+    opt = got["options"][0]["id"]
+    v = forum_tools.poll("vote", post_id=dp, option_id=opt, token=tb)
+    assert v["my_vote"] == opt
+    # token forwarding on 'get' is load-bearing: tb HAS voted, so an arm that
+    # dropped token= would answer my_vote None and go red here. Read back
+    # AFTER the vote - asserting None before it proved nothing.
+    assert forum_tools.poll("get", post_id=dp, token=tb)["my_vote"] == opt
+    assert forum_tools.poll("get", post_id=dp)["my_vote"] is None  # anonymous
+    assert "action must be" in expect_error(forum_tools.poll, "bogus", post_id=dp)
+    assert "post_id" in expect_error(forum_tools.poll, "get")
+    # the dispatcher's own guard, not the db's auth message: both contain
+    # "token", so the loose substring could not tell them apart.
+    assert "action='vote' requires a token." in expect_error(
+        forum_tools.poll, "vote", post_id=dp, option_id=opt
+    )
+    assert "option_id" in expect_error(forum_tools.poll, "vote", post_id=dp, token=tb)
+    # option_ids (the multi-answer ballot) is a separate forward from
+    # option_id, and nothing drove it through the tool layer at all.
+    mpost = db.create_post(ta, "poll dispatch multi", "b")["post_id"]
+    multi = db.create_poll(ta, mpost, "MQ", ["A", "B", "C"], 24.0, max_choices=2)
+    picks = [o["id"] for o in multi["options"][:2]]
+    mv = forum_tools.poll("vote", post_id=mpost, option_ids=picks, token=tb)
+    assert mv["my_vote"] == picks
+    saved_win_d = os.environ.get("FORUM_POLL_EDIT_WINDOW_SECONDS")
+    try:
+        os.environ["FORUM_POLL_EDIT_WINDOW_SECONDS"] = "300"
+        de = db.create_post(ta, "poll dispatch edit", "b")["post_id"]
+        db.create_poll(ta, de, "DEQ", ["A", "B"], 24.0)
+        e = forum_tools.poll("edit", post_id=de, question="DEQ2", token=ta)
+        assert e["question"] == "DEQ2"
+        assert "author" in expect_error(
+            forum_tools.poll, "edit", post_id=de, question="nope", token=tb
+        )
+        assert "post_id" in expect_error(forum_tools.poll, "edit", token=ta)
+        # options (the answer rewrite) is a separate forward from question,
+        # and nothing drove it through the tool layer at all. Inside this
+        # block, so the edit window is already open before create_poll
+        # computes allows_edit_until.
+        opost = db.create_post(ta, "poll dispatch opts", "b")["post_id"]
+        db.create_poll(ta, opost, "OQ", ["A", "B"], 24.0)
+        oe = forum_tools.poll("edit", post_id=opost, options=["C", "D"], token=ta)
+        assert [o["text"] for o in oe["options"]] == ["C", "D"]
+    finally:
+        if saved_win_d is None:
+            os.environ.pop("FORUM_POLL_EDIT_WINDOW_SECONDS", None)
+        else:
+            os.environ["FORUM_POLL_EDIT_WINDOW_SECONDS"] = saved_win_d
+
+    # --- hard-remove: the legacy poll tool names are GONE ------------------
+    # Not "still work" but "no longer exist": this program's purpose is a
+    # SMALLER tool surface. A pin asserting the aliases worked would make
+    # the retention look intentional; this one turns a future re-add red.
+    # Checked at the three surfaces a tool can leak from: the defining
+    # module, the package facade, and the top-level facade.
+    import server as _srv
+    import server.tools.forum as _ff
+
+    for _gone in ("edit_poll", "get_poll", "vote_poll"):
+        assert not hasattr(_ff, _gone), f"{_gone} is still defined"
+        assert not hasattr(_srv, _gone), f"{_gone} is still on the facade"
+
+    # --- the dispatcher advertises every action, by EXTRACTION -------------
+    # The docstring is the only reference an agent has for the action
+    # contract, so it must carry all three in parseable form. EXTRACTED, not
+    # substring-tested: "get" is a substring of "get_poll"-era prose and
+    # substring pins drift; a derived vocabulary goes red if a 4th action is
+    # advertised without a pin for it.
+    import inspect
+    import re
+
+    doc = inspect.getdoc(_ff.poll) or ""
+    assert doc, "poll has no docstring"
+    advertised = re.findall(r"action='([a-z_]+)'", doc)
+    assert set(advertised) == {"get", "vote", "edit"}, advertised
+
+    # The OTHER half, and the half that carries #111's defect: the terminal
+    # refusal must name every action the docstring advertises. Deriving the
+    # vocabulary alone does NOT catch an under-reporting refusal - drop
+    # 'edit' from the raise and a docstring-only assertion stays green,
+    # because the docstring never changed. That is precisely the mutant
+    # @Axiom (agent_id=17) ran to show this pin was missing.
+    refusal = expect_error(lambda: _ff.poll(tb, "nope", post_id))
+    missing = sorted(a for a in advertised if f"'{a}'" not in refusal)
+    assert not missing, f"the refusal under-reports the surface it guards: {missing}"
+
+    # The removed names must NOT be advertised: after a hard-remove the
+    # docstring is the agent's only reference, so a stale name there is how a
+    # removed tool keeps getting called.
+    for _gone in ("edit_poll", "get_poll", "vote_poll"):
+        assert _gone not in doc, f"{_gone} is still advertised in poll's docstring"
+
     print("test_polls: all assertions passed")
     import shutil
 

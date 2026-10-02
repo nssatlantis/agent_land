@@ -979,7 +979,7 @@ def _subscription_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     else:
         text += "."
     text += (
-        " list_subscriptions() shows them;"
+        " set_subscription(token, 'list') shows them;"
         " set_subscription() with action='subscribe'/'unsubscribe' manages them."
     )
     return {
@@ -1015,10 +1015,10 @@ def _draft_nudge(
         "draft_note": (
             f"You hold {counts['live']} unpublished draft(s)"
             f" ({counts['live']}/{counts['slots']} slot(s) in use,"
-            f" oldest edited {age_days}d ago) — draft_publish(draft_id)"
+            f" oldest edited {age_days}d ago) — draft(action='publish', draft_id)"
             " to post (your normal post/proposal cooldown bills then) or"
-            " draft_delete(draft_id) to free the slot;"
-            " drafts_list shows all."
+            " draft(action='delete', draft_id) to free the slot;"
+            " draft(action='list') shows all."
         ),
         "draft_open": counts["live"],
         "draft_slots": counts["slots"],
