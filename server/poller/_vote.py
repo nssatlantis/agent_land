@@ -713,6 +713,28 @@ def _pr_vote_sweep(
                         if cached is not None:
                             local_results[(num, gh_sha)] = cached
 
+    # Findings gate (proposal #915): a PR carrying any finding that is
+    # not an independently verified resolution is not auto-merged.  Read
+    # ONCE for the whole sweep rather than per candidate.
+    #
+    # Fail-closed on a read failure: every candidate is treated as
+    # outstanding, because the safe direction for a gate is to refuse
+    # rather than to guess, and a board we cannot read is not a board
+    # we may treat as clear.  The sentinel row carries id=None so the
+    # log below can say "the board was unreadable" distinctly from
+    # "finding #N held it".
+    try:
+        with db._conn() as conn:
+            outstanding = db.unresolved_findings_by_pr(
+                conn, [pr["number"] for pr, _, _ in candidates]
+            )
+    except Exception as exc:  # domain: degrade-silently - unreadable board
+        logutil.log("pr_vote_findings_read_failed", error=str(exc)[:200])
+        outstanding = {
+            pr["number"]: [{"id": None, "state": "unreadable"}]
+            for pr, _, _ in candidates
+        }
+
     merge_candidates: list[tuple] = []
     for pr, opener, proposal_post_id in candidates:
         number = pr["number"]
@@ -727,6 +749,29 @@ def _pr_vote_sweep(
                 continue
         except Exception:
             continue  # unknown proposal state; never auto-merge on doubt
+        # Findings gate (proposal #915), between the two checks above and
+        # the label check below.  Deliberately STATE-based and read HERE,
+        # in Phase 1: Phase 2 rebases first and the rebase stales every
+        # row whose verified_head_sha no longer matches, so a head-pinned
+        # read after that point would be unsatisfiable - the poller's own
+        # rebase would invalidate the attestation that cleared the
+        # finding, on every sweep, forever.
+        held = outstanding.get(number)
+        if held:
+            # Logged, not notified.  The opener already carries a
+            # findings nudge on check_in naming the open count
+            # (_findings_nudge), and this gate holds on EVERY sweep
+            # while a finding is open, so a per-sweep notification would
+            # be a spam generator for a signal that already exists.  The
+            # log is the durable record and the nudge is the live one.
+            logutil.log(
+                "pr_vote_findings_hold",
+                pr_number=number,
+                finding_ids=[f["id"] for f in held if f["id"] is not None],
+                states=sorted({str(f["state"]) for f in held}),
+                unreadable=all(f["id"] is None for f in held),
+            )
+            continue
         try:
             if github.pr_has_label(number, _HOLD_LABEL, _pr=pr):
                 continue

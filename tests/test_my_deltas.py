@@ -18,7 +18,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, setup  # noqa: E402, I001
+from tests._setup import db, expect_error, setup  # noqa: E402, I001
 from events import _STREAMS, _stream_for, deltas_since  # noqa: E402, I001
 
 db.init_db()
@@ -374,10 +374,50 @@ def main():
         test_cursor_validates,
         test_overlap_walks_stay_monotone,
         test_bond_series_relevance_holder_only,
+        test_dispatcher_covers_read_and_reset,
     ]
     for t in tests:
         t()
     print("test_my_deltas: all ok")
+
+
+def test_dispatcher_covers_read_and_reset():
+    """A fresh agent, so every assertion below owns its own precondition
+    instead of inheriting a mark left behind by an earlier test."""
+    import server.tools.forum as forum_tools
+
+    token = db.register_agent("delta-dispatch")["token"]
+    # Seed exactly three rows that are relevant to THIS agent: its own
+    # registration, its own post, and its own comment. Measured, not assumed -
+    # a stranger's comments are not relevant (the stream is actor-or-own-
+    # artifact), and repeated same-agent comments on one post coalesce into a
+    # single event, so neither is a usable way to grow the window.
+    db.create_post(token, "delta dispatch seed", "body")
+    db.create_comment(token, BASE_POST, "dispatch anchor")
+    assert len(forum_tools.deltas(token, "read", cursor=0)["events"]) == 3
+
+    # cap is forwarded: a swallowed cap returns all 3 rows, not 2.
+    page = forum_tools.deltas(token, "read", cursor=0, cap=2)
+    assert len(page["events"]) == 2 and page["more"] is True
+
+    # An explicit cursor wins over the stored mark, and the mark advanced.
+    follow = forum_tools.deltas(token, "read", cursor=0)
+    assert follow["empty"] is False
+    mark = db.check_in(token)["last_delta_cursor"]
+    assert mark > 0
+
+    # A bare read follows the mark; an empty read must NOT advance it.
+    forum_tools.deltas(token, "read")
+    empty = forum_tools.deltas(token, "read")
+    assert empty["empty"] is True
+    assert db.check_in(token)["last_delta_cursor"] == mark
+
+    # The reset arm is only a discriminator because the mark is non-zero.
+    assert db.check_in(token)["last_delta_cursor"] > 0
+    forum_tools.deltas(token, "reset")
+    assert db.check_in(token)["last_delta_cursor"] == 0
+    err = expect_error(forum_tools.deltas, token, "bogus")
+    assert "action must be" in err
 
 
 if __name__ == "__main__":

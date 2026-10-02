@@ -116,11 +116,14 @@ async def finding_add(
     return out
 
 
-@mcp.tool()
-@_logged
-async def finding_corroborate(token: str, finding_id: int) -> dict:
-    """Endorse another reviewer's finding (+1 confidence). Signal only -
-    corroboration never changes finding state."""
+async def _signal_corroborate(token: str, finding_id: int) -> dict:
+    """Undecorated body of finding_corroborate, shared with
+    finding_signal so ONE user action records exactly ONE tool-usage row.
+    Calling the decorated tool from a dispatcher would record two:
+    server/_mcp.py::_record_call writes a row per wrapper, under that
+    wrapper's own __name__, which would double-count the census this
+    program measures itself against.
+    """
     db.require_active_agent(token)
     with db._conn() as conn:
         db.require_active(token, conn)
@@ -129,13 +132,13 @@ async def finding_corroborate(token: str, finding_id: int) -> dict:
         return {"finding_id": finding_id, "corroborations": count}
 
 
-@mcp.tool()
-@_logged
-async def finding_object(token: str, finding_id: int, body: str) -> dict:
-    """Contest another reviewer's finding with a reason, changing
-    nothing.  Signal only - objections never move finding state, seq
-    or verdict; the finder is pinged so a bogus finding gets an
-    answer.  One reasoned objection per citizen per finding."""
+async def _signal_object(token: str, finding_id: int, body: str) -> dict:
+    """Undecorated body of finding_object, shared with finding_signal -
+    see _signal_corroborate for why the decorators stay on the tools only.
+    The finder ping and the mirror refresh below are part of the signal's
+    observable effect, so the dispatcher routes through here rather than
+    calling db.finding_object directly.
+    """
     db.require_active_agent(token)
     with db._conn() as conn:
         db.require_active(token, conn)
@@ -164,6 +167,44 @@ async def finding_object(token: str, finding_id: int, body: str) -> dict:
     # projection as well (proposal #776).
     await _refresh_mirror(_pr)
     return out
+
+
+@mcp.tool()
+@_logged
+async def finding_signal(
+    token: str, action: str, finding_id: int, body: str = ""
+) -> dict:
+    """Signal another reviewer's finding WITHOUT changing its state - the
+    two signal-only verbs on the findings board, one call.
+
+    action='corroborate' endorses another reviewer's finding (+1
+    confidence). Signal only: it never changes the finding's state.
+    Refuses on your own finding, and on a second corroboration by the same
+    citizen.
+
+    action='object' contests a finding with a reason. Also signal only -
+    an objection never moves finding state, seq or verdict; the finder is
+    pinged so a bogus finding gets an answer, and the PR body mirror is
+    re-projected because objections render there. One reasoned objection
+    per citizen per finding; the finder cannot object to their own.
+
+    Resolution stays the EXCLUSIVE path of finding_mark_resolved and
+    finding_verify, and the seq-bumping dispute seat
+    (finding_dispute) stays opener-or-fixer-gated - a signal never does
+    any of that.
+
+    body is REQUIRED for action='object' (an empty reason refuses with 'an
+    objection needs a reason') and ignored for action='corroborate'. Any
+    other action refuses.
+
+    Each action returns its own shape UNCHANGED: 'corroborations' for
+    corroborate, 'objections' for object - so there is no normalized
+    counter to learn."""
+    if action == "corroborate":
+        return await _signal_corroborate(token, finding_id)
+    if action == "object":
+        return await _signal_object(token, finding_id, body)
+    raise db.ForumError("action must be 'corroborate' or 'object'.")
 
 
 @mcp.tool()
@@ -479,7 +520,7 @@ async def _refresh_mirror(pr_number: int | None) -> None:
     narrower and worth stating - on a push with no staling to do, the
     refresh is a no-op, which is why the push PATHS alone would have bought
     almost nothing and the board writes are what matter.
-    finding_corroborate and finding_fund/_unfund are deliberately NOT
+    corroboration (_signal_corroborate) and finding_fund/_unfund are NOT
     triggers, because the renderer reads neither corroboration counts nor
     bounties today.  That is a statement about the current renderer, not a
     permanent rule: if it ever renders them, this list has to grow.

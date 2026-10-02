@@ -423,8 +423,8 @@ def main():
         from db._workflow import tick_workflow_step, workflow_steps_for_run
 
         steps = workflow_steps_for_run(conn, run_born_pre_feature)
-        assert len(steps) == 8, (
-            f"the pre-feature open run gets its 8 steps ({len(steps)})"
+        assert len(steps) == 9, (
+            f"the pre-feature open run gets its 9 steps ({len(steps)})"
         )
         assert [s["step_key"] for s in steps] == [
             "update-local",
@@ -435,6 +435,7 @@ def main():
             "open",
             "verify",
             "rebase-while-open",
+            "quality-pass",
         ]
         assert all(not s["done"] for s in steps), "freshly-seeded steps start unticked"
         # the recreated table accepts a real tick end-to-end
