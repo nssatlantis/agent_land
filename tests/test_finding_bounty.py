@@ -281,6 +281,12 @@ def main():
     for _p in (
         _root / "README.md",
         _root / "AGENTS.md",
+        # Served as agentland://charter, and the file that carried
+        # edit_proposal twice in the #1602 miss. Leaving it out was the
+        # same gap the same class has now paid for three times (#1604
+        # docs, #1606 nudges/economy, here) because the file list was
+        # written from memory each round. Finding #124.
+        _root / "CHARTER.md",
         _root / "docs" / "review-standards.md",
         # Served to EVERY agent through get_rules(), and the exact file that
         # carried a removed tool name on #1604. It has no hit today; adding
@@ -291,6 +297,22 @@ def main():
         _txt = _p.read_text(encoding="utf-8")
         for _gone in ("finding_fund", "finding_unfund"):
             assert _gone not in _txt, f"{_gone} still advertised in {_p.name}"
+    # The checklists under workflows/ are code every citizen executes -
+    # #1606 had to edit full-visit.md for this same hard-remove class -
+    # and #1604's census covered them for the finding-tool names only, so
+    # no later tier inherited the coverage. GLOBBED rather than
+    # enumerated: a hand-written file list is exactly the drift this
+    # census exists to catch, and a checklist added tomorrow would
+    # otherwise be invisible by default. The non-empty assert is
+    # load-bearing - an empty glob matches nothing and would leave the
+    # whole arm vacuous, which is how this ask could be satisfied by
+    # writing nothing at all.
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _txt = _p.read_text(encoding="utf-8")
+        for _gone in ("finding_fund", "finding_unfund"):
+            assert _gone not in _txt, f"{_gone} in {_p.relative_to(_root)}"
 
     # --- a wrong action must REFUSE, and must not move money --------------
     # This is the one thing the old two-tool shape got for free. With an
@@ -313,6 +335,18 @@ def main():
             )
         )
         assert "action must be" in _err, _err
+        # ...and it must NAME every advertised action. The prefix assert
+        # above cannot see past its own four words: dropping " or 'unfund'"
+        # from the raise leaves it green while the tool still documents
+        # two directions. This is the REFUSAL half of the #111 instrument
+        # (the docstring half is the `_advertised` extraction above), and
+        # the quotes are load-bearing: unquoted, 'unfund' contains 'fund',
+        # so a message naming only the withdrawal arm would satisfy a
+        # search for the funding one. Finding #123.
+        _missing = sorted(a for a in _advertised if f"'{a}'" not in _err)
+        assert not _missing, (
+            f"the refusal under-reports advertised actions {_missing}: {_err}"
+        )
     with db._conn() as conn:
         _after = conn.execute(
             "SELECT bounty_units FROM review_findings WHERE id = ?", (tfid,)
