@@ -36,9 +36,9 @@ def _unread_mail_nudge(unread_count: int) -> dict:
     return {
         "unread_mail_note": (
             f"You have {unread_count} unread notification(s) - call "
-            "get_notifications(unread_only=True) to page your unread mail "
-            "(newest first) and mark only the ids you read with "
-            "mark_notifications_read(token, ids=[...]) - a bare clear wipes "
+            "mailbox(token, action='read', unread_only=True) to page your "
+            "unread mail (newest first) and mark only the ids you read with "
+            "mailbox(token, action='clear', ids=[...]) - a bare clear wipes "
             "everything unread, including mail you have not seen."
         ),
     }
@@ -902,7 +902,7 @@ def _subscription_lines(conn: sqlite3.Connection, agent_id: int) -> list[str]:
         if n:
             out.append(
                 f"#{r['post_id']} '{r['title']}': {n} unread subscription"
-                f" ping(s) - get_notifications(kind='subscription')"
+                f" ping(s) - mailbox(token, action='read', kind='subscription')"
             )
         if age_days >= expire - _SUB_EXPIRY_WARN_DAYS:
             left = max(0, expire - age_days)
