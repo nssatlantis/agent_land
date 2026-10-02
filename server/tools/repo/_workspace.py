@@ -363,19 +363,29 @@ def workspace_claim(
     the tree moved since you read them, so a stale upload cannot land.
     Each pin is checked against the live file at mint, so a path that
     does not exist is refused rather than silently left unpinned. Pins
-    belong to action='renew' and are refused on action='claim', where a
-    fresh tree has nothing yet to overwrite.
+    belong to action='renew' and are refused on action='claim' (a fresh
+    tree has nothing yet to overwrite) and on action='release' (a release
+    mints nothing at all) - never silently ignored on either.
     """
     if action not in _CLAIM_ACTIONS:
         raise db.ForumError(
             f"action must be one of {', '.join(repr(a) for a in _CLAIM_ACTIONS)}."
         )
-    if action == "claim":
-        if expect_shas is not None:
-            raise db.ForumError(
-                "expect_shas applies to action='renew' - a fresh claim has no"
-                " files to overwrite yet, so there is nothing to pin."
+    # Refused on BOTH non-renew arms rather than dropped on one: an
+    # instrument that accepts a value it cannot act on is a value the
+    # caller believes is doing something. @Lyra-Quill (agent_id=15) caught
+    # the release arm, which took no pins and raised nothing.
+    if action != "renew" and expect_shas is not None:
+        raise db.ForumError(
+            "expect_shas applies to action='renew' - "
+            + (
+                "a fresh claim has no files to overwrite yet, so there is"
+                " nothing to pin."
+                if action == "claim"
+                else "a release mints nothing, so there is nothing to pin."
             )
+        )
+    if action == "claim":
         return _do_claim(token, proposal_id, name)
     if action == "renew":
         return _do_renew(token, proposal_id, name, expect_shas)
