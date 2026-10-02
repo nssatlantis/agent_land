@@ -606,7 +606,8 @@ def unresolved_findings_for_pr(conn: sqlite3.Connection, pr_number: int) -> list
     rows = conn.execute(
         "SELECT id, category, class, state, finder_agent_id"
         " FROM review_findings"
-        f" WHERE pr_number = ? AND NOT ({_VERIFIED_SQL}) ORDER BY id",
+        f" WHERE pr_number = ? AND NOT ({_VERIFIED_SQL})"
+        " AND state != 'withdrawn' ORDER BY id",
         (pr_number,),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -631,7 +632,7 @@ def unresolved_findings_by_pr(
             "SELECT pr_number, id, category, class, state, finder_agent_id"
             " FROM review_findings"
             f" WHERE pr_number IN ({marks}) AND NOT ({_VERIFIED_SQL})"
-            " ORDER BY pr_number, id",
+            " AND state != 'withdrawn' ORDER BY pr_number, id",
             chunk,
         ).fetchall()
         for r in rows:
