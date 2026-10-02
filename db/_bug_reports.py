@@ -611,13 +611,18 @@ def attach_pr_to_bug(
     """Named manual repair: attribute an existing pull request to a bug
     report as its fix (proposal #921).
 
-    fix_pr has four writers and none of the three pre-existing ones can
-    reach a `fixed` report - update_bug_report freezes there - so a report
-    marked fixed with no fix PR at all (admin_bug_decide(action='fix') takes
-    no PR parameter) had no route back. It was unreachable from both ends at
-    once: unlinked_fix_prompts gates on open/confirmed, so the prompt that
-    names the missing link does not fire, and the writer that prompt names
-    is closed. This is that route.
+    fix_pr has four writers, and of the three pre-existing ones only
+    update_bug_report is bound-gated for a reporter - its freeze sits
+    inside `if not is_admin`, so the admin has always had this route. What
+    did not exist is a seat for the report's reporter or the PR's recorded
+    opener, so a report marked fixed with no fix PR at all
+    (admin_bug_decide(action='fix') takes no PR parameter) had no repair
+    path open to the two citizens best placed to name one. It was
+    unreachable from both ends at once: unlinked_fix_prompts gates on
+    open/confirmed, so the prompt that names the missing link does not fire,
+    and the writer that prompt names is frozen for a reporter. This is that
+    route - the admin's existed, and is still the only one that can
+    overwrite a pointer this tool refuses to touch.
 
     ATTACHING IS NOT BELIEVING, and that is the whole safety argument.
     _fix_round_state tests `if not fix_pr: return "not_fixed"` FIRST, so
@@ -697,10 +702,15 @@ def attach_pr_to_bug(
                 f" {seats}, or the admin - you are none of them."
             )
         if row["fix_pr"] == pr_number:
+            # outcome is None here, not omitted: this path returns BEFORE
+            # the GitHub read, and a key that is present-but-None keeps the
+            # returned shape identical across both paths so a caller may
+            # read res["outcome"] unconditionally.
             return {
                 "report_id": report_id,
                 "pr_number": pr_number,
                 "status": row["status"],
+                "outcome": None,
                 "linked": False,
                 "already_linked": True,
                 "note": (
@@ -728,6 +738,27 @@ def attach_pr_to_bug(
                 f"pull request #{pr_number} was {outcome} - a pull request"
                 " that lost its vote is not a fix (open a fresh one)."
             )
+        # A partial round must NOT survive the link.  A report that is
+        # 'fixed' with no fix_pr can still carry verdicts: verify_bug_fix
+        # requires only status='fixed', and it skips the head_sha
+        # requirement when fix_pr is NULL, so those verdicts name no tree.
+        # Handing them to the PR attached here would let a fix resolve on
+        # evidence cast about a different one - which is exactly what the
+        # expiry sweep refuses to do: "a later fix PR restarts the bar from
+        # zero rather than inheriting evidence cast about a different tree."
+        # Reachable, not hypothetical: #95, #86 and #31 each carry a
+        # confirmed verdict with fix_pr NULL today.  The count rides into the
+        # event detail so clearing the rows does not erase the fact that
+        # they existed.
+        cleared = conn.execute(
+            "SELECT COUNT(*) FROM bug_fix_verifications WHERE report_id = ?",
+            (report_id,),
+        ).fetchone()[0]
+        if cleared:
+            conn.execute(
+                "DELETE FROM bug_fix_verifications WHERE report_id = ?",
+                (report_id,),
+            )
         conn.execute(
             "UPDATE bug_reports SET fix_pr = ?, updated_at = ? WHERE id = ?",
             (pr_number, _now_iso(), report_id),
@@ -743,6 +774,7 @@ def attach_pr_to_bug(
                 "pr_number": pr_number,
                 "outcome": outcome,
                 "status": row["status"],
+                "cleared_verdicts": cleared,
                 "manual": True,
                 "as_admin": is_admin,
             },
@@ -2238,9 +2270,10 @@ def unlinked_fix_prompts(
     stripped an exclusive reservation. So the only question answered here is
     "is a link we would otherwise have recorded missing right now?".
 
-    The gate is the whole design. `fix_pr` is stamped only by a claim BOUND
-    to the proposal (`_autofix_claims_on_pr_link`, and claim_bug's B85
-    backfill), and merge-time auto-fix discovers by that pointer alone
+    The gate is the whole design. `fix_pr` is stamped AUTOMATICALLY only by a
+    claim BOUND to the proposal (`_autofix_claims_on_pr_link`, and
+    claim_bug's B85 backfill), and merge-time auto-fix discovers by that
+    pointer alone
     (`db/_bounty.py`: "a #B citation is not a fix contract"). So a report
     whose linked proposal carries an open or merged PR while `fix_pr` is
     NULL is one whose fix will silently never mark it fixed - #B187 is the
@@ -3126,16 +3159,20 @@ def notify_bug_fix_landed(conn, pr_number, proposal_post_id):
         # `#B<n>` mention is not sufficient evidence - a mention is a
         # CITATION, and force-releasing an exclusive reservation on one
         # destroys the very thing that prevents duplicate work (#B191).
-        # fix_pr has FOUR writers and only two are bound-gated:
-        # claim_bug's B85 backfill and _autofix_claims_on_pr_link, both
-        # of which require a bound claim. The other two assert a pointer
-        # with NO binding requirement - update_bug_report (reporter while
-        # open/confirmed, or admin) and attach_pr_to_bug (reporter, the
-        # PR's RECORDED opener, or admin; proposal #921). So an unbound
-        # claim CAN carry a fix_pr and the arm below is LIVE, not
-        # defensive. (It is invisible to a `SET fix_pr`
-        # search because that clause is assembled dynamically via
-        # sets.append.) Do not "simplify" own_fix_landed to the bound
+        # fix_pr has FOUR writers that ASSERT a pointer, and only two are
+        # bound-gated: claim_bug's B85 backfill and
+        # _autofix_claims_on_pr_link, both of which require a bound claim.
+        # The other two assert a pointer with NO binding requirement -
+        # update_bug_report (reporter while open/confirmed, or admin) and
+        # attach_pr_to_bug (reporter, the PR's RECORDED opener, or admin;
+        # proposal #921). A fifth site, record_proposal_outcome, only ever
+        # writes NULL, on decline/close. So an unbound claim CAN carry a
+        # fix_pr and the arm below is LIVE, not defensive. (update_bug_report
+        # is invisible to a `SET fix_pr` search because ITS clause is
+        # assembled dynamically via sets.append; attach_pr_to_bug's is a
+        # literal, so that search now returns exactly one hit and is
+        # misleading in the OTHER direction.) Do not "simplify" own_fix_landed
+        # to the bound
         # disjunct alone: that silently deletes the reporter-recorded
         # release path this fix creates.
         #

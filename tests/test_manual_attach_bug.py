@@ -99,14 +99,78 @@ def _mark_fixed(rid):
         conn.execute("UPDATE bug_reports SET status = 'fixed' WHERE id = ?", (rid,))
 
 
+def _seed_verdict(rid, agent_id):
+    """A verdict already sitting on a report that has no fix_pr.
+
+    verify_bug_fix requires only status='fixed' and SKIPS its head_sha
+    requirement when fix_pr is NULL, so this state is reachable in
+    production - and #95, #86 and #31 carry exactly it today. Those
+    verdicts name no tree, which is why attaching must clear them.
+    """
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "INSERT INTO bug_fix_verifications"
+            " (report_id, agent_id, verdict, head_sha, note, created_at)"
+            " VALUES (?, ?, 'confirmed_fixed', NULL, 'cast with no fix',"
+            " '2026-10-02T00:00:00.000Z')",
+            (rid, agent_id),
+        )
+
+
+def test_a_partial_round_does_not_survive_the_link(agents):
+    """The bar RESTARTS. A fix must never resolve on evidence that was cast
+    about a different tree - here, about no tree at all.
+
+    Without the DELETE in attach_pr_to_bug this reds on the first assert
+    below the attach: the seeded verdict is inherited and confirmed stays 1.
+    """
+    alpha = agents["alpha"]
+    rid = _bug(alpha["token"], "stranded with a stale verdict")
+    _mark_fixed(rid)
+    _seed_verdict(rid, agents["beta"]["agent_id"])
+    # PREMISE: the report really carries a verdict and no fix, so the
+    # assertion after the attach cannot pass on an empty fixture.
+    before = db.get_bug_report(rid)
+    assert before["fix_pr"] is None, before
+    assert before["fix_round"]["confirmed"] == 1, before["fix_round"]
+    _attach(alpha["token"], 82115, rid, _fake_raw("merged"))
+    after = db.get_bug_report(rid)
+    rnd = after["fix_round"]
+    assert after["fix_pr"] == 82115, after
+    assert rnd["confirmed"] == 0, rnd
+    assert rnd["pending"] == rnd["quorum"], rnd
+    assert after["status"] == "fixed", after["status"]
+
+
+def test_admin_seat_attaches_on_a_stranded_report(agents):
+    """The admin seat, POSITIVELY. Without this test, deleting `is_admin or`
+    from the seat condition leaves every other test in this file green -
+    the only other admin call sits on a report already forced to
+    resolved/closed, which the status guard refuses ABOVE the is_admin read.
+
+    as_admin is the observable proving the admin branch ran; the _audit row
+    it writes lives in admin_actions, which this file does not read, so it
+    is deliberately not asserted here rather than asserted blind.
+    """
+    alpha = agents["alpha"]
+    rid = _bug(alpha["token"], "admin repair")
+    _mark_fixed(rid)
+    res = _attach(alpha["token"], 82116, rid, _fake_raw("merged"), admin="Admin")
+    assert res["linked"] is True and res["already_linked"] is False, res
+    rep = db.get_bug_report(rid)
+    assert rep["fix_pr"] == 82116, rep
+    assert rep["fix_round"]["state"] == "pending", rep["fix_round"]
+    assert json.loads(_events(rid)[0]["detail"])["as_admin"] is True, _events(rid)
+
+
 def test_reporter_attaches_and_only_opens_the_bar(agents):
     alpha = agents["alpha"]
     # PREMISE: alpha has zero effective karma, so a successful attach here
     # is also the positive control for "the reporter seat has no karma
     # floor". If a floor is ever added, this test reds - which is the point.
+    rid = _bug(alpha["token"], "open report")
     with db._conn() as conn:
         assert effective_karma(conn, alpha["agent_id"]) == 0
-    rid = _bug(alpha["token"], "open report")
     res = _attach(alpha["token"], 82101, rid, _fake_raw("open"))
     assert res["linked"] is True and res["already_linked"] is False, res
     assert res["outcome"] == "open", res
@@ -193,6 +257,10 @@ def test_declined_or_closed_pr_refused(agents):
             lambda p=pr, r=rid, o=label: _attach(alpha["token"], p, r, _fake_raw(o))
         )
         assert "lost its vote" in err, err
+        # The message interpolates the outcome, so this arm can tell itself
+        # apart from its sibling: _pr_outcome collapsing every closed PR to
+        # "declined" would leave the assert above green without this line.
+        assert label in err, err
         assert db.get_bug_report(rid)["fix_pr"] is None, label
 
 
@@ -289,6 +357,10 @@ def main():
     print("  one pointer per report, re-attach idempotent: ok")
     test_unknown_pr_and_garbage_ids_refuse_loudly(agents)
     print("  unknown PR + garbage ids refuse loudly: ok")
+    test_a_partial_round_does_not_survive_the_link(agents)
+    print("  a partial round is cleared, never inherited: ok")
+    test_admin_seat_attaches_on_a_stranded_report(agents)
+    print("  admin seat attaches on a stranded report: ok")
     test_the_ledger_records_who_did_it(agents)
     print("  ledger names the actor and lands in the bugs stream: ok")
     print("test_manual_attach_bug: all assertions passed")
