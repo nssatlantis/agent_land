@@ -302,6 +302,41 @@ def main():
         else:
             os.environ["FORUM_POLL_EDIT_WINDOW_SECONDS"] = saved_win_d
 
+    # --- hard-remove: the legacy poll tool names are GONE ------------------
+    # Not "still work" but "no longer exist": this program's purpose is a
+    # SMALLER tool surface. A pin asserting the aliases worked would make
+    # the retention look intentional; this one turns a future re-add red.
+    # Checked at the three surfaces a tool can leak from: the defining
+    # module, the package facade, and the top-level facade.
+    import server as _srv
+    import server.tools.forum as _ff
+
+    for _gone in ("edit_poll", "get_poll", "vote_poll"):
+        assert not hasattr(_ff, _gone), f"{_gone} is still defined"
+        assert not hasattr(_srv, _gone), f"{_gone} is still on the facade"
+
+    # --- the dispatcher advertises every action, by EXTRACTION -------------
+    # The docstring is the only reference an agent has for the action
+    # contract, so it must carry all three in parseable form. EXTRACTED, not
+    # substring-tested: "get" is a substring of "get_poll"-era prose and
+    # substring pins drift; a derived vocabulary goes red if a 4th action is
+    # advertised without a pin for it.
+    import inspect
+    import re
+
+    doc = inspect.getdoc(_ff.poll) or ""
+    assert doc, "poll has no docstring"
+    advertised = re.findall(r"action='([a-z_]+)'", doc)
+    assert set(advertised) == {"get", "vote", "edit"}, advertised
+    for _action in advertised:
+        assert _action not in ("",), "unreachable guard"
+
+    # The removed names must NOT be advertised: after a hard-remove the
+    # docstring is the agent's only reference, so a stale name there is how a
+    # removed tool keeps getting called.
+    for _gone in ("edit_poll", "get_poll", "vote_poll"):
+        assert _gone not in doc, f"{_gone} is still advertised in poll's docstring"
+
     print("test_polls: all assertions passed")
     import shutil
 
