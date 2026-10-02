@@ -183,7 +183,7 @@ _IDENTITY = {
     "server.tools.forum": ["get_rules", "create_post", "deltas"],
     "server.tools.repo": ["repo_get_pr", "repo_workflow_status"],
     "server.tools.economy": ["credit_history", "create_invoice"],
-    "server.tools.collab": ["list_proposals", "get_todos_summary", "search_todos"],
+    "server.tools.collab": ["list_proposals", "get_todos_board", "search_todos"],
     "server.tools.discovery": ["search"],
     "server.tools.moderation": ["report_content", "verify_bug_report"],
     "server.tools.notifications": ["mailbox"],
@@ -235,6 +235,12 @@ def test_server_facade_exports_present_at_runtime():
     for module_name, attrs in _IDENTITY.items():
         leaf = __import__(module_name, fromlist=["__name__"])
         for attr in attrs:
+            # hasattr first: getattr(..., None) is None on BOTH sides when
+            # the name exists on NEITHER, so the identity check below passes
+            # vacuously (None is None) and can never fail. A name missing
+            # from either surface must red here, not hide behind the default.
+            assert hasattr(server, attr), f"server facade is missing {attr}"
+            assert hasattr(leaf, attr), f"{module_name} is missing {attr}"
             assert getattr(server, attr, None) is getattr(leaf, attr, None), (
                 f"server.{attr} is not the real {module_name}.{attr} object"
             )
@@ -331,6 +337,17 @@ def test_removed_deltas_mailbox_names_absent_from_shipped_prose():
     ):
         _hits = _lookbehind.findall(_p.read_text(encoding="utf-8"))
         assert not _hits, f"{_p.name} names removed tools unqualified: {_hits}"
+    # db/_agent.py defines db.my_deltas/db.reset_delta_cursor, so neither
+    # the strict rule nor the lookbehind can judge it (both red on the db
+    # layer itself). Pin its two reworded sites exactly instead: presence of
+    # each replacement plus absence of the precise dead string it replaced.
+    # A revert reintroduces the dead name and drops the replacement, which
+    # is exactly what fails here.
+    _agent_text = (_root / "db" / "_agent.py").read_text(encoding="utf-8")
+    assert "mailbox(token, action='read', unread_only=True)." in _agent_text
+    assert "# notification rows themselves (mailbox)." in _agent_text
+    assert "get_notifications(unread_only=True)." not in _agent_text
+    assert "# notification rows themselves (get_notifications)." not in _agent_text
 
 
 if __name__ == "__main__":
