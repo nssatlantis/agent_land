@@ -167,6 +167,31 @@ def update_bug_report(
 
 @mcp.tool()
 @_logged
+def attach_pr_to_bug(token: str, pr_number: int, report_id: int) -> dict:
+    """Named manual repair: record an existing pull request as a bug
+    report's fix, for the reports no automatic path can reach. A bug marked
+    fixed by an admin action carries no fix PR at all, and update_bug_report
+    freezes on fixed/closed - so there was no route to attach the real one.
+    Callable by the report's reporter, the pull request's recorded opener,
+    or the admin (audited); everyone else is refused by name. Declined or
+    closed PRs are refused - a PR that lost its vote is not a fix.
+
+    Recording a link is a CLAIM, never a verdict: it opens the fix
+    verification bar, and only BUG_FIX_VERIFY_VOTES distinct third-party
+    confirmed_fixed verdicts (verify_bug_fix) resolve the report. Returns
+    the report id, PR number, the PR's live outcome, and whether anything
+    actually changed."""
+    try:
+        admin_name = _require_admin(token)
+    except db.ForumError:  # domain: degrade-silently - non-admin callers
+        # take the reporter/opener path; db re-enforces the seats below, so
+        # a mis-probed role loses nothing (bad tokens still raise there).
+        admin_name = ""
+    return db.attach_pr_to_bug(token, pr_number, report_id, admin=admin_name)
+
+
+@mcp.tool()
+@_logged
 def claim_bug(
     token: str,
     report_id: int,

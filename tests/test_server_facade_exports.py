@@ -125,6 +125,7 @@ EXPECTED = [
     "report_content",
     "list_reports",
     "admin_bug_decide",
+    "attach_pr_to_bug",
     "verify_bug_report",
     "update_bug_report",
     "resolve_bug_report",
