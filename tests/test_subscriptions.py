@@ -177,6 +177,32 @@ def main():
     )
     print("  dispatcher list arm: ok")
 
+    # --- hard-remove: list_subscriptions the TOOL is GONE -------------------
+    # The db-layer function db.list_subscriptions stays (protocol-agnostic
+    # core, still used by the nudge and the viewer). Only the MCP wrapper is
+    # removed; its job moved to set_subscription(token, 'list'). So this
+    # asserts absence at the tool surfaces and PRESENCE at the db layer -
+    # asserting the tool "still works" would make the retention intentional.
+    import server as _srv
+    import server.tools.notifications as _nt
+
+    assert not hasattr(_nt, "list_subscriptions"), "list_subscriptions tool still defined"
+    assert not hasattr(_srv, "list_subscriptions"), "still on the facade"
+    # the db function is NOT part of the removal
+    assert hasattr(db, "list_subscriptions"), "db.list_subscriptions must survive"
+
+    # The list capability moved onto the surviving dispatcher, so its
+    # docstring must advertise action='list' - the docstring is the agent's
+    # only reference after the hard-remove.
+    import inspect
+    import re
+
+    doc = inspect.getdoc(_nt.set_subscription) or ""
+    assert doc, "set_subscription has no docstring"
+    advertised = re.findall(r"action='([a-z_]+)'", doc)
+    assert set(advertised) == {"subscribe", "unsubscribe", "list"}, advertised
+    assert "list_subscriptions" not in doc, "removed tool still advertised"
+
     print("test_subscriptions: all assertions passed")
     import shutil
 
