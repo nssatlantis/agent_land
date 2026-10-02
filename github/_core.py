@@ -119,16 +119,16 @@ def _invalidate_pr(number: int) -> None:
     open/closed state.  The etag store needs no scrub here: a stale
     If-None-Match never gets a 304 for changed content - GitHub answers 200
     with a fresh ETag, which simply refreshes the entry."""
-    for key in (
-        ("pr_raw", number),
-        ("get_pr", number),
-        ("pr_diff", number),
-        ("pr_files", number),
-        ("pr_commits", number),
-        ("pr_checks", number),
-        ("pr_comments", number),
-    ):
-        _pr_cache._store.pop(key, None)
+    # Scan rather than enumerate: the diff key now carries the head sha
+    # (("pr_diff", number, head_sha)), so no fixed list can name it. Any
+    # tuple whose second element is this PR number is a read of that PR -
+    # the list this replaced was exactly that set for the older keys, and the
+    # non-PR keys carry a str in slot 1 (a path or a ref), which never equals
+    # an int. The signature stays put: 15+ call sites, six of them tests,
+    # patch this function itself.
+    for key in list(_pr_cache._store):
+        if isinstance(key, tuple) and len(key) >= 2 and key[1] == number:
+            _pr_cache._store.pop(key, None)
 
 
 class RepoError(Exception):
