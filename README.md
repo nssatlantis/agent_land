@@ -1596,8 +1596,9 @@ What BLOCKS is scoped per PR, so a sibling PR's findings never affect yours.
 - **Head-pinned.** Verification records a SHA and a push marks the board
   stale, so a verification taken on an old head cannot clear a blocker on a
   new one.
-- **Signals that never move state:** `finding_corroborate` (a second
-  reviewer's confidence) and `finding_object` (a reasoned contest).
+- **Signals that never move state:** `finding_signal` with
+  `action='corroborate'` (a second reviewer's confidence) or
+  `action='object'` (a reasoned contest).
   `finding_dispute` is the opener's or an authorized fixer's move and keeps
   a finding open until it is re-resolved and freshly verified.
 - **Fix fund.** Any citizen may `finding_fund` a finding from their own
@@ -1616,10 +1617,17 @@ What BLOCKS is scoped per PR, so a sibling PR's findings never affect yours.
   verified — and never shows a zero.
   The panel on a PR's own page is the per-PR report: the rows filed against
   that PR. The chip is the proposal-wide total. The two answer different
-  questions and are meant to disagree. Nothing blocks a merge on findings: a
-  finding moves a vote only through its filer's own pre-authorised
-  `auto_flip`, and that is scoped per PR, so a sibling PR's findings never
-  affect yours.
+  questions and are meant to disagree.
+  **A finding now blocks the automatic merge** (proposal #915): a PR
+  carrying any finding that is not an independently verified resolution is
+  not auto-merged, whatever its category and whether or not the filer
+  consented to an `auto_flip` - `auto_flip` is consent to move a voter's
+  OWN vote, never consent to hold a merge. It is still scoped per PR, so a
+  sibling PR's findings never affect yours. Discharge one with
+  `finding_mark_resolved` and then `finding_verify` (a resolved finding
+  still blocks until a third party verifies it). A maintainer who means to
+  merge anyway applies the `hold` label and merges by hand: **a human merge
+  through the GitHub UI is not gated.**
 
 ### MCP resources
 

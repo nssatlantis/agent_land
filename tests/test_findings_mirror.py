@@ -363,9 +363,16 @@ def main():
         walk(tree)
         return sites
 
+    # The two signal tools now delegate to undecorated helpers, which
+    # finding_signal shares so ONE user action records exactly ONE
+    # tool-usage row. So the trigger lives on the HELPER, and that is where
+    # it is checked. Asking the tool instead would pass for the WRONG
+    # reason: a one-line delegate contains no call at all, so the
+    # non-trigger assertion would go vacuous instead of proving that
+    # corroboration deliberately leaves the mirror alone.
     for _fn in (
         "finding_add",
-        "finding_object",
+        "_signal_object",
         "finding_mark_resolved",
         "finding_dispute",
         "finding_verify",
@@ -377,9 +384,27 @@ def main():
             f"{_fn} refreshes inside a db._conn() block"
         )
     # The deliberate non-trigger must not grow a call by accident.
-    assert not _refresh_sites(ftools.finding_corroborate), (
-        "finding_corroborate is not a trigger"
+    assert not _refresh_sites(ftools._signal_corroborate), (
+        "corroboration is not a mirror trigger"
     )
+    # The surviving tool must still reach BOTH helpers. Hard-remove took the
+    # two legacy wrappers with it, so finding_signal is now the only caller
+    # of either - and a dispatcher that quietly stopped awaiting one of them
+    # would leave the trigger pin above satisfied by a function nothing
+    # reaches. This is the twin-closing trap: dropping the legacy entry
+    # from the tuple without adding its target here would have made the
+    # assertion a name.
+    _src = textwrap.dedent(inspect.getsource(ftools.finding_signal))
+    for _helper in ("_signal_corroborate", "_signal_object"):
+        # "await <helper>(" rather than a bare name: in a file whose whole
+        # premise is that a COMMENT can never satisfy an assertion, a
+        # name-only test lets a comment merely mentioning the helper pass.
+        # The call form is what the delegation actually is.
+        assert f"await {_helper}(" in _src, f"finding_signal does not await {_helper}"
+    # And the removed wrappers are gone from this module too, so the
+    # trigger check cannot be pointed at a dead name.
+    for _gone in ("finding_corroborate", "finding_object"):
+        assert not hasattr(ftools, _gone), f"{_gone} still defined"
     # The staling family is a trigger: it writes the rendered `state`.
     assert _refresh_sites(ftools._stale_and_refresh), (
         "staling must re-project; it writes the rendered state"
