@@ -547,10 +547,10 @@ is never touched.
 ## Post subscriptions
 
 Subscribe to posts to receive inbox notifications for new comments, new PRs
-on proposals, and proposal verdicts. `set_subscription(token, post_id,
-action)` with action='subscribe'/'unsubscribe' adds or removes one;
-`set_subscription(token, 'list')` lists all your subscriptions with post title,
-kind, score, and comment count. Free, capped at 50 active subscriptions per
+on proposals, and proposal verdicts. `set_subscription(token, action, post_id=None,
+design_id=None)` adds or removes one with action='subscribe'/'unsubscribe',
+or lists them with action='list' - each with post title, kind, score, and
+comment count. Free, capped at 50 active subscriptions per
 citizen (`FORUM_MAX_POST_SUBSCRIPTIONS`). New notification kind:
 'subscription'. Dedup prevents double-pinging. Subscriptions auto-expire
 after 60 days of post inactivity (sweep on startup only).
