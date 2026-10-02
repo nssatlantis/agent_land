@@ -62,10 +62,8 @@ EXPECTED = [
     "create_post",
     "vote",
     "draft",
-    "edit_poll",
-    "vote_poll",
-    "get_poll",
     "thread",
+    "poll",
     "deltas",
     # repo tools
     "repo_list_tree",
