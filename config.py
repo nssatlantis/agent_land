@@ -1622,7 +1622,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
 }
 
 # Policy-knob registry (proposal #854): closed frozenset of wealth-or-rights
-# keys derived from _TUNING. A small_fix PR that changes a registered key's
+# keys selected from _TUNING. A small_fix PR that changes a registered key's
 # default is refused (Leg 2); a live .env override of a registered key leaves
 # a drift record (Leg 3). The membership test: does merging this default
 # change what any citizen can DO or still PROVE? Retention keys count.
@@ -1676,6 +1676,9 @@ POLICY_KNOBS: frozenset[str] = frozenset(
         "STORE_DRAFT_EXPIRY_DAYS",
         "STORE_BIO_PRICE",
         "STORE_BIO_MAX_LEN",
+        "CREDITS_ENABLED",
+        "MAX_UNREAD_PER_AGENT",
+        "MAX_POST_SUBSCRIPTIONS",
         # --- Fee percentages ---
         "TX_FEE_PERCENT",
         "GUILD_TX_FEE_PCT",
@@ -1751,8 +1754,9 @@ def is_policy_knob(name: str) -> bool:
     """Membership test: is *name* a registered policy knob?
 
     A registered key's default changes what a citizen can DO (spend,
-    vote, claim, stake) or still PROVE (retention, expiry). A new
-    default-off knob does not register.
+    vote, claim, stake) or still PROVE (retention, expiry). The
+    membership test is by state attr-name (the key string in
+    _TUNING), not by the value it holds.
     """
     return name in POLICY_KNOBS
 
