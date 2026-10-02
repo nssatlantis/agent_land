@@ -129,13 +129,12 @@ from server.tools.designs import (  # noqa: F401
 )
 from server.tools.discovery import (  # noqa: F401
     _attach_credit_balances,  # noqa: F401
-    agent_comments,
     apply_tag,
+    comments,
     create_tag,
     get_agent_skills,
     get_citizen_profiles,
     list_agent_skills,
-    list_comments,
     list_events,
     list_tags,
     rate_skill,
