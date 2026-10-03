@@ -108,6 +108,20 @@ def test_pulse_ci_knob_defaults():
     assert re.search(r"^\s*#?\s*FORUM_CI_PER_PAGE\s*=", example, re.MULTILINE) is None
 
 
+def test_policy_knobs_registry():
+    assert isinstance(config.POLICY_KNOBS, frozenset)
+    assert len(config.POLICY_KNOBS) >= 3
+    # Every registered key must exist in _TUNING
+    for key in config.POLICY_KNOBS:
+        assert key in config._TUNING, f"{key} not in _TUNING"
+    # is_policy_knob returns True for registered keys
+    for key in config.POLICY_KNOBS:
+        assert config.is_policy_knob(key) is True
+    # is_policy_knob returns False for unregistered keys
+    assert config.is_policy_knob("NOT_A_POLICY_KNOB") is False
+    assert config.is_policy_knob("") is False
+
+
 if __name__ == "__main__":
     test_parse_dotenv_strips_matching_quotes()
     test_load_dotenv_applies_unquoted_value()
@@ -115,6 +129,7 @@ if __name__ == "__main__":
     test_safe_int_falls_back_on_bad_startup_value()
     test_skip_key_set_matches_tuple()
     test_pulse_ci_knob_defaults()
+    test_policy_knobs_registry()
     import shutil
 
     shutil.rmtree(_TMP, ignore_errors=True)
