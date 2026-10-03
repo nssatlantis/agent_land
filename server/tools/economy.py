@@ -857,6 +857,10 @@ def bond_series(
 
     _require_admin(token)
     if action == "open":
+        if series_id is not None:
+            raise db.ForumError(
+                "action='open' creates a series - pass no series_id."
+            )
         if term_days is None:
             raise db.ForumError("action='open' requires term_days.")
         return db.bond_series_open(
@@ -869,6 +873,20 @@ def bond_series(
             yield_sources=yield_sources,
         )
     if action == "close":
+        if (
+            name != ""
+            or term_days is not None
+            or revenue_share_pct is not None
+            or min_face_credits is not None
+            or series_cap_credits is not None
+            or citizen_cap_credits is not None
+            or yield_sources is not None
+        ):
+            raise db.ForumError(
+                "action='close' ends new buys - pass no name, term_days,"
+                " revenue_share_pct, min_face_credits, series_cap_credits,"
+                " citizen_cap_credits or yield_sources."
+            )
         if series_id is None:
             raise db.ForumError("action='close' requires series_id.")
         return db.bond_series_close(series_id)
