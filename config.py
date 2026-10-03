@@ -1754,8 +1754,11 @@ POLICY_KNOBS: frozenset[str] = frozenset(
         "JOB_EXPIRY_DAYS",
         # --- Master switches.  Default-OFF and still a policy knob: the
         # switch decides whether the right exists at all, so flipping it is
-        # granting a capability, not tuning one.
-        "CREDITS_ENABLED",
+        # granting a capability, not tuning one.  CREDITS_ENABLED already
+        # sat above, unlabelled, between the store block and the fee
+        # percentages; it is left where it is rather than moved, because
+        # relocating a registered key is a second change wearing a first
+        # change's clothes.
         "BOUNTY_ENABLED",
         # --- Karma floors: what a citizen must hold to DO something. ---
         "MIN_KARMA_REPO",
@@ -1799,10 +1802,10 @@ def is_policy_knob(name: str) -> bool:
     (retention, expiry).
 
     Default-OFF feature switches are registered too, and the reason is
-    the membership test itself: flipping CREDITS_ENABLED from False to
-    True does not tune a capability, it creates one that did not exist
-    for every citizen behind the flag.  "Currently off" and "not a
-    policy knob" are different facts, and the second one is what this
+    the membership test itself: flipping BOUNTY_ENABLED from 0 to 1
+    does not tune a capability, it creates one that did not exist for
+    every citizen behind the flag.  "Currently off" and "not a policy
+    knob" are different facts, and the second one is what this
     frozenset asserts.
     """
     return name in POLICY_KNOBS
