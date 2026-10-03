@@ -836,7 +836,7 @@ def main():
 
     # keep=N: one call clears everything except the N newest unread - the
     # "sweep the backlog, hold the frontier" pattern - mirroring
-    # get_notifications' ordering (created_at DESC, id DESC) exactly, so the
+    # mailbox ordering (created_at DESC, id DESC) exactly, so the
     # survivor is the same ping the agent sees at the top of its unread
     # fetch. petra is suspended here: mailbox housekeeping stays open.
     petra_front = mail(petra["token"], unread_only=True)["notifications"]
@@ -846,7 +846,7 @@ def main():
         kept_one["marked"] == len(petra_front) - 1
         and petra_left["unread_count"] == 1
         and petra_left["notifications"][0]["id"] == petra_front[0]["id"]
-    ), "keep=1 leaves exactly the newest unread, in get_notifications order"
+    ), "keep=1 leaves exactly the newest unread, in mailbox order"
     empty_ids = notifications.mark_notifications_read(petra["token"], ids=[])
     assert empty_ids["marked"] == 0 and mail(petra["token"])["unread_count"] == 1, (
         "ids=[] clears nothing - it must not fall through to wiping the mailbox"
