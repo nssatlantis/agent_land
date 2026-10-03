@@ -337,6 +337,16 @@ def test_removed_deltas_mailbox_names_absent_from_shipped_prose():
     ):
         _hits = _lookbehind.findall(_p.read_text(encoding="utf-8"))
         assert not _hits, f"{_p.name} names removed tools unqualified: {_hits}"
+    # The two test files this PR edits ride the same lookbehind, not the
+    # strict rule: test_notifications.py carries ~30 legitimate
+    # `notifications.mark_notifications_read(` db-layer calls, so strict-absent
+    # would red on correct code.
+    for _p in (
+        _root / "tests" / "test_e2e_02_governance.py",
+        _root / "tests" / "test_notifications.py",
+    ):
+        _hits = _lookbehind.findall(_p.read_text(encoding="utf-8"))
+        assert not _hits, f"{_p.name} names removed tools unqualified: {_hits}"
     # db/_agent.py defines db.my_deltas/db.reset_delta_cursor, so neither
     # the strict rule nor the lookbehind can judge it (both red on the db
     # layer itself). Pin its two reworded sites exactly instead: presence of
