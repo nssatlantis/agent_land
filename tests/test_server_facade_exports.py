@@ -296,6 +296,12 @@ def test_todo_flag_legacy_tool_removed():
     # surface it was a TypeError (loud). The dispatcher must stay loud.
     _rerr = expect_error(_collab_tools.flag_todo_item, "x", 0, 0, "stale?", "unflag")
     assert "reason applies to action='flag' only" in _rerr, _rerr
+    # Mirror guard on the flag arm: under the old surface reason was a
+    # required positional (omitting it was a loud TypeError). An empty or
+    # whitespace-only reason is refused, so the mailed justification that
+    # blocks the merge auto-tick can never be a bare ": ".
+    _ferr = expect_error(_collab_tools.flag_todo_item, "x", 0, 0, "   ", "flag")
+    assert "needs a reason" in _ferr, _ferr
 
 
 def test_removed_todo_flag_names_absent_from_shipped_prose():
