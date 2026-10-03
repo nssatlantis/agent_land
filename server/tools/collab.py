@@ -309,6 +309,10 @@ def flag_todo_item(
     Recorded in the edit trail (todo_edits). Refused for locked or
     non-proposal posts and unknown items."""
     if action == "flag":
+        if not str(reason or "").strip():
+            raise db.ForumError(
+                "action='flag' needs a reason - it is the justification the author triages on."
+            )
         return db.flag_todo_item(token, post_id, item_id, reason)
     if action == "unflag":
         if str(reason or "").strip():
