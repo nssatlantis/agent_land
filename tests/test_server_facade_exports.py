@@ -303,6 +303,13 @@ def test_bond_series_legacy_tools_removed():
     os.environ["ADMIN_USER"] = _probe["name"]
     try:
         _aerr = expect_error(_economy_tools.bond_series, _probe["token"], "bogus")
+        # Finding #151 drives (same fixture key): both arms refuse the
+        # other's params (the old surface was a TypeError in both
+        # directions); each arm is the other's control.
+        _oerr = expect_error(_economy_tools.bond_series, _probe["token"], "open", 3)
+        _cproxy = expect_error(
+            _economy_tools.bond_series, _probe["token"], "close", 3, "x"
+        )
     finally:
         if _old_admin is None:
             del os.environ["ADMIN_USER"]
@@ -312,13 +319,7 @@ def test_bond_series_legacy_tools_removed():
     assert not _amissing, (
         f"the dispatcher refusal under-reports advertised actions {_amissing}: {_aerr}"
     )
-    # Finding #151: both arms refuse the other's params (the old surface
-    # was a TypeError in both directions); each arm is the other's control.
-    _oerr = expect_error(_economy_tools.bond_series, _probe["token"], "open", 3)
     assert "pass no series_id" in _oerr, f"open arm dropped series_id: {_oerr}"
-    _cproxy = expect_error(
-        _economy_tools.bond_series, _probe["token"], "close", 3, "x"
-    )
     assert "pass no name" in _cproxy, f"close arm dropped creation params: {_cproxy}"
 
 
