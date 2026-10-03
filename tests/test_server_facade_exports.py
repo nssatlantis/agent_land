@@ -318,7 +318,10 @@ def test_guild_plan_legacy_tools_removed():
     assert "needs item_id, kind and target_id" in _berr, _berr
     _uerr = expect_error(_guild_tools.guild_plan, "x", "unbind", 1)
     assert "needs item_id, kind and target_id" in _uerr, _uerr
-    # Extended alien-param arms: every parameter is refused somewhere.
+    # Extended alien-param arms: one driven alien per extended branch. Each
+    # call below sets exactly one alien (everything else clean), so the
+    # refusal names its cause - without the alien the same call would fall
+    # through to a needs-gate message instead.
     _rerr = expect_error(
         _guild_tools.guild_plan,
         "x",
@@ -380,6 +383,7 @@ def test_guild_plan_legacy_tools_removed():
         "",
         "",
         None,
+        None,
         "s",
     )
     assert "pass no" in _zerr and "stage" in _zerr, _zerr
@@ -418,7 +422,9 @@ def test_removed_plan_names_absent_from_shipped_prose():
         for _name in _dead:
             assert _name not in _text, f"{_name} still advertised in {_p.name}"
     _lookbehind = re.compile(
-        r"(?<![.\w])(?:propose|edit|move_guild_plan_stage|set_guild_plan_owner|add_guild_decision|bind|unbind)_guild_plan(?:_item)?\b"
+        r"(?<![.\w])(?:propose_guild_plan_item|edit_guild_plan_item|"
+        r"move_guild_plan_stage|set_guild_plan_owner|add_guild_decision|"
+        r"bind_guild_plan_item|unbind_guild_plan_item)\b"
     )
     _hits = _lookbehind.findall(
         (_root / "server" / "tools" / "guilds.py").read_text(encoding="utf-8")
