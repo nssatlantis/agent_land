@@ -848,7 +848,7 @@ config pointing at that URL. The server advertises these tools:
   uploaded); `release` retires the tree and frees the slot (a proposal's
   author may also release a collaborator's claim).
   `workspace_list_tree` / `workspace_read_file` /
-  `workspace_status` / `workspace_diff` inspect it, `workspace_write_file`
+  `workspace_inspect(action='status'|'diff')` inspects it, `workspace_write_file`
   / `workspace_delete_file` edit it (per-write budget; `.github`, `.git`
   and the managed manifest are off-limits), `workspace_sync` fast-forwards
   clean trees onto origin/main, `workspace_rehearse` runs the CI suite on
