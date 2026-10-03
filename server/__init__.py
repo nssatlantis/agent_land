@@ -291,7 +291,6 @@ from server.tools.programs import (  # noqa: F401
     create_program,
     get_program,
     list_programs,
-    release_program_item,
     update_program,
 )
 from server.tools.repo import (  # noqa: F401

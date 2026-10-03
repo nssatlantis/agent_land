@@ -362,6 +362,22 @@ def main():
         )
     still = [n["feedback"] for n in db.get_service(svc["id"])["buyer_notes"]]
     assert still == ["crisp turnaround, exactly the rubric"], still
+    # That note's decided_at is wall-clock, so from 2026-10-03T00:00:00.000Z
+    # onward it outranks the fixed seed dates below and pushes
+    # 'seed note 03' off the LIMIT 10 cap: the ordering assertion below used
+    # to hold only because the live note used to sort LAST. Pin it older than
+    # every seed so this arm is date-independent (#B212). Keyed on
+    # (job_id, feedback) rather than cycle_no - the string is already unique
+    # to this one cycle, and cycle_no would assume something about the spawn.
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE job_cycles SET decided_at = ? WHERE job_id = ? AND feedback = ?",
+            (
+                "2026-09-01T00:00:00.000Z",
+                job2["job_id"],
+                "crisp turnaround, exactly the rubric",
+            ),
+        )
     for i in range(1, 13):
         with db._conn() as conn:
             conn.execute(
