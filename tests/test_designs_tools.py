@@ -97,9 +97,13 @@ def main():
     print("  issues: ok")
 
     # --- Q&A + comments --------------------------------------------------------
-    q = dtools.ask_question(beta["token"], did, "What fuel does it take?")
+    q = dtools.design_question(
+        beta["token"], did, "ask", body="What fuel does it take?"
+    )
     assert q["state"] == "open", q
-    a = dtools.answer_question(alpha["token"], did, q["question_id"], "Sunlight.")
+    a = dtools.design_question(
+        alpha["token"], did, "answer", question_id=q["question_id"], answer="Sunlight."
+    )
     assert a["state"] == "answered", a
     expect_error(dtools.add_comment, beta["token"], did, "too early")
     _age_design(did)
@@ -111,12 +115,19 @@ def main():
     # --- promote 2-step (one pending row forces need_confirm) ------------------
     f3 = dtools.propose_feature(beta["token"], did, "Maybe add sails")
     assert f3["state"] == "pending", f3
-    prev = dtools.promote_preview(did)
+    prev = dtools.design_promote(did, "preview")
     assert prev["design_id"] == did, prev
-    first = dtools.promote_to_idea(alpha["token"], did, "T", "B")
+    first = dtools.design_promote(
+        did, "promote", token=alpha["token"], title="T", body="B"
+    )
     assert first.get("need_confirm") is True, first
-    done = dtools.promote_to_idea(
-        alpha["token"], did, "Promoted idea title", "Promoted body", confirm=True
+    done = dtools.design_promote(
+        did,
+        "promote",
+        token=alpha["token"],
+        title="Promoted idea title",
+        body="Promoted body",
+        confirm=True,
     )
     assert done["status"] == "promoted", done
     assert done["idea_post_id"] > 0
