@@ -461,8 +461,10 @@ def guild_chat(
     message: the founder deletes any message, members delete their own.
     Anything else raises ForumError."""
     if action == "post":
-        if message_id is not None:
-            raise db.ForumError("action='post' appends a message - pass no message_id.")
+        if message_id is not None or limit != 50 or offset != 0:
+            raise db.ForumError(
+                "action='post' appends a message - pass no message_id, limit or offset."
+            )
         if guild_id is None or body is None:
             raise db.ForumError("action='post' needs guild_id and body.")
         return db.post_guild_chat(token, guild_id, body)
