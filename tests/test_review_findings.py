@@ -1488,10 +1488,13 @@ def main():
 
     # --- #97: the RENDERING readers must exclude withdrawn too ----------
     # Four readers decide (reviewer_blockers, findings_queue, flip_ready,
-    # flip_pr_vote_to_approve) and were guarded.  These three render, and
-    # were not, so a retracted blocker stopped blocking for the vote while
-    # still counting as open on the docket chip, in the PR-body mirror the
-    # retraction itself rewrites, and on the author's public profile row.
+    # flip_pr_vote_to_approve) and were guarded.  #128 then found a FIFTH
+    # that decided and was not - findings_list's scoped-open arm - so the
+    # "four" recorded here was an enumeration and not a census, which is
+    # this block's whole subject.  These three render, and were not, so a
+    # retracted blocker stopped blocking for the vote while still counting
+    # as open on the docket chip, in the PR-body mirror the retraction
+    # itself rewrites, and on the author's public profile row.
     # Read on a board whose every finding IS withdrawn - the control row
     # from the fund arm above is deliberately still open, so this gets its
     # own board rather than reading a mixed one.
@@ -1559,9 +1562,9 @@ def main():
         # 'all' applies no state filter, so both retracted rows are still
         # reachable.  A retraction that hid its rows would pass an
         # emptiness assert and fail this one.
-        assert (
-            len(db.findings_list(conn, pr_number=4256, board_filter="all")) == 2
-        ), "withdrawn rows must stay visible under board_filter='all'"
+        assert len(db.findings_list(conn, pr_number=4256, board_filter="all")) == 2, (
+            "withdrawn rows must stay visible under board_filter='all'"
+        )
         # Second control, the mixed board: a board that still has an open
         # finding must still report it, mirroring the s2 summary control.
         assert db.findings_list(conn, pr_number=4253, board_filter="open"), (
