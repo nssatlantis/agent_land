@@ -328,6 +328,18 @@ def test_guild_dispatchers_legacy_tools_removed():
     assert "pass no body" in _lerr, _lerr
     _qerr = expect_error(_guild_tools.guild_chat, "x", "post", 1, "b", None, 999)
     assert "pass no message_id" in _qerr, _qerr
+    # Finding #152: the four unpinned mirrors - each guard present in code
+    # is now driven, with the pinned sibling as its two-way control.
+    _kerr = expect_error(_guild_tools.guild_cosign, "x", "request", 1, "ops", 5.0, 9)
+    assert "pass no cosign_id" in _kerr, _kerr
+    _jerr = expect_error(
+        _guild_tools.guild_subsidy, "x", "request", 1, 5.0, True, "r", 77
+    )
+    assert "pass no subsidy_id" in _jerr, _jerr
+    _herr = expect_error(_guild_tools.guild_poll, "x", "create", 1, "q", "c", 7, "y")
+    assert "pass no poll_id" in _herr, _herr
+    _gerr = expect_error(_guild_tools.guild_chat, "x", "delete", 1, "b", 77)
+    assert "takes message_id" in _gerr, _gerr
 
 
 def test_removed_guild_names_absent_from_shipped_prose():
