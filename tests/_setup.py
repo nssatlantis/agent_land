@@ -354,4 +354,3 @@ def assert_no_removed_tool_names(
         )
         for _name in _names:
             assert f'"{_name}"' in _reg, f"{_name} missing from _REMOVED"
-
