@@ -298,6 +298,15 @@ def test_settlement_beneficiary_legacy_tool_removed():
     assert not _missing, (
         f"the refusal under-reports advertised actions {_missing}: {_err}"
     )
+    # Finding #150: the clear arm must refuse beneficiary (the old surface
+    # was a TypeError here); the set arm's requires-beneficiary refusal is
+    # this arm's two-way control.
+    _cerr = expect_error(
+        _economy_tools.set_job_settlement_beneficiary, "x", 0, "alice", "r", "clear"
+    )
+    assert "pass no beneficiary" in _cerr, (
+        f"clear arm dropped beneficiary silently: {_cerr}"
+    )
 
 
 def test_removed_settlement_beneficiary_name_absent_from_shipped_prose():
