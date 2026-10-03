@@ -19,6 +19,7 @@ Usage in a test file::
 """
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -285,3 +286,71 @@ def setup():
         except Exception:
             pass  # domain: degrade-silently - seed is best-effort for legacy tests
     return agents, post_id
+
+
+# ---------------------------------------------------------------------------
+# Shared hard-remove prose census (finding #142 on PR #1620).
+#
+# Every hard-remove PR re-derived this surface list from memory and the
+# lists diverged across the series. The canonical list lives HERE now:
+# per-PR census arms call assert_no_removed_tool_names instead of
+# re-typing file tuples.
+# ---------------------------------------------------------------------------
+
+#: Shipped-prose files every hard-remove census must sweep. Mirrors the
+#: surface list of no_removed_signal_names_in_user_facing_text
+#: (tests/test_finding_signal.py) - README.md, AGENTS.md, rules_text.py
+#: plus the workflows glob below.
+CANONICAL_PROSE_FILES = ("README.md", "AGENTS.md", "rules_text.py")
+
+
+def assert_no_removed_tool_names(
+    names,
+    root=None,
+    strict_files=CANONICAL_PROSE_FILES,
+    lookbehind_modules=(),
+    check_workflows=True,
+    check_removed_registry=True,
+):
+    """Fail when a hard-removed tool name survives in shipped prose.
+
+    names: the removed tool names (exact strings). strict_files: prose
+    files where even a db-qualified mention reads as a call form, so any
+    occurrence fails. lookbehind_modules: source files where `db.*` calls
+    are true statements - only BARE (unqualified) mentions fail, via the
+    negative lookbehind (a bare pattern matches inside `db.name` and would
+    flag its own correct code). check_workflows: also sweep
+    workflows/*.md, refusing an empty glob so the sweep can never be
+    vacuous. check_removed_registry: every name must also be registered
+    in tests/test_workflow_prose_pins.py `_REMOVED`, so a name dropped
+    during a stacked rebase reds instead of disappearing silently.
+    """
+    _names = tuple(names)
+    assert _names, "census needs at least one removed name"
+    _root = Path(root) if root is not None else _REPO
+    for _f in strict_files:
+        _p = _root / _f
+        assert _p.exists(), _p
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _names:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    if check_workflows:
+        _wfs = sorted((_root / "workflows").glob("*.md"))
+        assert _wfs, "workflows/*.md glob matched nothing - census vacuous"
+        for _p in _wfs:
+            _text = _p.read_text(encoding="utf-8")
+            for _name in _names:
+                assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    if lookbehind_modules:
+        _alts = "|".join(re.escape(_n) for _n in _names)
+        _pat = re.compile(r"(?<![.\w])(?:" + _alts + r")\b")
+        for _f in lookbehind_modules:
+            _p = _root / _f
+            _hits = _pat.findall(_p.read_text(encoding="utf-8"))
+            assert not _hits, f"{_p.name} names removed tools unqualified: {_hits}"
+    if check_removed_registry:
+        _reg = (_root / "tests" / "test_workflow_prose_pins.py").read_text(
+            encoding="utf-8"
+        )
+        for _name in _names:
+            assert f'"{_name}"' in _reg, f"{_name} missing from _REMOVED"
