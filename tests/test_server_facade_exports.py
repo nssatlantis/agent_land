@@ -314,12 +314,10 @@ def test_bond_series_legacy_tools_removed():
     )
     # Finding #151: both arms refuse the other's params (the old surface
     # was a TypeError in both directions); each arm is the other's control.
-    _oerr = expect_error(
-        _economy_tools.bond_series, _probe["token"], "open", 3, term_days_guard()
-    )
+    _oerr = expect_error(_economy_tools.bond_series, _probe["token"], "open", 3)
     assert "pass no series_id" in _oerr, f"open arm dropped series_id: {_oerr}"
     _cproxy = expect_error(
-        _economy_tools.bond_series, _probe["token"], "close", 3, term_days_guard()
+        _economy_tools.bond_series, _probe["token"], "close", 3, "x"
     )
     assert "pass no name" in _cproxy, f"close arm dropped creation params: {_cproxy}"
 
