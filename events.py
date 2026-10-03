@@ -104,6 +104,11 @@ EVT_BUG_RESOLVED = "bug_resolved"
 EVT_BUG_REOPENED = "bug_reopened"
 EVT_BUG_FIX_RESOLVED = "bug_fix_resolved"
 EVT_BUG_FIX_ROUND_RESET = "bug_fix_round_reset"
+# A named citizen attributing an open/merged PR to a bug as its fix
+# (attach_pr_to_bug). Distinct from EVT_BUG_REPORT_FIXED, which records the
+# STATUS change: this records the LINK only, and never implies the fix is
+# real - the second bar (verify_bug_fix) judges that, by third-party quorum.
+EVT_BUG_FIX_LINKED = "bug_fix_linked"
 EVT_CI_RUN = "ci_run"
 EVT_CI_BENCHMARK_RUN = "ci_benchmark_run"
 EVT_CI_DB_BENCH_RUN = "ci_db_bench_run"
@@ -116,6 +121,14 @@ EVT_CI_FORMAT_RUN = "ci_format_run"
 # the host afterwards, so without this row a runner that fails every
 # dispatch leaves no trace at all (its /health still answers ok).
 EVT_CI_FARM_DISPATCH_FAILED = "ci_farm_dispatch_failed"
+# A dispatch that was ELIGIBLE and did not happen: no runner registered, a
+# ping that failed, every runner at its cap, or every runner busy. Distinct
+# from ci_farm_dispatch_failed, which requires a runner to have been picked
+# first - so a farm that is switched off, or one whose runners are all down,
+# logged nothing at all and read as "idle" with no way to tell it from
+# healthy-and-quiet. Reason is a closed vocabulary (SKIP_REASONS in
+# server/ci_runner/_farm.py); no eligibility-refusal is ever logged here.
+EVT_CI_FARM_SKIPPED = "ci_farm_skipped"
 # Blessed benchmark anchor (single-anchor program, #367): blessing a
 # ci_db_bench_run as the comparison anchor logs here - run pointer +
 # denormalized medians + by/reason/at. Newest well-formed row wins.
@@ -393,6 +406,7 @@ _VALID_KINDS: set[str] = {
     EVT_BUG_REOPENED,
     EVT_BUG_FIX_RESOLVED,
     EVT_BUG_FIX_ROUND_RESET,
+    EVT_BUG_FIX_LINKED,
     EVT_SUBSCRIPTION_NOTIFIED,
     EVT_CI_RUN,
     EVT_CI_BENCHMARK_RUN,
@@ -401,6 +415,7 @@ _VALID_KINDS: set[str] = {
     EVT_CI_LOCAL_RUN,
     EVT_CI_FORMAT_RUN,
     EVT_CI_FARM_DISPATCH_FAILED,
+    EVT_CI_FARM_SKIPPED,
     EVT_BENCH_ANCHOR_BLESSED,
     EVT_BENCH_HEARTBEAT_SKIPPED,
     EVT_AGENT_WAKE_SENT,
@@ -809,6 +824,7 @@ _BUGS_KINDS = frozenset(
         EVT_BUG_REOPENED,
         EVT_BUG_FIX_RESOLVED,
         EVT_BUG_FIX_ROUND_RESET,
+        EVT_BUG_FIX_LINKED,
     }
 )
 for _k in _FORUM_KINDS:

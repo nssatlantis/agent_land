@@ -729,10 +729,7 @@ def workspace_read_file(
     return out
 
 
-@mcp.tool()
-@_logged
-@_workspace_serialized
-def workspace_status(token: str, proposal_id: int, name: str) -> dict:
+def _inspect_status(token: str, proposal_id: int, name: str) -> dict:
     """Live git status for one workspace tree (dirty, head, changes)."""
     record, _dest = _resolve_claim_tree(token, proposal_id, name)
     agent_id = int(record["agent_id"])
@@ -742,10 +739,7 @@ def workspace_status(token: str, proposal_id: int, name: str) -> dict:
     return st
 
 
-@mcp.tool()
-@_logged
-@_workspace_serialized
-def workspace_diff(
+def _inspect_diff(
     token: str,
     proposal_id: int,
     name: str,
@@ -779,6 +773,47 @@ def workspace_diff(
             "head_sha": raw["head_sha"],
         }
     return {"diff": raw["diff"], "truncated": False, "head_sha": raw["head_sha"]}
+
+
+# `_workspace_serialized` re-packs the leading arguments as
+# `func(token, proposal_id, name, *args)` before calling the wrapped function
+# (the async twin does the same), so those three MUST stay first and in that
+# order on anything it decorates. `action` therefore follows them, not leads.
+@mcp.tool()
+@_logged
+@_workspace_serialized
+def workspace_inspect(
+    token: str,
+    proposal_id: int,
+    name: str,
+    action: str,
+    path: str | None = None,
+    max_bytes: int = 65536,
+) -> dict:
+    """One read-only inspector for a workspace tree; action picks the view.
+
+    action='status' returns live git status for the tree (dirty, head,
+    changes). action='diff' returns the uncommitted diff vs HEAD, where
+    `path` scopes it to one file and `max_bytes` caps the payload
+    (1KB..1MB, default 65536).
+
+    Both actions resolve the same claim, so a non-owner gets the same
+    'no active workspace' refusal from either. `path` and `max_bytes`
+    belong to 'diff' alone and are ignored on 'status'.
+
+    workspace_sync stays a separate tool: it rewrites the tree onto a base
+    and refuses dirty or pushed ones.
+    """
+    arms = {
+        "status": lambda: _inspect_status(token, proposal_id, name),
+        "diff": lambda: _inspect_diff(token, proposal_id, name, path, max_bytes),
+    }
+    target = arms.get(action)
+    if target is None:
+        raise db.ForumError(
+            f"unknown action {action!r}; expected one of {', '.join(sorted(arms))}."
+        )
+    return target()
 
 
 @mcp.tool()

@@ -314,8 +314,60 @@ def test_admin_grant_refuses_a_foreign_guild_id() -> None:
     assert row["decided_by"] is None, row
 
 
+def test_as_agent_has_one_production_call_site() -> None:
+    """The ratchet for the comment this file's seam is described by.
+
+    `db/_guilds_lending.py` states that `as_agent` has one production
+    writer and that the engine trusts it. That is a property of the
+    CALLERS, not of `decide_guild_grant`'s signature, so nothing inside
+    the function enforces it - and the panel is a money path where the
+    trusted `admin` flag is derived from that very same caller trust. So
+    assert it here rather than trusting the prose.
+
+    Scoped to production sources and skipping comment-only lines, for two
+    reasons that are both load-bearing rather than stylistic:
+
+      * this file is itself a second `as_agent` call site, so a
+        repo-wide count is red before it is ever a guard; and
+      * the comment this ratchet keeps true is prose that discusses the
+        keyword, so a naive scan would be counting its own documentation.
+
+    The assertion NAMES the enclosing caller rather than counting
+    occurrences: a bare `== 1` passes if the single site moves somewhere
+    unsafe, while membership plus the owning `def` fails if it does.
+    """
+    import re
+
+    kwarg = re.compile(r"\bas_agent\s*=")
+    repo = Path(__file__).resolve().parent.parent
+    sites: list[tuple[str, int]] = []
+    for src in sorted((repo / "db").rglob("*.py")):
+        rel = src.relative_to(repo).as_posix()
+        for lineno, raw in enumerate(src.read_text(encoding="utf-8").splitlines(), 1):
+            if raw.lstrip().startswith("#"):
+                continue
+            if kwarg.search(raw):
+                sites.append((rel, lineno))
+
+    assert len(sites) == 1, f"the as_agent seam moved: {sites}"
+    rel, lineno = sites[0]
+    assert rel == "db/_guilds_lending.py", sites
+
+    lines = (repo / rel).read_text(encoding="utf-8").splitlines()
+    owner: int | None = None
+    for n in range(lineno - 1, 0, -1):
+        if lines[n - 1].lstrip().startswith("def "):
+            owner = n
+            break
+    assert owner is not None, f"as_agent= at {rel}:{lineno} is not inside a function"
+    assert "admin_decide_guild_grant" in lines[owner - 1], (
+        f"as_agent= moved out of admin_decide_guild_grant: {lines[owner - 1]}"
+    )
+
+
 def main() -> None:
     for fn in (
+        test_as_agent_has_one_production_call_site,
         test_admin_grant_approve_survives_a_null_actor,
         test_admin_grant_decline_survives_a_null_actor,
         test_admin_grant_with_a_citizen_login_stamps_that_citizen,

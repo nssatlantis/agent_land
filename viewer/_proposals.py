@@ -51,6 +51,11 @@ _DOCKET_EMPTIES = {
     "merged": "No merged proposals on the record yet.",
     "small_fix": "No small fixes on the docket yet.",
     "collaborative": "No collaborative proposals on the docket yet.",
+    "unclaimed": "No claimable proposals right now - every approved "
+    "proposal has an owner, or is claimable and taken.",
+    "staking": "No proposals with a live stake right now.",
+    "review_proposal": "No proposals awaiting review right now.",
+    "review_small_fix": "No small fixes awaiting review right now.",
     "ideas": "No ideas on the docket yet.",
     "lineage": "No proposals on the docket yet.",
 }
@@ -668,7 +673,11 @@ _DOCKET_TITLES = {
     "stale": "Stale",
     "approved": "Approved",
     "review": "Review",
+    "review_proposal": "Review (proposals)",
+    "review_small_fix": "Review (small fixes)",
     "collaborative": "Collaborative",
+    "unclaimed": "Unclaimed",
+    "staking": "Staking",
     "merged": "Merged",
     "ideas": "Ideas",
     "lineage": "Lineage",
@@ -676,7 +685,7 @@ _DOCKET_TITLES = {
 
 _DOCKET_PHASES = [
     ("Discussion", ["needs_votes", "small_fix", "ideas", "stale"]),
-    ("Implementation", ["approved", "review", "collaborative"]),
+    ("Implementation", ["approved", "review", "collaborative", "unclaimed"]),
     ("Done", ["merged", "lineage"]),
 ]
 
@@ -695,9 +704,21 @@ def _proposals_href(view: str, sort: str, page: int = 1) -> str:
 def _docket_selection(request: Request) -> tuple[str, str, int]:
     """Parse the docket's view/sort/page query params, silently falling back
     to the defaults for anything unknown - the same forgiving pattern the
-    posts page uses for its kind and sort params."""
+    posts page uses for its kind and sort params.
+
+    The `view` arm validates against `db._PROPOSAL_VIEWS`, NOT against
+    `_DOCKET_TITLES`. A title dict is presentation; every view in the
+    registry is counted by `proposal_docket_counts` and filtered by
+    `list_proposals`, so a view without a tab is still a real lens. Keying
+    the fallback on the titles is what made the /analytics "unclaimed" chip
+    - carrying a correct count - serve the `all` list instead.
+    """
     view = request.query_params.get("view", "all")
-    if view not in _DOCKET_TITLES:
+    if view not in db._PROPOSAL_VIEWS:
+        # domain: degrade-silently - an unknown lens means the default
+        # list, not a crash. The loud refusal in db.list_proposals names
+        # every view; this page is a forgiving read surface, so it
+        # degrades instead.
         view = "all"
     sort = request.query_params.get("sort", "newest")
     if sort not in ("newest", "top"):

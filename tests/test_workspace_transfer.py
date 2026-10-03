@@ -419,7 +419,7 @@ def test_http_upload_apply(agents):
     live = WT.workspace_read_file(tok, pid, "up", "app.py")
     assert live["content"] == "X = 2\nY = 3", live
     assert live["content_sha256"] == receipt["content_sha256"]
-    diff = WT.workspace_diff(tok, pid, "up", path="app.py")
+    diff = WT.workspace_inspect(tok, pid, "up", "diff", path="app.py")
     assert "Y = 3" in diff["diff"], diff
     # Same path cannot POST twice on one ticket.
     resp2 = _run(TR.transfer_upload(_req("POST", w, "app.py", body=body)))

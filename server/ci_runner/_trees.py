@@ -587,8 +587,18 @@ def _sweep_idle_named_trees() -> int:
     return swept
 
 
-def _stored_deltas(tree: str) -> list[list[dict]]:
-    """Previously applied delta blobs, oldest first (for base-move replay)."""
+def _stored_deltas(tree: str, *, strict: bool = False) -> list[list[dict]]:
+    """Previously applied delta blobs, oldest first (for base-move replay).
+
+    With strict=True a corrupt blob RAISES instead of truncating. The farm
+    reader must be able to tell "this tree holds k deltas" from "this tree
+    holds n and blob k is unreadable", because the two are indistinguishable
+    otherwise: shipping the truncated prefix would hand the runner a smaller
+    tree than the local path builds, and its green would be a receipt for a
+    tree nobody tested. The local replay path keeps the truncating behaviour
+    deliberately - it stops, clears the store, and fails loud naming the delta
+    that broke.
+    """
     deltas: list[list[dict]] = []
     store = os.path.join(tree, ".ci-deltas")
     try:
@@ -604,6 +614,8 @@ def _stored_deltas(tree: str) -> list[list[dict]]:
             if isinstance(blob, list):
                 deltas.append(blob)
         except Exception:  # domain: degrade-silently - corrupt blob stops replay
+            if strict:
+                raise
             break
     return deltas
 
@@ -803,6 +815,54 @@ def _prepare_named_tree(
 
 def _clear_deltas(tree: str) -> None:
     _retire_dir(os.path.join(tree, ".ci-deltas"))
+
+
+def named_tree_deltas(agent_id: int, name: str) -> list[list[dict]] | None:
+    """The delta blobs a named tree still holds, oldest first. Read-only.
+
+    The shape is a list of BLOBS, each blob the list of {path, content}
+    entries from one stored delta - not a flat list of entries. The consumer
+    (farm.tree_payload) concatenates blob by blob, which is also the order the
+    local path replays them in, so flattening here would be the wrong fix.
+
+    Exists so the CI farm can ship a WARM tree, not just a cold one. The
+    request's own `files` is only the newest delta; a tree carries every
+    earlier one on disk. Shipping only the newest would measure a DIFFERENT
+    tree than the local path runs - the exact failure the farm gate's comment
+    warns about ("a farm run over a DIFFERENT tree that still reports green").
+
+    Returns [] for a tree that does not exist yet, is not this agent's, or
+    whose name fails validation: every one of those cases genuinely means "no
+    stored deltas".
+
+    Returns None - and that is NOT the same answer - when the store exists but
+    cannot be read WHOLE. The private reader stops scanning at a corrupt blob
+    and hands back the prefix it managed to read, so an empty list and a
+    truncated one are indistinguishable without this sentinel. Shipping the
+    prefix would rehearse a smaller tree than the local path runs, which is
+    the one direction that reports green on a tree nobody tested. The caller
+    must treat None as ineligible.
+
+    Never raises, never writes, never resets - asking whether a tree may be
+    dispatched must not be able to change it.
+    """
+    try:
+        tree = _named_dir(int(agent_id), _validate_tree_name(name))
+    except Exception:
+        # domain: degrade-silently - an unusable tree simply holds no deltas
+        return []
+    if not os.path.isdir(os.path.join(tree, ".git")):
+        return []
+    manifest = _read_manifest(tree)
+    if manifest is not None and int(manifest.get("agent_id", -1)) != int(agent_id):
+        return []
+    try:
+        blobs = _stored_deltas(tree, strict=True)
+    except Exception:
+        # domain: degrade-silently - unreadable store means we cannot prove the
+        # tree is reproducible, so the caller must treat it as ineligible
+        return None
+    return [b for b in blobs if isinstance(b, list) and b]
 
 
 def forget_named_tree(agent_id: int, name: str) -> bool:

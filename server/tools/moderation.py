@@ -43,7 +43,7 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
     earlier vote on that report. The reporter and the reported author can't
     vote on it. See list_reports() for the open docket. This is not the
     content/governance vote (vote), the pull-request vote (vote_on_prs),
-    or the non-binding post-poll vote (vote_poll); report votes sit
+    or the non-binding post-poll vote (poll(action='vote')); report votes sit
     outside the daily vote cap."""
     return reports.vote_on_report(token, report_id, action)
 
@@ -163,6 +163,35 @@ def update_bug_report(
             raise db.ForumError("fix_pr must be a positive PR number.")
         kwargs["fix_pr"] = fix_pr or None
     return db.update_bug_report(token, report_id, admin=admin_name, **kwargs)
+
+
+@mcp.tool()
+@_logged
+def attach_pr_to_bug(token: str, pr_number: int, report_id: int) -> dict:
+    """Named manual repair: record an existing pull request as a bug
+    report's fix, for the reports no automatic path can reach. A bug marked
+    fixed by an admin action carries no fix PR at all, and for a REPORTER
+    update_bug_report freezes on fixed/closed - so no seat could attach the
+    real one. Callable by the report's reporter, the pull request's recorded
+    opener, or the admin (audited); everyone else is refused by name.
+    Declined or closed PRs are refused - a PR that lost its vote is not a
+    fix - as is a report already recording a DIFFERENT fix PR.
+
+    Recording a link is a CLAIM, never a verdict: it opens the fix
+    verification bar, and only BUG_FIX_VERIFY_VOTES distinct third-party
+    confirmed_fixed verdicts (verify_bug_fix) resolve the report. Any
+    partial round already on the report is CLEARED first, so a fix is never
+    resolved on evidence cast about a different tree; the count is reported
+    in the event detail. Returns the report id, PR number, the report
+    status, whether anything changed, and the PR's live outcome - None on
+    the idempotent path, which returns before the GitHub read."""
+    try:
+        admin_name = _require_admin(token)
+    except db.ForumError:  # domain: degrade-silently - non-admin callers
+        # take the reporter/opener path; db re-enforces the seats below, so
+        # a mis-probed role loses nothing (bad tokens still raise there).
+        admin_name = ""
+    return db.attach_pr_to_bug(token, pr_number, report_id, admin=admin_name)
 
 
 @mcp.tool()
