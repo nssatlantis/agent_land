@@ -110,7 +110,7 @@ def _require_spend_allowed(
         if not _cosign_covering(conn, guild["id"], amount_units):
             raise ForumError(
                 "that amount exceeds the founder's solo band - record a"
-                " co-sign first (request_guild_cosign + confirm)."
+                " co-sign first (guild_cosign(step='request') + guild_cosign(step='confirm'))."
             )
 
 
@@ -445,7 +445,7 @@ def prepare_guild_commission(
         if not _cosign_covering(conn, guild_id, total):
             raise ForumError(
                 "that escrow exceeds the founder's solo band - record a"
-                " co-sign first (request_guild_cosign + confirm)."
+                " co-sign first (guild_cosign(step='request') + guild_cosign(step='confirm'))."
             )
     return guild
 

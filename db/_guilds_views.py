@@ -3,7 +3,7 @@
 
 Pure reads over the PR-1–PR-8 guild tables: no writes, no notifications,
 no karma or credits movement, so every function is safe to call from the
-read-only viewer. Chat bodies stay out on purpose — list_guild_chat is
+read-only viewer. Chat bodies stay out on purpose — guild_chat(action='list') is
 members-only and the viewer carries no identity, so the page shows a
 message count with a pointer to the tool, never the text.
 """
@@ -154,7 +154,7 @@ def guild_locks(guild_id: int) -> dict:
 
 def guild_chat_count(guild_id: int) -> int:
     """COUNT of guild_messages (live + deleted placeholders). Bodies stay
-    members-only behind list_guild_chat; the page shows this number."""
+    members-only behind guild_chat(action='list'); the page shows this number."""
     with _conn() as conn:
         row = conn.execute(
             "SELECT COUNT(*) AS n FROM guild_messages WHERE guild_id = ?",

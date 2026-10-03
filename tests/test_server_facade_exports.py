@@ -151,7 +151,10 @@ EXPECTED = [
     "bind_guild_plan_item",
     "unbind_guild_plan_item",
     "get_guild_plan",
-    "decide_guild_subsidy",
+    "guild_chat",
+    "guild_cosign",
+    "guild_poll",
+    "guild_subsidy",
     "appoint_guild_successor",
     "admin_release_empty_guild",
     # workspace transfer tickets (proposal #597)
@@ -265,8 +268,148 @@ def test_server_repo_search_stays_module():
     assert callable(repo_pkg.repo_search), "tool lives on server.tools.repo"
 
 
+def test_guild_dispatchers_legacy_tools_removed():
+    """Hard-remove pins (proposal #938): the nine guild wrappers must not
+    exist as tools on any surface. The db.* functions are
+    protocol-agnostic core and are not asserted here."""
+    import server
+    import server.tools.guilds as _guild_tools
+    from tests._setup import expect_error
+
+    for _dead in (
+        "request_guild_cosign",
+        "confirm_guild_cosign",
+        "request_guild_subsidy",
+        "decide_guild_subsidy",
+        "create_guild_poll",
+        "vote_guild_poll",
+        "post_guild_chat",
+        "list_guild_chat",
+        "delete_guild_chat",
+    ):
+        assert not hasattr(_guild_tools, _dead), f"{_dead} is still defined"
+        assert not hasattr(server, _dead), f"{_dead} still on the facade"
+    # The cosign selector is step, not action: the request arm already
+    # takes an action spend parameter. Both vocabularies derived live.
+    _steps = set(
+        re.findall(r"step='([a-z_]+)'", _guild_tools.guild_cosign.__doc__ or "")
+    )
+    assert _steps == {"request", "confirm"}, _steps
+    _serr = expect_error(_guild_tools.guild_cosign, "x", "bogus")
+    assert "'request'" in _serr and "'confirm'" in _serr, _serr
+    _merr = expect_error(_guild_tools.guild_cosign, "x", "request")
+    assert "needs guild_id, action and amount_credits" in _merr, _merr
+    _xerr = expect_error(_guild_tools.guild_cosign, "x", "confirm", 1, "ops", 5.0, 9)
+    assert "pass no guild_id" in _xerr, _xerr
+    for _tool, _members in (
+        (_guild_tools.guild_subsidy, ("request", "decide")),
+        (_guild_tools.guild_poll, ("create", "vote")),
+        (_guild_tools.guild_chat, ("post", "list", "delete")),
+    ):
+        _advertised = set(re.findall(r"action='([a-z_]+)'", _tool.__doc__ or ""))
+        assert _advertised == set(_members), (_tool.__name__, _advertised)
+        _err = expect_error(_tool, "x", "bogus")
+        _missing = sorted(m for m in _members if f"'{m}'" not in _err)
+        assert not _missing, f"{_tool.__name__} under-reports {_missing}: {_err}"
+    # Matrix arms, one per dispatcher: missing ids refuse, alien ids refuse.
+    _uerr = expect_error(_guild_tools.guild_subsidy, "x", "request")
+    assert "needs guild_id, amount_credits and payback" in _uerr, _uerr
+    _derr = expect_error(
+        _guild_tools.guild_subsidy, "x", "decide", 1, 2.0, True, "r", 7, True
+    )
+    assert "pass no guild_id" in _derr, _derr
+    _perr = expect_error(_guild_tools.guild_poll, "x", "create")
+    assert "needs guild_id, question and closes_at" in _perr, _perr
+    _verr = expect_error(_guild_tools.guild_poll, "x", "vote", 1, "q", "c", 7)
+    assert "pass no guild_id" in _verr, _verr
+    _cerr = expect_error(_guild_tools.guild_chat, "x", "delete")
+    assert "needs message_id" in _cerr, _cerr
+    _lerr = expect_error(_guild_tools.guild_chat, "x", "list", 1, "b")
+    assert "pass no body" in _lerr, _lerr
+    _qerr = expect_error(_guild_tools.guild_chat, "x", "post", 1, "b", None, 999)
+    assert "pass no message_id" in _qerr, _qerr
+
+
+def test_removed_guild_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #938): the four dispatchers survive,
+    so all nine legacy names are forbidden in live prose. db.* calls are
+    true statements (negative lookbehind); reworded user-facing strings
+    are pinned exactly."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    _dead = (
+        "request_guild_cosign",
+        "confirm_guild_cosign",
+        "request_guild_subsidy",
+        "decide_guild_subsidy",
+        "create_guild_poll",
+        "vote_guild_poll",
+        "post_guild_chat",
+        "list_guild_chat",
+        "delete_guild_chat",
+    )
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        _root / "rules_text.py",
+    ):
+        assert _p.exists(), _p
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _lookbehind = re.compile(
+        r"(?<![.\w])(?:request|confirm|decide|create|vote|post|list|delete)_guild_(?:cosign|subsidy|poll|chat)\b"
+    )
+    _hits = _lookbehind.findall(
+        (_root / "server" / "tools" / "guilds.py").read_text(encoding="utf-8")
+    )
+    assert not _hits, f"guilds.py names the removed tools unqualified: {_hits}"
+    _viewer_text = (_root / "viewer" / "_guilds.py").read_text(encoding="utf-8")
+    assert "guild_poll(action='create')" in _viewer_text
+    assert "guild_chat(action='list')" in _viewer_text
+    assert "guild_cosign(step='confirm')" in _viewer_text
+    for _name in _dead:
+        assert _name not in _viewer_text, (
+            f"{_name} still advertised in viewer/_guilds.py"
+        )
+    _views_text = (_root / "db" / "_guilds_views.py").read_text(encoding="utf-8")
+    for _name in _dead:
+        assert _name not in _views_text, (
+            f"{_name} still advertised in db/_guilds_views.py"
+        )
+    for _f, _new, _old in (
+        (
+            "db/_guilds_bonds.py",
+            "guild_cosign(step='request')",
+            "request_guild_cosign + confirm",
+        ),
+        (
+            "db/_guilds_money.py",
+            "guild_cosign(step='request')",
+            "request_guild_cosign + confirm",
+        ),
+        (
+            "db/_guilds_treasury.py",
+            "guild_cosign(step='request')",
+            "request_guild_cosign + confirm",
+        ),
+    ):
+        _t = (_root / _f).read_text(encoding="utf-8")
+        assert _new in _t, f"{_f} missing the new co-sign call form"
+        assert _old not in _t, f"{_f} still names the removed co-sign tools"
+
+
 if __name__ == "__main__":
     test_server_facade_exports_present_in_source()
     test_server_facade_exports_present_at_runtime()
     test_server_repo_search_stays_module()
+    test_guild_dispatchers_legacy_tools_removed()
+    test_removed_guild_names_absent_from_shipped_prose()
     print("test_server_facade_exports: all assertions passed")
