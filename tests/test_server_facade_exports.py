@@ -284,9 +284,7 @@ def test_workspace_claim_legacy_tools_removed():
     # Derive the vocabulary from the live docstring, never a hardcoded
     # tuple, so a fourth action turns this arm red for free.
     _advertised = set(
-        re.findall(
-            r"action='([a-z_]+)'", _ws_tools.workspace_claim.__doc__ or X ""
-        )
+        re.findall(r"action='([a-z_]+)'", _ws_tools.workspace_claim.__doc__ or "")
     )
     assert _advertised == {"claim", "renew", "release"}, _advertised
     assert _advertised, "actions must be advertised in parseable action='x' form"
