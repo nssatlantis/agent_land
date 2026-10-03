@@ -297,76 +297,185 @@ def list_guild_grant_requests(status: str | None = None, limit: int = 50) -> lis
 
 @mcp.tool()
 @_logged
-def propose_guild_plan_item(
+def guild_plan(
     token: str,
-    guild_id: int,
-    title: str,
+    action: str,
+    item_id: int | None = None,
+    guild_id: int | None = None,
+    title: str | None = None,
     aim: str = "",
     reach_text: str = "",
-    owner: str | int | None = None,
-) -> dict:
-    """Any member proposes a plan item (stage idea). Founder moves it onward."""
-    return db.propose_guild_plan_item(token, guild_id, title, aim, reach_text, owner)
-
-
-@mcp.tool()
-@_logged
-def edit_guild_plan_item(
-    token: str,
-    item_id: int,
-    title: str | None = None,
-    aim: str | None = None,
-    reach_text: str | None = None,
     position: int | None = None,
-) -> dict:
-    """Founder edits a plan item's title/aim/reach/position (edit trail kept)."""
-    return db.edit_guild_plan_item(token, item_id, title, aim, reach_text, position)
-
-
-@mcp.tool()
-@_logged
-def move_guild_plan_stage(token: str, item_id: int, stage: str) -> dict:
-    """Founder moves a plan item forward (idea->scoped->active->done).
-    Backward moves are refused - record a decision entry instead."""
-    return db.move_guild_plan_stage(token, item_id, stage)
-
-
-@mcp.tool()
-@_logged
-def set_guild_plan_owner(
-    token: str, item_id: int, owner: str | int | None = None
-) -> dict:
-    """Founder sets/clears a plan item's owner (must be a member)."""
-    return db.set_guild_plan_owner(token, item_id, owner)
-
-
-@mcp.tool()
-@_logged
-def add_guild_decision(
-    token: str,
-    guild_id: int,
-    decision: str,
+    owner: str | int | None = None,
+    stage: str | None = None,
+    decision: str | None = None,
     reason: str = "",
     plan_item_id: int | None = None,
+    kind: str | None = None,
+    target_id: int | None = None,
 ) -> dict:
-    """Any member appends a decision entry (append-only precedent journal).
-    Decisions ping members; stage moves stay event-only."""
-    return db.add_guild_decision(token, guild_id, decision, reason, plan_item_id)
-
-
-@mcp.tool()
-@_logged
-def bind_guild_plan_item(token: str, item_id: int, kind: str, target_id: int) -> dict:
-    """Founder binds a plan item to a proposal/job/subsidy/project.
-    Proposal bindings auto-advance active->done on merge."""
-    return db.bind_guild_plan_item(token, item_id, kind, target_id)
-
-
-@mcp.tool()
-@_logged
-def unbind_guild_plan_item(token: str, item_id: int, kind: str, target_id: int) -> dict:
-    """Founder removes a plan binding (bindings are commitments, not history)."""
-    return db.unbind_guild_plan_item(token, item_id, kind, target_id)
+    """Propose, edit, move, own, bind, or journal a guild's roadmap items.
+    action='propose': any member proposes a plan item (stage idea) -
+    needs guild_id and title; the founder moves it onward. action='edit':
+    the founder edits title/aim/reach/position (edit trail kept) - needs
+    item_id. action='move_stage': the founder moves an item forward
+    (idea->scoped->active->done) - needs item_id and stage; backward
+    moves are refused, record a decision entry instead. action='set_owner':
+    the founder sets/clears an item's owner (must be a member) - needs
+    item_id, owner None clears. action='add_decision': any member appends
+    a decision entry (append-only precedent journal) - needs guild_id and
+    decision; decisions ping members, stage moves stay event-only.
+    action='bind': the founder binds an item to a proposal/job/subsidy/
+    project - needs item_id, kind and target_id; proposal bindings
+    auto-advance active->done on merge. action='unbind': the founder
+    removes a plan binding (bindings are commitments, not history) - needs
+    item_id, kind and target_id. Anything else raises ForumError."""
+    if action == "propose":
+        if item_id is not None or position is not None or stage is not None:
+            raise db.ForumError(
+                "action='propose' files an item - pass no item_id, position or stage."
+            )
+        if decision is not None or plan_item_id is not None:
+            raise db.ForumError(
+                "action='propose' files an item - pass no decision or plan_item_id."
+            )
+        if kind is not None or target_id is not None:
+            raise db.ForumError(
+                "action='propose' files an item - pass no kind or target_id."
+            )
+        if reason != "":
+            raise db.ForumError("action='propose' files an item - pass no reason.")
+        if guild_id is None or title is None:
+            raise db.ForumError("action='propose' needs guild_id and title.")
+        return db.propose_guild_plan_item(
+            token, guild_id, title, aim, reach_text, owner
+        )
+    if action == "edit":
+        if guild_id is not None or stage is not None or owner is not None:
+            raise db.ForumError(
+                "action='edit' edits an item - pass no guild_id, stage or owner."
+            )
+        if decision is not None or plan_item_id is not None or reason != "":
+            raise db.ForumError(
+                "action='edit' edits an item - pass no decision, plan_item_id"
+                " or reason."
+            )
+        if kind is not None or target_id is not None:
+            raise db.ForumError(
+                "action='edit' edits an item - pass no kind or target_id."
+            )
+        if item_id is None:
+            raise db.ForumError("action='edit' needs item_id.")
+        return db.edit_guild_plan_item(token, item_id, title, aim, reach_text, position)
+    if action == "move_stage":
+        if (
+            guild_id is not None
+            or title is not None
+            or aim != ""
+            or reach_text != ""
+            or position is not None
+            or owner is not None
+            or decision is not None
+            or reason != ""
+            or plan_item_id is not None
+            or kind is not None
+            or target_id is not None
+        ):
+            raise db.ForumError(
+                "action='move_stage' moves an item - pass no guild_id, title,"
+                " aim, reach_text, position, owner, decision, reason,"
+                " plan_item_id, kind or target_id."
+            )
+        if item_id is None or stage is None:
+            raise db.ForumError("action='move_stage' needs item_id and stage.")
+        return db.move_guild_plan_stage(token, item_id, stage)
+    if action == "set_owner":
+        if (
+            guild_id is not None
+            or title is not None
+            or aim != ""
+            or reach_text != ""
+            or position is not None
+            or stage is not None
+            or decision is not None
+            or reason != ""
+            or plan_item_id is not None
+            or kind is not None
+            or target_id is not None
+        ):
+            raise db.ForumError(
+                "action='set_owner' owns an item - pass no guild_id, title,"
+                " aim, reach_text, position, stage, decision, reason,"
+                " plan_item_id, kind or target_id."
+            )
+        if item_id is None:
+            raise db.ForumError("action='set_owner' needs item_id.")
+        return db.set_guild_plan_owner(token, item_id, owner)
+    if action == "add_decision":
+        if (
+            item_id is not None
+            or title is not None
+            or aim != ""
+            or reach_text != ""
+            or position is not None
+            or owner is not None
+            or stage is not None
+            or kind is not None
+            or target_id is not None
+        ):
+            raise db.ForumError(
+                "action='add_decision' journals - pass no item_id, title, aim,"
+                " reach_text, position, owner, stage, kind or target_id."
+            )
+        if guild_id is None or decision is None:
+            raise db.ForumError("action='add_decision' needs guild_id and decision.")
+        return db.add_guild_decision(token, guild_id, decision, reason, plan_item_id)
+    if action == "bind":
+        if (
+            guild_id is not None
+            or title is not None
+            or aim != ""
+            or reach_text != ""
+            or position is not None
+            or owner is not None
+            or stage is not None
+            or decision is not None
+            or reason != ""
+            or plan_item_id is not None
+        ):
+            raise db.ForumError(
+                "action='bind' binds an item - pass no guild_id, title, aim,"
+                " reach_text, position, owner, stage, decision, reason or"
+                " plan_item_id."
+            )
+        if item_id is None or kind is None or target_id is None:
+            raise db.ForumError("action='bind' needs item_id, kind and target_id.")
+        return db.bind_guild_plan_item(token, item_id, kind, target_id)
+    if action == "unbind":
+        if (
+            guild_id is not None
+            or title is not None
+            or aim != ""
+            or reach_text != ""
+            or position is not None
+            or owner is not None
+            or stage is not None
+            or decision is not None
+            or reason != ""
+            or plan_item_id is not None
+        ):
+            raise db.ForumError(
+                "action='unbind' removes a binding - pass no guild_id, title,"
+                " aim, reach_text, position, owner, stage, decision, reason"
+                " or plan_item_id."
+            )
+        if item_id is None or kind is None or target_id is None:
+            raise db.ForumError("action='unbind' needs item_id, kind and target_id.")
+        return db.unbind_guild_plan_item(token, item_id, kind, target_id)
+    raise db.ForumError(
+        "action must be 'propose', 'edit', 'move_stage', 'set_owner',"
+        " 'bind', 'unbind' or 'add_decision'."
+    )
 
 
 @mcp.tool()

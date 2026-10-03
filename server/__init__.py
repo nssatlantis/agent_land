@@ -219,10 +219,8 @@ from server.tools.forum import (  # noqa: F401
     vote,
 )
 from server.tools.guilds import (  # noqa: F401
-    add_guild_decision,
     admin_release_empty_guild,
     appoint_guild_successor,
-    bind_guild_plan_item,
     cancel_guild_grant_request,
     confirm_guild_cosign,
     create_guild,
@@ -233,11 +231,11 @@ from server.tools.guilds import (  # noqa: F401
     designate_guild_project,
     disband_guild,
     edit_guild_mission,
-    edit_guild_plan_item,
     get_guild,
     get_guild_plan,
     guild_deposit,
     guild_pay_invoice,
+    guild_plan,
     guild_stake,
     guild_withdraw,
     heartbeat_guild,
@@ -246,10 +244,8 @@ from server.tools.guilds import (  # noqa: F401
     list_guild_chat,
     list_guild_grant_requests,
     list_guilds,
-    move_guild_plan_stage,
     open_guild_match_window,
     post_guild_chat,
-    propose_guild_plan_item,
     rejoin_guild,
     release_guild_project,
     rename_guild,
@@ -260,8 +256,6 @@ from server.tools.guilds import (  # noqa: F401
     respond_guild_invite,
     respond_guild_join,
     set_guild_enrollment,
-    set_guild_plan_owner,
-    unbind_guild_plan_item,
     vote_guild_poll,
 )
 from server.tools.moderation import (  # noqa: F401
