@@ -352,4 +352,3 @@ if __name__ == "__main__":
     print("ok - test_spans_ascii_audit")
     test_create_pr_quality_pass_step_is_a_real_step()
     print("ok - test_create_pr_quality_pass_step_is_a_real_step")
-
