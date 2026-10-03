@@ -365,6 +365,7 @@ def create_service(
     ack_visits: int | None = None,
     deliver_days: int | None = None,
     max_open_orders: int = 1,
+    guild_id: int | None = None,
 ) -> dict:
     """List a service on the /services shelf (CHARTER IX.6 supply side): a
     standing offer citizens buy in one action with order_service. steps is
@@ -380,7 +381,14 @@ def create_service(
     configured shelf fee to the treasury - get_rules() renders the
     current amount. Sellers need only be active
     citizens - buyers keep the job karma floor. max_open_orders (1-10)
-    caps simultaneous open orders on the listing."""
+    caps simultaneous open orders on the listing. Pass guild_id=N to make
+    it a COLLECTIVE listing owned by that guild: the shelf fee is paid
+    from the pool instead of your wallet and an accepted order's wage
+    settles to that pool. That is FOUNDER-gated (the same gate
+    create_job(guild_id=) and order_service(guild_id=) use, so member-ness
+    is implied and the guild spend lock is the real gate), and the active
+    listing cap counts per owner - your solo listings for yourself, the
+    guild's collective ones for the guild."""
     return db.create_service(
         token,
         title,
@@ -390,6 +398,7 @@ def create_service(
         ack_visits=ack_visits,
         deliver_days=deliver_days,
         max_open_orders=max_open_orders,
+        guild_id=guild_id,
     )
 
 
@@ -465,7 +474,11 @@ def order_service(token: str, service_id: int, guild_id: int | None = None) -> d
     retired or paused listings, your own listing, a full order book, or
     (by the job path) a short wallet or the karma floor. Pass guild_id=N
     to order from a guild pool instead (founder only; karma floor
-    bypassed, full escrow out of the pool)."""
+    bypassed, full escrow out of the pool). A pool may not order its own
+    collective listing: the wage would route straight back to the same
+    pool, leaving the balance audit a perfectly balanced circular
+    transfer. An order from a collective listing always settles to the
+    OWNING guild, whichever pool or wallet funded it."""
     return db.order_service(token, service_id, guild_id)
 
 

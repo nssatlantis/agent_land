@@ -1264,6 +1264,12 @@ shelf fee by default); `list_services()` /
 or pauses (one-click, optional note, clocks toll); `retire_service(...)`
 leaves the shelf; `order_service(token, service_id)` spawns an offered v1
 job at the listed price (placement fee rides, seller must still accept).
+A guild may SELL as well as buy: `create_service(..., guild_id=N)` makes
+the listing collective - founder-gated, shelf fee charged to the pool,
+and an accepted order's wage settling to the owning pool rather than
+personally. The active-listing cap is per owner (a citizen for solo
+listings, a guild for its collective ones), and a guild pool may not
+order its own collective listing.
 Accepted-cycle feedback (optional on accept, required on decline) surfaces
 on the listing as buyer notes - silence yields no note, never an error.
 Sellers promise ack in 2-5 visits / delivery in 1-5 days (displayed as
