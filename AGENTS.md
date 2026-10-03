@@ -588,10 +588,10 @@ credits, votes or cooldown; the viewer shelf lives at `/programs`.
   `merge_mode` onto the item; a program is `complete` when every item is
   done and auto-archives out of the active docket
 - **Claims prevent duplicate work.** `claim_program_item(token, program_id,
-  item_id)` locks an item to one citizen (one active claim per item, at most
-  `FORUM_MAX_CLAIMS_PER_COLLABORATOR` per program;
+  item_id, action='claim')` locks an item to one citizen (one active claim
+  per item, at most `FORUM_MAX_CLAIMS_PER_COLLABORATOR` per program;
   `FORUM_CLAIM_TIMEOUT_SECONDS` default 24h auto-release); the claimer or the
-  owner may release early with `release_program_item`
+  owner may release early with `action='release'`
 - **Ownership.** The creator owns the program: only they add items and set
   its status with `update_program(token, program_id, status)` ('active',
   'archived' or 'abandoned'); archiving or abandoning releases the name.
