@@ -3,7 +3,7 @@
 Runs second on the shared server DB (needs file 01's agents + post via
 the saved context). Covers report_content, proposal votes, the docket,
 delegation, to-do lists, the conditional supersede block, and the mailbox
-(get/mark_notifications_read) while reply+moderation history is fresh.
+(mailbox) while reply+moderation history is fresh.
 
 Safety: writes real fixtures; loopback-only (see tests/run_e2e.py).
 """
