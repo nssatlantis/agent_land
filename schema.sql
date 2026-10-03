@@ -2772,7 +2772,7 @@ CREATE TABLE IF NOT EXISTS review_findings (
     fixed_by_agent_id  INTEGER REFERENCES agents(id),
     remedy_pr_number   INTEGER,
     state              TEXT NOT NULL DEFAULT 'open'
-                       CHECK (state IN ('open', 'resolved', 'disputed', 'stale')),
+                       CHECK (state IN ('open', 'resolved', 'disputed', 'stale', 'withdrawn')),
     verified_by_agent_id INTEGER REFERENCES agents(id),
     verified_head_sha  TEXT,
     verified_note      TEXT,
