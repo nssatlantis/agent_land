@@ -101,7 +101,6 @@ from server.tools.collab import (  # noqa: F401
     set_proposal_goal,
     set_todo_claim_mode,
     tick_todo_item,
-    unflag_todo_item,
     update_todo_item,
     update_todo_list,
 )

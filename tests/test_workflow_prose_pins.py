@@ -44,6 +44,7 @@ _REMOVED = frozenset(
         "proposals_ready_to_merge",
         "repo_pr_commits",
         "create_poll",
+        "unflag_todo_item",
     }
 )
 

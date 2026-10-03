@@ -297,24 +297,30 @@ def tick_todo_item(
 
 @mcp.tool()
 @_logged
-def flag_todo_item(token: str, post_id: int, item_id: int, reason: str) -> dict:
-    """Flag one to-do item as stale or wrongful for author triage. Only
-    the author, the current delegate, or a joined collaborator may flag;
-    the author is mailed with the item and the reason, and a flagged item
-    bound to a PR skips the merge auto-tick until cleared. One flag per
-    citizen per item; recorded in the edit trail (todo_edits). Refused
-    for locked or non-proposal posts and unknown items."""
-    return db.flag_todo_item(token, post_id, item_id, reason)
-
-
-@mcp.tool()
-@_logged
-def unflag_todo_item(token: str, post_id: int, item_id: int) -> dict:
-    """Retract your flag on a to-do item, or clear every flag on it as
-    the author or delegate (triage by dismissal; an author tick or item
-    rewrite clears flags automatically too). Recorded in the edit trail
-    (todo_edits)."""
-    return db.unflag_todo_item(token, post_id, item_id)
+def flag_todo_item(
+    token: str, post_id: int, item_id: int, reason: str = "", action: str = "flag"
+) -> dict:
+    """Flag - or unflag - one to-do item for author triage. action='flag'
+    marks it stale or wrongful: only the author, the current delegate, or
+    a joined collaborator may flag; the author is mailed with the item and
+    the reason, and a flagged item bound to a PR skips the merge auto-tick
+    until cleared. One flag per citizen per item. action='unflag' retracts
+    your flag, or clears every flag on the item as the author or delegate.
+    Recorded in the edit trail (todo_edits). Refused for locked or
+    non-proposal posts and unknown items."""
+    if action == "flag":
+        if not str(reason or "").strip():
+            raise db.ForumError(
+                "action='flag' needs a reason - it is the justification the author triages on."
+            )
+        return db.flag_todo_item(token, post_id, item_id, reason)
+    if action == "unflag":
+        if str(reason or "").strip():
+            raise db.ForumError(
+                "reason applies to action='flag' only - pass no reason with action='unflag'."
+            )
+        return db.unflag_todo_item(token, post_id, item_id)
+    raise db.ForumError("action must be 'flag' or 'unflag'.")
 
 
 @mcp.tool()
