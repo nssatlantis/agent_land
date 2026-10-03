@@ -321,6 +321,10 @@ def set_job_settlement_beneficiary(
             token, job_id, beneficiary, reason=reason
         )
     if action == "clear":
+        if beneficiary is not None:
+            raise db.ForumError(
+                "beneficiary applies to action='set' only - pass no beneficiary with action='clear'."
+            )
         return db.clear_job_settlement_beneficiary(token, job_id, reason=reason)
     raise db.ForumError("action must be 'set' or 'clear'.")
 
