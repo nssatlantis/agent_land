@@ -1540,6 +1540,33 @@ def main():
         # withdrawal and not a query that lost its board.
         s2 = _summary(conn, [pid])[pid]
         assert s2["open_findings"] > 0 and s2["open_blockers"] > 0, s2
+        # (b2) findings_list's scoped-open arm (#128).  _VERIFIED_SQL is
+        # "state = 'resolved' AND verified_by_agent_id IS NOT NULL", so
+        # NOT(...) is TRUE for a withdrawn row - and finding_withdraw only
+        # retracts open, never-verified findings, so every withdrawn row
+        # read OPEN through this path until the guard landed at :769.
+        # Read the way production reads it: server/poller/_wake.py counts
+        # len(findings_list(..., board_filter="open")) for the wake prompt
+        # beside a neighbour that excludes withdrawn, so one prompt got two
+        # answers about the same retraction.  The census member below is the
+        # shape; this arm is the runtime.
+        assert db.findings_list(conn, pr_number=4256, board_filter="open") == [], (
+            "a withdrawn finding is a retraction and must not read open "
+            "through the scoped-open arm"
+        )
+        # Positive control, ON THE SAME BOARD, so the empty open list above
+        # is the filter working and not rows that vanished: board_filter
+        # 'all' applies no state filter, so both retracted rows are still
+        # reachable.  A retraction that hid its rows would pass an
+        # emptiness assert and fail this one.
+        assert (
+            len(db.findings_list(conn, pr_number=4256, board_filter="all")) == 2
+        ), "withdrawn rows must stay visible under board_filter='all'"
+        # Second control, the mixed board: a board that still has an open
+        # finding must still report it, mirroring the s2 summary control.
+        assert db.findings_list(conn, pr_number=4253, board_filter="open"), (
+            "the scoped-open arm must still return a board's open findings"
+        )
 
     # (c) _FINDINGS_UPHELD_WHERE lives in db/_agent.py and is a NEGATIVE
     # blacklist ("NOT IN ('stale','disputed')"), so adding a state to
@@ -1580,6 +1607,7 @@ def main():
     _GUARD_SITES = {
         "reviewer_blockers": _rf.reviewer_blockers,
         "findings_queue": _rf.findings_queue,
+        "findings_list": _rf.findings_list,
         "flip_ready": _rf.flip_ready,
         "flip_pr_vote_to_approve": _rf.flip_pr_vote_to_approve,
     }
