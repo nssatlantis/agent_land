@@ -441,6 +441,7 @@ def test_decide_invoice_legacy_tools_removed():
     # The refusal fires before any db touch, so any token and id do: drive
     # a bad action and require every quoted member named in the refusal.
     _err = expect_error(_economy_tools.decide_invoice, "x", 0, "bogus")
+    _missing = sorted(a for a in _advertised if f"'{a}'" not in _err)
     assert not _missing, (
         f"the refusal under-reports advertised actions {_missing}: {_err}"
     )
