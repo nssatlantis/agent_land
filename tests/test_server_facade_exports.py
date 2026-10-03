@@ -171,12 +171,10 @@ EXPECTED = [
     "resolve_issue",
     "move_design_item",
     "list_issues",
-    "ask_question",
-    "answer_question",
+    "design_question",
     "enable_comments",
     "add_comment",
-    "promote_preview",
-    "promote_to_idea",
+    "design_promote",
     "close_design",
 ]
 
@@ -265,8 +263,100 @@ def test_server_repo_search_stays_module():
     assert callable(repo_pkg.repo_search), "tool lives on server.tools.repo"
 
 
+def test_design_dispatchers_legacy_tools_removed():
+    """Hard-remove pins (proposal #939): the four design wrappers must not
+    exist as tools on any surface. The db.* functions are
+    protocol-agnostic core and are not asserted here."""
+    import server
+    import server.tools.designs as _designs_tools
+    from tests._setup import expect_error
+
+    for _dead in (
+        "ask_question",
+        "answer_question",
+        "promote_preview",
+        "promote_to_idea",
+    ):
+        assert not hasattr(_designs_tools, _dead), f"{_dead} is still defined"
+        assert not hasattr(server, _dead), f"{_dead} still on the facade"
+    _qdoc = _designs_tools.design_question.__doc__ or ""
+    _qactions = set(re.findall(r"action='([a-z_]+)'", _qdoc))
+    assert _qactions == {"ask", "answer"}, _qactions
+    _pdoc = _designs_tools.design_promote.__doc__ or ""
+    _pactions = set(re.findall(r"action='([a-z_]+)'", _pdoc))
+    assert _pactions == {"preview", "promote"}, _pactions
+    assert _qactions and _pactions, "actions must be advertised in parseable form"
+    for _tool, _members in (
+        (_designs_tools.design_question, ("ask", "answer")),
+        (_designs_tools.design_promote, ("preview", "promote")),
+    ):
+        _advertised = set(re.findall(r"action='([a-z_]+)'", _tool.__doc__ or ""))
+        assert _advertised == set(_members), (_tool.__name__, _advertised)
+        _args = ("x", 0) if _tool.__name__ == "design_question" else (0,)
+        _err = expect_error(_tool, *_args, "bogus")
+        _missing = sorted(m for m in _members if f"'{m}'" not in _err)
+        assert not _missing, f"{_tool.__name__} under-reports {_missing}: {_err}"
+    # Matrix arms: ask needs body; answer needs question_id + answer;
+    # preview takes nothing else; promote needs token + title + body.
+    _aerr = expect_error(_designs_tools.design_question, "x", 0, "ask")
+    assert "needs body" in _aerr, _aerr
+    _nerr = expect_error(_designs_tools.design_question, "x", 0, "answer", "b")
+    assert "pass no body" in _nerr, _nerr
+    _merr = expect_error(_designs_tools.design_question, "x", 0, "answer")
+    assert "needs question_id and answer" in _merr, _merr
+    _verr = expect_error(_designs_tools.design_promote, 0, "preview", "tok")
+    assert "previews only" in _verr, _verr
+    _perr = expect_error(_designs_tools.design_promote, 0, "promote")
+    assert "needs token, title and body" in _perr, _perr
+
+
+def test_removed_design_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #939): the two dispatchers survive,
+    so all four legacy names are forbidden in live prose. db.* and
+    admin_* seats are true statements (negative lookbehind); the viewer
+    and workflow callouts are pinned exactly."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    _dead = ("ask_question", "answer_question", "promote_preview", "promote_to_idea")
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        _root / "rules_text.py",
+    ):
+        assert _p.exists(), _p
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _lookbehind = re.compile(r"(?<![.\w])(?:ask|answer)_question\b")
+    _hits = _lookbehind.findall(
+        (_root / "server" / "tools" / "designs.py").read_text(encoding="utf-8")
+    )
+    assert not _hits, f"designs.py names the removed Q&A tools unqualified: {_hits}"
+    _plookbehind = re.compile(r"(?<![.\w])promote_(?:preview|to_idea)\b")
+    _phits = _plookbehind.findall(
+        (_root / "server" / "tools" / "designs.py").read_text(encoding="utf-8")
+    )
+    assert not _phits, (
+        f"designs.py names the removed promote tools unqualified: {_phits}"
+    )
+    _viewer_text = (_root / "viewer" / "_designs.py").read_text(encoding="utf-8")
+    assert "design_question(action='ask')" in _viewer_text
+    assert "ask_question." not in _viewer_text
+    assert "design_promote(action='preview')" in _viewer_text
+    assert "promote_preview shows" not in _viewer_text
+
+
 if __name__ == "__main__":
     test_server_facade_exports_present_in_source()
     test_server_facade_exports_present_at_runtime()
     test_server_repo_search_stays_module()
+    test_design_dispatchers_legacy_tools_removed()
+    test_removed_design_names_absent_from_shipped_prose()
     print("test_server_facade_exports: all assertions passed")
