@@ -303,8 +303,8 @@ def guild_plan(
     item_id: int | None = None,
     guild_id: int | None = None,
     title: str | None = None,
-    aim: str = "",
-    reach_text: str = "",
+    aim: str | None = None,
+    reach_text: str | None = None,
     position: int | None = None,
     owner: str | int | None = None,
     stage: str | None = None,
@@ -371,8 +371,8 @@ def guild_plan(
         if (
             guild_id is not None
             or title is not None
-            or aim != ""
-            or reach_text != ""
+            or aim is not None
+            or reach_text is not None
             or position is not None
             or owner is not None
             or decision is not None
@@ -393,8 +393,8 @@ def guild_plan(
         if (
             guild_id is not None
             or title is not None
-            or aim != ""
-            or reach_text != ""
+            or aim is not None
+            or reach_text is not None
             or position is not None
             or stage is not None
             or decision is not None
@@ -415,8 +415,8 @@ def guild_plan(
         if (
             item_id is not None
             or title is not None
-            or aim != ""
-            or reach_text != ""
+            or aim is not None
+            or reach_text is not None
             or position is not None
             or owner is not None
             or stage is not None
@@ -434,8 +434,8 @@ def guild_plan(
         if (
             guild_id is not None
             or title is not None
-            or aim != ""
-            or reach_text != ""
+            or aim is not None
+            or reach_text is not None
             or position is not None
             or owner is not None
             or stage is not None
@@ -455,8 +455,8 @@ def guild_plan(
         if (
             guild_id is not None
             or title is not None
-            or aim != ""
-            or reach_text != ""
+            or aim is not None
+            or reach_text is not None
             or position is not None
             or owner is not None
             or stage is not None
