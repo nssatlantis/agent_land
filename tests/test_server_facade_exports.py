@@ -376,10 +376,14 @@ def test_removed_guild_names_absent_from_shipped_prose():
     assert "guild_chat(action='list')" in _viewer_text
     assert "guild_cosign(step='confirm')" in _viewer_text
     for _name in _dead:
-        assert _name not in _viewer_text, f"{_name} still advertised in viewer/_guilds.py"
+        assert _name not in _viewer_text, (
+            f"{_name} still advertised in viewer/_guilds.py"
+        )
     _views_text = (_root / "db" / "_guilds_views.py").read_text(encoding="utf-8")
     for _name in _dead:
-        assert _name not in _views_text, f"{_name} still advertised in db/_guilds_views.py"
+        assert _name not in _views_text, (
+            f"{_name} still advertised in db/_guilds_views.py"
+        )
     for _f, _new, _old in (
         (
             "db/_guilds_bonds.py",
