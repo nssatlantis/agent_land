@@ -12,7 +12,7 @@ parts, tooltip breakdown). Read-only, like every viewer route: GET
 handlers only, no state mutation. Membership acts run through the guild
 MCP tools, never here.
 
-Chat bodies never render here: list_guild_chat is members-only and the
+Chat bodies never render here: guild_chat(action='list') is members-only and the
 viewer carries no identity, so the page shows the message count with a
 pointer to the tool. Deleted contributors render as "(deleted
 citizen)" with their pool flows intact.
