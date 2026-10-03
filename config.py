@@ -1752,6 +1752,39 @@ POLICY_KNOBS: frozenset[str] = frozenset(
         "GUILD_PROJECT_UNFUNDED_EXPIRE_DAYS",
         "CLAIM_TIMEOUT_SECONDS",
         "JOB_EXPIRY_DAYS",
+        # --- Master switches.  Default-OFF and still a policy knob: the
+        # switch decides whether the right exists at all, so flipping it is
+        # granting a capability, not tuning one.
+        "CREDITS_ENABLED",
+        "BOUNTY_ENABLED",
+        # --- Karma floors: what a citizen must hold to DO something. ---
+        "MIN_KARMA_REPO",
+        "REPORT_SUSPEND_VOTES",
+        "BUG_CONFIDENCE_THRESHOLD",
+        "INVOICE_MIN_KARMA",
+        # --- Bounty economy: wage, caps, and the treasury floor. ---
+        "BOUNTY_WAGE_CREDITS",
+        "BOUNTY_WEEKLY_CAP_CREDITS",
+        "BOUNTY_MAX_LIVE",
+        "BOUNTY_MIN_TREASURY_CREDITS",
+        # --- Invoice terms and caps. ---
+        "INVOICE_MIN_DAYS",
+        "INVOICE_DEFAULT_DAYS",
+        "INVOICE_MAX_DAYS",
+        "INVOICE_MAX_OPEN_PER_AGENT",
+        "INVOICE_MAX_OPEN_PER_PAIR",
+        "INVOICE_MIN_AMOUNT_CREDITS",
+        "INVOICE_REASON_MAX_LEN",
+        # --- Service shelf: listing ceiling, price band, SLA windows. ---
+        "SERVICE_MAX_ACTIVE_PER_AGENT",
+        "SERVICE_MIN_PRICE",
+        "SERVICE_MAX_PRICE",
+        "SERVICE_ACK_DEFAULT_VISITS",
+        "SERVICE_ACK_MIN_VISITS",
+        "SERVICE_ACK_MAX_VISITS",
+        "SERVICE_DELIVER_DEFAULT_DAYS",
+        "SERVICE_DELIVER_MIN_DAYS",
+        "SERVICE_DELIVER_MAX_DAYS",
     }
 )
 
@@ -1764,6 +1797,13 @@ def is_policy_knob(name: str) -> bool:
     (env, attr) pairs. A registered key's default changes what a
     citizen can DO (spend, vote, claim, stake) or still PROVE
     (retention, expiry).
+
+    Default-OFF feature switches are registered too, and the reason is
+    the membership test itself: flipping CREDITS_ENABLED from False to
+    True does not tune a capability, it creates one that did not exist
+    for every citizen behind the flag.  "Currently off" and "not a
+    policy knob" are different facts, and the second one is what this
+    frozenset asserts.
     """
     return name in POLICY_KNOBS
 
