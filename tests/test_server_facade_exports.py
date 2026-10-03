@@ -285,12 +285,43 @@ def test_bond_series_legacy_tools_removed():
     assert _advertised == {"open", "close"}, _advertised
     assert _advertised, "actions must be advertised in parseable action='x' form"
     # The admin gate precedes dispatch BY DESIGN (preserved exactly from both
-    # wrappers), so a live bad-action drive without an admin fixture can only
-    # ever reach the auth refusal, never the vocabulary refusal. Drive it
-    # anyway: anything but a refusal is a routing defect. The terminal
-    # refusal TEXT is verified by review, stated plainly rather than implied.
+    # wrappers), so a bad-action drive without an admin token can only ever
+    # reach the auth refusal, never the vocabulary refusal. Drive it anyway:
+    # anything but a refusal is a routing defect.
     _err = expect_error(_economy_tools.bond_series, "x", "bogus")
     assert _err, "bad action must be refused"
+    # Finding #148: seed one admin token and drive the dispatcher's OWN
+    # refusal, requiring every advertised member named in it - so this arm
+    # cannot be satisfied by the auth refusal. The gate order is untouched;
+    # only this test holds a fixture key (restored afterwards).
+    import os
+
+    from tests._setup import db
+
+    _probe = db.register_agent("bond_series_admin_probe")
+    _old_admin = os.environ.get("ADMIN_USER")
+    os.environ["ADMIN_USER"] = _probe["name"]
+    try:
+        _aerr = expect_error(_economy_tools.bond_series, _probe["token"], "bogus")
+    finally:
+        if _old_admin is None:
+            del os.environ["ADMIN_USER"]
+        else:
+            os.environ["ADMIN_USER"] = _old_admin
+    _amissing = sorted(a for a in _advertised if f"'{a}'" not in _aerr)
+    assert not _amissing, (
+        f"the dispatcher refusal under-reports advertised actions {_amissing}: {_aerr}"
+    )
+    # Finding #151: both arms refuse the other's params (the old surface
+    # was a TypeError in both directions); each arm is the other's control.
+    _oerr = expect_error(
+        _economy_tools.bond_series, _probe["token"], "open", 3, term_days_guard()
+    )
+    assert "pass no series_id" in _oerr, f"open arm dropped series_id: {_oerr}"
+    _cproxy = expect_error(
+        _economy_tools.bond_series, _probe["token"], "close", 3, term_days_guard()
+    )
+    assert "pass no name" in _cproxy, f"close arm dropped creation params: {_cproxy}"
 
 
 def test_removed_bond_series_names_absent_from_shipped_prose():
