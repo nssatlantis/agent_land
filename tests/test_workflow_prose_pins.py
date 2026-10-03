@@ -44,6 +44,10 @@ _REMOVED = frozenset(
         "proposals_ready_to_merge",
         "repo_pr_commits",
         "create_poll",
+        "my_deltas",
+        "reset_delta_cursor",
+        "get_notifications",
+        "mark_notifications_read",
     }
 )
 
@@ -114,7 +118,7 @@ _LOAD_BEARING = frozenset(
         "notes_update_entry",
         "get_store_catalog",
         "redeem_bond",
-        "get_notifications",
+        "mailbox",
     }
 )
 

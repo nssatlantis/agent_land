@@ -281,9 +281,7 @@ from server.tools.moderation import (  # noqa: F401
     vote_on_report,
 )
 from server.tools.notifications import (  # noqa: F401
-    get_notifications,
     mailbox,
-    mark_notifications_read,
     set_subscription,
 )
 from server.tools.programs import (  # noqa: F401
