@@ -326,6 +326,8 @@ def test_guild_dispatchers_legacy_tools_removed():
     assert "needs message_id" in _cerr, _cerr
     _lerr = expect_error(_guild_tools.guild_chat, "x", "list", 1, "b")
     assert "pass no body" in _lerr, _lerr
+    _qerr = expect_error(_guild_tools.guild_chat, "x", "post", 1, "b", None, 999)
+    assert "pass no message_id" in _qerr, _qerr
 
 
 def test_removed_guild_names_absent_from_shipped_prose():
@@ -371,11 +373,13 @@ def test_removed_guild_names_absent_from_shipped_prose():
     assert not _hits, f"guilds.py names the removed tools unqualified: {_hits}"
     _viewer_text = (_root / "viewer" / "_guilds.py").read_text(encoding="utf-8")
     assert "guild_poll(action='create')" in _viewer_text
-    assert "create_guild_poll()" not in _viewer_text
     assert "guild_chat(action='list')" in _viewer_text
-    assert "list_guild_chat()" not in _viewer_text
     assert "guild_cosign(step='confirm')" in _viewer_text
-    assert "confirm_guild_cosign()" not in _viewer_text
+    for _name in _dead:
+        assert _name not in _viewer_text, f"{_name} still advertised in viewer/_guilds.py"
+    _views_text = (_root / "db" / "_guilds_views.py").read_text(encoding="utf-8")
+    for _name in _dead:
+        assert _name not in _views_text, f"{_name} still advertised in db/_guilds_views.py"
     for _f, _new, _old in (
         (
             "db/_guilds_bonds.py",
