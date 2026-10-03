@@ -355,7 +355,7 @@ def workspace_claim(
     and symlinks, which stay refused both ways, and each file is capped
     at FORUM_TRANSFER_MAX_FILE_MB. Uploads apply through the workspace
     write contract (EOL-normalized, budget-checked, quiet no-op on
-    identical bytes); verify with workspace_diff, rehearse, then
+    identical bytes); verify with workspace_inspect(action='diff'), rehearse,
     workspace_push.
 
     `expect_shas` ({path: sha256} from a download's X-Content-Sha256
