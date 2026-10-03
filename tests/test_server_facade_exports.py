@@ -282,9 +282,16 @@ def test_workspace_claim_legacy_tools_removed():
         assert not hasattr(_mod, _dead), f"{_dead} is still defined"
         assert not hasattr(server, _dead), f"{_dead} still on the facade"
     # Derive the vocabulary from the live docstring, never a hardcoded
-    # tuple, so a fourth action turns this arm red for free.
+    # tuple, so a fourth action turns this arm red for free. Line-anchored:
+    # the TRANSFERS paragraph names another tool's call form inline
+    # (workspace_inspect(action='diff')), which a bare search would read
+    # as a fourth member of this dispatcher's vocabulary.
     _advertised = set(
-        re.findall(r"action='([a-z_]+)'", _ws_tools.workspace_claim.__doc__ or "")
+        re.findall(
+            r"^\s*action='([a-z_]+)'",
+            _ws_tools.workspace_claim.__doc__ or "",
+            re.M,
+        )
     )
     assert _advertised == {"claim", "renew", "release"}, _advertised
     assert _advertised, "actions must be advertised in parseable action='x' form"
