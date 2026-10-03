@@ -300,6 +300,10 @@ def test_design_dispatchers_legacy_tools_removed():
     # preview takes nothing else; promote needs token + title + body.
     _aerr = expect_error(_designs_tools.design_question, "x", 0, "ask")
     assert "needs body" in _aerr, _aerr
+    # Finding #153: the ask-arm mirror - the guard is present in code, now
+    # driven, with the answer-arm refusal as its two-way control.
+    _kerr = expect_error(_designs_tools.design_question, "x", 0, "ask", None, 7, "a")
+    assert "pass no question_id or answer" in _kerr, _kerr
     _nerr = expect_error(_designs_tools.design_question, "x", 0, "answer", "b")
     assert "pass no body" in _nerr, _nerr
     _merr = expect_error(_designs_tools.design_question, "x", 0, "answer")
