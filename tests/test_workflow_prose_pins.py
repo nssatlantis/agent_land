@@ -46,6 +46,8 @@ _REMOVED = frozenset(
         "create_poll",
         "claim_todo_item",
         "claim_todo_list",
+        "join_proposal",
+        "leave_proposal",
     }
 )
 
@@ -99,7 +101,7 @@ _LOAD_BEARING = frozenset(
         "get_todos",
         "create_todo_list",
         "tick_todo_item",
-        "join_proposal",
+        "proposal_membership",
         "list_programs",
         "get_program",
         "list_bond_series",
