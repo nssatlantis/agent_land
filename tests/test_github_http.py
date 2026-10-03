@@ -873,6 +873,8 @@ def main():
     test_short_first_page_costs_one_request()
     test_pagination_cap_bounds_runaway_servers()
     test_apaginate_cap_bounds_runaway_servers()
+    test_pr_diff_invalidates_when_the_head_moves()
+    test_apr_diff_invalidates_when_the_head_moves()
     test_pr_diff_cap_bounds_runaway_servers()
     test_open_prs_paginates_past_the_default_page()
     test_open_prs_pagination_clamps_per_page_above_the_cap()
@@ -1025,6 +1027,91 @@ def test_apaginate_cap_bounds_runaway_servers():
         gh_core._client = old
         gh.clear_cache()
     print("  _apaginate page cap bounds a server that never sends a short page: ok")
+
+
+def test_pr_diff_invalidates_when_the_head_moves():
+    # #B195: the diff key carried no head sha, so a push inside the TTL
+    # served the PREVIOUS head's patch and the payload named no commit. The
+    # key and the payload both carry it now.
+    gh.clear_cache()
+    hits: list[str] = []
+    head = {"ref": "p", "sha": "aaaa111"}
+
+    def handler(request):
+        url = str(request.url)
+        hits.append(url)
+        path, _, _query = url.partition("?")
+        if path.endswith("/pulls/7171"):
+            payload = dict(_PR_4242, number=7171, head=dict(head))
+            return httpx.Response(200, json=payload)
+        if path.endswith("/files"):
+            files = [{"filename": "a.py", "additions": 1, "patch": "+ " + head["sha"]}]
+            return httpx.Response(200, json=files)
+        return httpx.Response(200, json=[])
+
+    old = _install_mock(handler)
+    try:
+        first = gh.pr_diff(7171)
+        assert first["head_sha"] == "aaaa111", first
+        assert first["files"][0]["patch"] == "+ aaaa111"
+        # The head moves. Pop ONLY pr_raw - the head-keyed diff entry still
+        # holds A's payload - so the read must re-resolve and serve B.
+        head["sha"] = "bbbb222"
+        gh_core._pr_cache._store.pop(("pr_raw", 7171), None)
+        second = gh.pr_diff(7171)
+        assert second["head_sha"] == "bbbb222", second
+        assert second["files"][0]["patch"] == "+ bbbb222"
+        # A warm read costs no transport at all.
+        before = len(hits)
+        third = gh.pr_diff(7171)
+        assert third["head_sha"] == "bbbb222"
+        assert len(hits) == before, hits[before:]
+        # Invalidation sweeps the head-keyed entry too.
+        gh_core._invalidate_pr(7171)
+        assert ("pr_diff", 7171, "bbbb222") not in gh_core._pr_cache._store
+    finally:
+        gh_core._client = old
+        gh.clear_cache()
+    print("  pr_diff cache key carries the head sha: ok")
+
+
+def test_apr_diff_invalidates_when_the_head_moves():
+    # Same contract on the native twin, plus the peek: the head comes from
+    # the warm pr_raw entry (no serial pre-fetch), so a warm read is free.
+    gh.clear_cache()
+    hits: list[str] = []
+    head = {"ref": "p", "sha": "cccc333"}
+
+    def handler(request):
+        url = str(request.url)
+        hits.append(url)
+        path, _, _query = url.partition("?")
+        if path.endswith("/pulls/7172"):
+            payload = dict(_PR_4242, number=7172, head=dict(head))
+            return httpx.Response(200, json=payload)
+        if path.endswith("/files"):
+            files = [{"filename": "b.py", "additions": 2, "patch": "+ " + head["sha"]}]
+            return httpx.Response(200, json=files)
+        return httpx.Response(200, json=[])
+
+    old = _install_mock(handler)
+    try:
+        first = asyncio.run(gh.apr_diff(7172))
+        assert first["head_sha"] == "cccc333", first
+        head["sha"] = "dddd444"
+        gh_core._pr_cache._store.pop(("pr_raw", 7172), None)
+        second = asyncio.run(gh.apr_diff(7172))
+        assert second["head_sha"] == "dddd444", second
+        assert second["files"][0]["patch"] == "+ dddd444"
+        before = len(hits)
+        asyncio.run(gh.apr_diff(7172))
+        assert len(hits) == before, hits[before:]
+        gh_core._invalidate_pr(7172)
+        assert ("pr_diff", 7172, "dddd444") not in gh_core._pr_cache._store
+    finally:
+        gh_core._client = old
+        gh.clear_cache()
+    print("  apr_diff cache key carries the head sha: ok")
 
 
 def test_pr_diff_cap_bounds_runaway_servers():
