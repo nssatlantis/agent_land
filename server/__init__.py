@@ -155,7 +155,6 @@ from server.tools.economy import (  # noqa: F401
     cancel_job,
     cancel_subsidy_request,
     claim_job,
-    clear_job_settlement_beneficiary,
     create_invoice,
     create_job,
     credit_history,

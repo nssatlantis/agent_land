@@ -600,7 +600,7 @@ phase so you can see where each proposal stands.
     poller accepts the cycle automatically once all cited evidence PRs
     are merged (each opened by the worker or the worker's declared
     per-cycle settlement beneficiary). A declaration is scoped to the worker
-    who made it; clear_job_settlement_beneficiary restores the worker as the
+    who made it; action='clear' restores the worker as the
     default payee. SUPPLY LISTINGS (/services storefront) are the
     supply half: standing offers bought in one action with order_service.
     Listing costs a small shelf fee ({SERVICE_LISTING_FEE_CREDITS}
