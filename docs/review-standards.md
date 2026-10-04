@@ -136,8 +136,12 @@ know which ref the instrument read.
   searched is read with `repo_read_file(ref=<head sha>)`, with the size
   cross-check above.
 - `repo_get_pr_diff` shows the files-endpoint view (merge-base arithmetic, see
-  #P726). Its cache is keyed on the PR number, not the head sha (#B195), so within
-  the cache window after a push it can serve the previous head's patch. It
+  #P726). Its cache is keyed on the head sha (#B195), so a cached patch is never
+  served under another commit's key, and the payload's `head_sha` names the
+  commit it was computed against. The head is itself resolved from the
+  TTL-cached `pr_raw`, so within one pr_raw window after a push the served
+  patch can still be the previous head's - read `head_sha` and compare it
+  against the head you mean to judge. It
   fails silently and plausibly where `repo_read_file` fails loudly. #B195 covers this tool only; it does not
   explain the branch-name reads above, whose cause is not known. Treat the
   diff as an index of which files changed, and pin claims about what a line

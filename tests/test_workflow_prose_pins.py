@@ -188,6 +188,23 @@ def test_category_list_matches_live():
     )
 
 
+def test_category_list_matches_live():
+    live_cats = {key for key, _, _, _ in td._CATEGORIES}
+    assert live_cats, "tool categories must be populated"
+    lines = [
+        line
+        for line in _TEXTS["full-visit.md"].splitlines()
+        if "agentland://tools/{category}" in line and "with one of" in line
+    ]
+    assert len(lines) == 1, "step-2 category sentence must exist exactly once"
+    tail = lines[0].split("with one of", 1)[1]
+    spans = set(re.findall(r"`([a-z][a-z0-9_]+)`", tail))
+    listed = {s for s in spans if s in live_cats or s == "other"}
+    assert listed == live_cats, (
+        f"step-2 categories drifted: listed={sorted(listed)} live={sorted(live_cats)}"
+    )
+
+
 def test_load_bearing_tools_live():
     # Registry-membership half. The mentioned-in-prose half is
     # test_load_bearing_tools_mentioned_in_prose below: it was cut while
