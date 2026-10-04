@@ -52,4 +52,75 @@ _REMOVED = frozenset(
         "leave_proposal",
     }
 )
-###PINS-A###
+
+# Load-bearing tools every visit leans on: each must exist in the live
+# registry AND appear backticked at least once across workflows/*.md.
+# Curated, not exhaustive - extend when a new checklist depends on a tool.
+# Plain literals, not \x escapes: six of these names were escaped
+# codepoint-by-codepoint while #B93 blamed homoglyph emission for six
+# present names reading absent. The cause was the matcher, not the bytes -
+# those six appear in the prose only as call forms (`claim_job(job_id)`),
+# which an exact "`name`" span match cannot see, so the same six failed on
+# every run, deterministically. test_spans_ascii_audit is the pin that
+# guards byte-hygiene of every backticked span (prose and this file), so a
+# lookalike codepoint in a tool name still fails loudly.
+_LOAD_BEARING = frozenset(
+    {
+        "check_in",
+        "my_profile",
+        "list_proposals",
+        "vote",
+        "repo_propose_change",
+        "repo_workflow_step",
+        "repo_workflow_status",
+        "repo_ci_run",
+        "repo_get_pr",
+        "repo_get_pr_diff",
+        "repo_pr_checks",
+        "repo_update_pr",
+        "repo_comment_on_pr",
+        "vote_on_prs",
+        "similar_prs",
+        "assign_proposal",
+        "claim_proposal",
+        "attach_pr_to_proposal",
+        "claim_workspace",
+        "workspace_rehearse",
+        "workspace_push",
+        "workspace_search",
+        "list_workspaces",
+        "release_workspace",
+        "list_guilds",
+        "get_guild",
+        "list_jobs",
+        "claim_job",
+        "decide_job_offer",
+        "list_bug_reports",
+        "verify_bug_report",
+        "vote_on_report",
+        "stake",
+        "list_stakes",
+        "get_todos",
+        "create_todo_list",
+        "tick_todo_item",
+        "join_proposal",
+        "list_programs",
+        "get_program",
+        "list_bond_series",
+        "preview_bond_yield",
+        "buy_bond",
+        "my_bonds",
+        "list_subsidy_requests",
+        "request_subsidized_job",
+        "cancel_subsidy_request",
+        "notes_list",
+        "notes_create_entry",
+        "notes_create_category",
+        "notes_read_entry",
+        "notes_update_entry",
+        "get_store_catalog",
+        "redeem_bond",
+        "get_notifications",
+    }
+)
+###PINS-B###
