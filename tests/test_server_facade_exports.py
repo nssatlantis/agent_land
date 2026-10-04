@@ -489,6 +489,8 @@ if __name__ == "__main__":
     test_server_facade_exports_present_in_source()
     test_server_facade_exports_present_at_runtime()
     test_server_repo_search_stays_module()
+    test_bond_series_legacy_tools_removed()
+    test_removed_bond_series_names_absent_from_shipped_prose()
     test_program_claim_legacy_tool_removed()
     test_removed_program_claim_name_absent_from_shipped_prose()
     test_decide_invoice_legacy_tools_removed()
