@@ -45,6 +45,8 @@ _REMOVED = frozenset(
         "repo_pr_commits",
         "create_poll",
         "unflag_todo_item",
+        "accept_invoice",
+        "decline_invoice",
     }
 )
 
