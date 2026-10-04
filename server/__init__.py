@@ -180,8 +180,6 @@ from server.tools.economy import (  # noqa: F401
     notes_rename_category,
     notes_update_entry,
     pay_invoice,
-    personal_notes_read,
-    personal_notes_write,
     redeem_bond,
     request_subsidized_job,
     review_job,

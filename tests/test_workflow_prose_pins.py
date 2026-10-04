@@ -46,6 +46,8 @@ _REMOVED = frozenset(
         "create_poll",
         "accept_invoice",
         "decline_invoice",
+        "personal_notes_read",
+        "personal_notes_write",
     }
 )
 
