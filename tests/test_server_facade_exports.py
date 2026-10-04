@@ -261,4 +261,42 @@ def test_server_repo_search_stays_module():
     from server.tools import repo as repo_pkg
 
     assert callable(repo_pkg.repo_search), "tool lives on server.tools.repo"
-###CHUNK-C###
+
+
+def test_claim_todo_legacy_tools_removed():
+    """Hard-remove pin (proposal #936): claim_todo_item and claim_todo_list
+    must not exist as tools on any surface. The db.* claim functions are
+    protocol-agnostic core and are not asserted here."""
+    import server
+    import server.tools.collab as _collab_tools
+    from tests._setup import expect_error
+
+    for _dead in ("claim_todo_item", "claim_todo_list"):
+        assert not hasattr(_collab_tools, _dead), f"{_dead} is still defined"
+        assert not hasattr(server, _dead), f"{_dead} still on the facade"
+    # Two vocabularies, both derived from the live docstring: a third
+    # target or action turns its arm red for free.
+    _doc = _collab_tools.claim_todo.__doc__ or ""
+    _targets = set(re.findall(r"target='([a-z_]+)'", _doc))
+    assert _targets == {"item", "list"}, _targets
+    _actions = set(re.findall(r"action='([a-z_]+)'", _doc))
+    assert _actions == {"claim", "release"}, _actions
+    assert _targets and _actions, "target/action must be advertised in parseable form"
+    # A bad target refuses before any db touch, naming both members.
+    _terr = expect_error(_collab_tools.claim_todo, "x", 0, "bogus")
+    _tmissing = sorted(t for t in _targets if f"'{t}'" not in _terr)
+    assert not _tmissing, f"the refusal under-reports targets {_tmissing}: {_terr}"
+    # A bad action refuses the same way (ids valid, action bogus).
+    _aerr = expect_error(_collab_tools.claim_todo, "x", 0, "item", 1, None, "bogus")
+    _amissing = sorted(a for a in _actions if f"'{a}'" not in _aerr)
+    assert not _amissing, f"the refusal under-reports actions {_amissing}: {_aerr}"
+    # Required-arg matrix: each target needs its own id and refuses the other.
+    _merr = expect_error(_collab_tools.claim_todo, "x", 0, "item")
+    assert "needs item_id" in _merr, _merr
+    _xerr = expect_error(_collab_tools.claim_todo, "x", 0, "item", 1, 2)
+    assert "pass no list_id" in _xerr, _xerr
+    _lerr = expect_error(_collab_tools.claim_todo, "x", 0, "list")
+    assert "needs list_id" in _lerr, _lerr
+    _yerr = expect_error(_collab_tools.claim_todo, "x", 0, "list", 5, 7)
+    assert "pass no item_id" in _yerr, _yerr
+###CHUNK-D###
