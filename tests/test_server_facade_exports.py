@@ -177,4 +177,88 @@ EXPECTED = [
     "promote_to_idea",
     "close_design",
 ]
-###CHUNK-B###
+
+# Leaf module -> (facade name, leaf attribute) pairs used for the identity
+# check. Each name must be the SAME object on the facade and in its leaf.
+_IDENTITY = {
+    "server.tools.forum": ["get_rules", "create_post", "deltas"],
+    "server.tools.repo": ["repo_get_pr", "repo_workflow_status"],
+    "server.tools.economy": ["credit_history", "create_invoice"],
+    "server.tools.collab": ["list_proposals", "get_todos_summary", "search_todos"],
+    "server.tools.discovery": ["search"],
+    "server.tools.moderation": ["report_content", "verify_bug_report"],
+    "server.tools.notifications": ["get_notifications", "mailbox"],
+    "server.tools.guilds": ["create_guild", "designate_guild_project"],
+    "server.tools.designs": ["create_design", "list_designs"],
+}
+
+
+def _facade_source() -> str:
+    with open(FACADE_PATH, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _re_exported_names(source: str) -> set:
+    """Names the facade re-exports via `from server... import (...)` / `from server... import x`."""
+    names = set()
+    # Multi-line: from server.x import (a, b, c)
+    for m in re.finditer(r"from\s+server[\w.]*\s+import\s*\(([^)]*)\)", source):
+        # strip per-line trailing comments (e.g. the noqa marker on the
+        # opening line) so comment words never join the exported set
+        for line in m.group(1).splitlines():
+            for item in re.findall(r"[\w]+", line.split("#", 1)[0]):
+                names.add(item)
+    # Single-line: from server.x import y, z
+    for m in re.finditer(r"from\s+server[\w.]*\s+import\s+([^\n(]+)", source):
+        for item in re.split(r"[,\s]+", m.group(1)):
+            if item and item.isidentifier():
+                names.add(item)
+    return names
+
+
+def test_server_facade_exports_present_in_source():
+    """Static ratchet: every EXPECTED name must be re-exported in server/__init__.py."""
+    exported = _re_exported_names(_facade_source())
+    missing = [name for name in EXPECTED if name not in exported]
+    assert not missing, (
+        f"server facade (server/__init__.py) is missing re-exports: {missing}"
+    )
+
+
+def test_server_facade_exports_present_at_runtime():
+    """Dynamic ratchet: `import server` exposes every EXPECTED name and the
+    re-export points at the real leaf object, not a placeholder."""
+    import server
+
+    missing = [name for name in EXPECTED if not hasattr(server, name)]
+    assert not missing, f"server facade is missing re-exports: {missing}"
+
+    for module_name, attrs in _IDENTITY.items():
+        leaf = __import__(module_name, fromlist=["__name__"])
+        for attr in attrs:
+            assert getattr(server, attr, None) is getattr(leaf, attr, None), (
+                f"server.{attr} is not the real {module_name}.{attr} object"
+            )
+
+
+def test_server_repo_search_stays_module():
+    """Collision guard: the repo_search MCP tool must NOT be re-exported on
+    the server facade - the name belongs to the server.repo_search submodule
+    (server/repo_search.py). A facade binding shadows the module and broke
+    tests/test_repo.py via tests/_setup's `import server.repo_search`
+    (AttributeError: 'function' object has no attribute 'search_files').
+    Reach the tool as server.tools.repo.repo_search."""
+    import server
+    import server.repo_search as repo_search_mod
+
+    assert inspect.ismodule(repo_search_mod), "server.repo_search must be a module"
+    assert hasattr(repo_search_mod, "search_files"), (
+        "server.repo_search module must keep search_files"
+    )
+    assert getattr(server, "repo_search", None) is repo_search_mod, (
+        "server.repo_search must stay the submodule, not the MCP tool"
+    )
+    from server.tools import repo as repo_pkg
+
+    assert callable(repo_pkg.repo_search), "tool lives on server.tools.repo"
+###CHUNK-C###
