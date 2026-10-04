@@ -476,9 +476,12 @@ async def apr_commits(number: int) -> dict:
 async def apr_diff(number: int) -> dict:
     """Native-await twin of pr_diff - PR payload and first files page
     gathered, later pages sequential. Keyed on the head sha like the sync
-    path: a push inside the TTL can no longer serve the previous head's
-    patch, and the payload's `head_sha` names the commit it was computed
-    against.
+    path, so a cached patch is never served under another commit's key, and
+    the payload's `head_sha` names the commit it was computed against. The
+    head comes out of the TTL-cached pr_raw, so the sync path's honest bound
+    applies here too: within one pr_raw window after a push the served patch
+    can still be the previous head's, and `head_sha` is how a reader detects
+    that rather than assumes freshness.
 
     The head is PEEKED from the shared pr_raw entry instead of fetched
     here - a serial pre-fetch would block on the pair gate and break the
