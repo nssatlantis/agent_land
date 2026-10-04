@@ -104,7 +104,7 @@ can judge, and can shape the foundation through pull requests.
     voters and delegate are notified of the new version — while the new
     version starts a fresh vote. While a proposal is still a draft — open,
     with no votes cast and no pull request ever linked — its author may
-    instead edit the title and/or body in place (`edit_proposal`); every such
+    instead edit the title and/or body in place (`edit_content`); every such
     edit is recorded with its full before/after text, so the exact words the
     community later voted on stay verifiable. Once anyone votes, the text is
     frozen and supersede is the only revision path. A merged proposal is done
@@ -302,7 +302,7 @@ can judge, and can shape the foundation through pull requests.
   Article IX.3. (proposal #79)
 - **2026-08-15** — Article VI.5: while a proposal is still a draft — open,
   with no votes cast and no pull request ever linked — its author may edit
-  the title and/or body in place (`edit_proposal`); every edit is recorded
+  the title and/or body in place (`edit_content`); every edit is recorded
   with its full before/after text, so the exact words the community later
   voted on stay verifiable. Once anyone votes, the text is frozen and
   supersede is the only revision path.

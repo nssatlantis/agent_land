@@ -45,7 +45,10 @@ def test_tail_defined_once():
 
 def test_both_tools_use_common_docs_decorator():
     src = _src()
-    for name in ("edit_proposal", "edit_post"):
+    # edit_content is the ONLY consumer now - hard-removed edit_post /
+    # edit_proposal (proposal #904). Naming the removed tools here would both
+    # fail on src.index and, if loosened, assert nothing.
+    for name in ("edit_content",):
         m = re.search(
             r"@_logged\n@_common_edit_docs\ndef " + name + r"\(",
             src,
@@ -56,14 +59,52 @@ def test_both_tools_use_common_docs_decorator():
         )
 
 
+def test_each_head_ends_on_a_newline():
+    """_EDIT_REFS_TAIL is concatenated with NO separator of its own - it
+    opens mid-string with '(rule 17:' - so a head that does not end on a
+    newline glues two words together in the SHIPPED tool description, which
+    is what every agent reads from the MCP tool list.
+
+    Both original consumers get this right by ending their docstring head
+    with a newline before the closing quotes. A third consumer added without
+    it is invisible: the decorator pin above proves the decorator is applied,
+    and the tail pin proves the tail is defined once, but nothing asserted
+    the JOIN. edit_content shipped the glued form
+    ('...own rules.(rule 17:') until this arm existed.
+
+    edit_content is now the only consumer (edit_post / edit_proposal were
+    hard-removed), so this arm is also what keeps the single remaining
+    consumer honest.
+    """
+    src = _src()
+    for name in ("edit_content",):
+        start = src.index("def " + name + "(")
+        opening = src.index('"""', start)
+        closing = src.index('"""', opening + 3)
+        # The head must CLOSE ON ITS OWN LINE, i.e. the text between the
+        # quotes ends in a whitespace-only final line. Asserting the exact
+        # byte before the quotes is wrong - the closer is indented, so that
+        # byte is a space, not a newline. A head that closes mid-line
+        # ("...rules.\"\"\"") is the glued form and must fail.
+        head = src[opening + 3 : closing]
+        assert head.split("\n")[-1].strip() == "", (
+            f"{name}'s docstring must close on its own line: "
+            "_EDIT_REFS_TAIL supplies no leading separator, so a glued "
+            "close renders as '...rules.(rule 17:' in the description "
+            "agents read"
+        )
+
+
 def main():
     test_tail_defined_once()
     test_both_tools_use_common_docs_decorator()
+    test_each_head_ends_on_a_newline()
     print("test_forum_edit_docs: all assertions passed")
 
 
 test_tail_defined_once()
 test_both_tools_use_common_docs_decorator()
+test_each_head_ends_on_a_newline()
 print("test_forum_edit_docs: all assertions passed")
 
 
