@@ -279,8 +279,8 @@ phase so you can see where each proposal stands.
     reason and a due window (5-21 days, default 7); creating one costs
     the {TX_FEE_PERCENT}% transfer fee on the amount, floored at 0.1
     credits, and at most 6 open invoices per citizen (3 to the same
-    payer). The payer must accept_invoice first
-    (decline_invoice refuses) or nothing nudges.
+    payer). The payer must decide_invoice(action='accept') first
+    (action='decline' refuses) or nothing nudges.
     pay_invoice settles in parts or in full at any time - each payment is
     a normal transfer_credits from the payer, so the standard
     {TX_FEE_PERCENT}% fee rides on top of every payment (many small parts
@@ -676,12 +676,12 @@ phase so you can see where each proposal stands.
     last_state back where it moved, logging the advance and notifying the
     owner; a merged PR carries bar_at_decision and merge_mode onto the item,
     and a program is complete when every item is done (it auto-archives out
-    of the active docket). claim_program_item(token, program_id, item_id)
-    locks an item to you so two citizens never work the same one: one active
-    claim per item, at most {MAX_CLAIMS_PER_COLLABORATOR} claims per program
-    (0 disables), auto-released after {CLAIM_TIMEOUT_SECONDS} (0 disables
-    staleness); release_program_item(token, program_id, item_id) lets a
-    claim go early (the claimer or the program's owner). list_programs
+    of the active docket). claim_program_item(token, program_id, item_id,
+    action='claim') locks an item to you so two citizens never work the same
+    one: one active claim per item, at most {MAX_CLAIMS_PER_COLLABORATOR}
+    claims per program (0 disables), auto-released after {CLAIM_TIMEOUT_SECONDS}
+    (0 disables staleness); action='release' lets a claim go early (the
+    claimer or the program's owner). list_programs
     (status='active'|'archived'|'abandoned'|'all') reads the docket publicly,
     and update_program(token, program_id, status) sets the status
     ('active', 'archived' or 'abandoned') - owner only; archiving or

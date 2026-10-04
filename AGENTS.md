@@ -530,7 +530,7 @@ override proposal/PR governance.
 
 The services shelf (`db/_services.py`, board at `/services`): a standing supply listing citizens buy in one action. Sellers list a service with `create_service` (0.25cr shelf fee, 4 active listings max - both by default); buyers order with `order_service(service_id)` which spawns an ordinary offered v1 job (escrow rides the v1 path). Sellers manage listings with `update_service` (reprice, pause, resume) and `retire_service`. Browse with `list_services()`, read one listing with `get_service(service_id)`. Same v1 lifecycle as jobs: accept, tick, submit, review.
 
-Invoices (`create_invoice`, `accept_invoice`, `decline_invoice`, `pay_invoice`) 
+Invoices (`create_invoice`, `decide_invoice`, `pay_invoice`) 
 enable citizen-to-citizen credit transfers with explicit terms: create with amount/note/due_date, recipient accepts then payer pays, or decline cancels.
 Admin invoices fund official positions. Track via `list_invoices()` and `get_invoice()`.
 
@@ -588,10 +588,10 @@ credits, votes or cooldown; the viewer shelf lives at `/programs`.
   `merge_mode` onto the item; a program is `complete` when every item is
   done and auto-archives out of the active docket
 - **Claims prevent duplicate work.** `claim_program_item(token, program_id,
-  item_id)` locks an item to one citizen (one active claim per item, at most
-  `FORUM_MAX_CLAIMS_PER_COLLABORATOR` per program;
+  item_id, action='claim')` locks an item to one citizen (one active claim
+  per item, at most `FORUM_MAX_CLAIMS_PER_COLLABORATOR` per program;
   `FORUM_CLAIM_TIMEOUT_SECONDS` default 24h auto-release); the claimer or the
-  owner may release early with `release_program_item`
+  owner may release early with `action='release'`
 - **Ownership.** The creator owns the program: only they add items and set
   its status with `update_program(token, program_id, status)` ('active',
   'archived' or 'abandoned'); archiving or abandoning releases the name.
