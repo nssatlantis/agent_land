@@ -875,6 +875,8 @@ def main():
     test_apaginate_cap_bounds_runaway_servers()
     test_pr_diff_invalidates_when_the_head_moves()
     test_apr_diff_invalidates_when_the_head_moves()
+    test_pr_diff_names_the_head_it_read_within_the_window()
+    test_apr_diff_names_the_head_it_read_within_the_window()
     test_pr_diff_cap_bounds_runaway_servers()
     test_open_prs_paginates_past_the_default_page()
     test_open_prs_pagination_clamps_per_page_above_the_cap()
@@ -1112,6 +1114,100 @@ def test_apr_diff_invalidates_when_the_head_moves():
         gh_core._client = old
         gh.clear_cache()
     print("  apr_diff cache key carries the head sha: ok")
+
+
+def test_pr_diff_names_the_head_it_read_within_the_window():
+    # #B195 follow-up (finding #144): the head-keyed key is right, but the
+    # head is resolved from the TTL-cached pr_raw, so within one pr_raw
+    # window after a push the OLD head is still served. That bound is the
+    # honest one and the docstrings now say it; pin it so the guarantee
+    # cannot quietly go back to resting on prose. Goes RED if someone
+    # evicts pr_raw on push, which would close the window for real - re-point
+    # this arm then, do not delete it.
+    gh.clear_cache()
+    hits: list[str] = []
+    head = {"ref": "p", "sha": "eeee555"}
+
+    def handler(request):
+        url = str(request.url)
+        hits.append(url)
+        path, _, _query = url.partition("?")
+        if path.endswith("/pulls/7173"):
+            payload = dict(_PR_4242, number=7173, head=dict(head))
+            return httpx.Response(200, json=payload)
+        if path.endswith("/files"):
+            files = [{"filename": "c.py", "additions": 1, "patch": "+ " + head["sha"]}]
+            return httpx.Response(200, json=files)
+        return httpx.Response(200, json=[])
+
+    old = _install_mock(handler)
+    try:
+        first = gh.pr_diff(7173)
+        assert first["head_sha"] == "eeee555", first
+        # The head moves and pr_raw is NOT evicted - nothing evicts it on a
+        # push, only the outcome poller's _invalidate_pr does.
+        head["sha"] = "ffff666"
+        stale = gh.pr_diff(7173)
+        assert stale["head_sha"] == "eeee555", stale
+        assert stale["files"][0]["patch"] == "+ eeee555"
+        # Zero transport for that repeat: it is a pure cache read, which is
+        # what makes this a window rather than a fetch.
+        before = len(hits)
+        again = gh.pr_diff(7173)
+        assert again["head_sha"] == "eeee555"
+        assert len(hits) == before, hits[before:]
+        # Past the window the fresh head is served, so the bound ends at the
+        # eviction rather than at the key.
+        gh_core._invalidate_pr(7173)
+        fresh = gh.pr_diff(7173)
+        assert fresh["head_sha"] == "ffff666", fresh
+        assert fresh["files"][0]["patch"] == "+ ffff666"
+    finally:
+        gh_core._client = old
+        gh.clear_cache()
+    print("  pr_diff names the head it read, window and all: ok")
+
+
+def test_apr_diff_names_the_head_it_read_within_the_window():
+    # Same honest bound on the twin, whose head is PEEKED rather than
+    # fetched - so it is the same window, entered the same way.
+    gh.clear_cache()
+    hits: list[str] = []
+    head = {"ref": "p", "sha": "1111aaaa"}
+
+    def handler(request):
+        url = str(request.url)
+        hits.append(url)
+        path, _, _query = url.partition("?")
+        if path.endswith("/pulls/7174"):
+            payload = dict(_PR_4242, number=7174, head=dict(head))
+            return httpx.Response(200, json=payload)
+        if path.endswith("/files"):
+            files = [{"filename": "d.py", "additions": 1, "patch": "+ " + head["sha"]}]
+            return httpx.Response(200, json=files)
+        return httpx.Response(200, json=[])
+
+    old = _install_mock(handler)
+    try:
+        first = asyncio.run(gh.apr_diff(7174))
+        assert first["head_sha"] == "1111aaaa", first
+        head["sha"] = "2222bbbb"
+        # pr_raw stays warm, so the peek returns the OLD head and the
+        # head-keyed entry answers with zero transport.
+        stale = asyncio.run(gh.apr_diff(7174))
+        assert stale["head_sha"] == "1111aaaa", stale
+        assert stale["files"][0]["patch"] == "+ 1111aaaa"
+        before = len(hits)
+        asyncio.run(gh.apr_diff(7174))
+        assert len(hits) == before, hits[before:]
+        gh_core._invalidate_pr(7174)
+        fresh = asyncio.run(gh.apr_diff(7174))
+        assert fresh["head_sha"] == "2222bbbb", fresh
+        assert fresh["files"][0]["patch"] == "+ 2222bbbb"
+    finally:
+        gh_core._client = old
+        gh.clear_cache()
+    print("  apr_diff names the head it read, window and all: ok")
 
 
 def test_pr_diff_cap_bounds_runaway_servers():
