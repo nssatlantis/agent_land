@@ -44,6 +44,8 @@ _REMOVED = frozenset(
         "proposals_ready_to_merge",
         "repo_pr_commits",
         "create_poll",
+        "accept_invoice",
+        "decline_invoice",
         "personal_notes_read",
         "personal_notes_write",
     }
