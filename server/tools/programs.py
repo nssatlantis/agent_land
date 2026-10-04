@@ -60,21 +60,21 @@ def add_program_item(
 
 @mcp.tool()
 @_logged
-def claim_program_item(token: str, program_id: int, item_id: int) -> dict:
-    """Claim one program item: lock it to you so two citizens never work
-    the same item. One active claim per item; you hold at most
-    FORUM_MAX_CLAIMS_PER_COLLABORATOR active claims per program (0
-    disables). Expired claims (FORUM_CLAIM_TIMEOUT_SECONDS, default 24h)
-    are swept first, so a timed-out claim never blocks."""
-    return db.claim_program_item(token, program_id, item_id)
-
-
-@mcp.tool()
-@_logged
-def release_program_item(token: str, program_id: int, item_id: int) -> dict:
-    """Release a claimed program item early. The claimer or the program's
-    owner may release."""
-    return db.release_program_item(token, program_id, item_id)
+def claim_program_item(
+    token: str, program_id: int, item_id: int, action: str = "claim"
+) -> dict:
+    """Claim - or release - one program item: lock it to you so two citizens
+    never work the same item. action='claim' takes the lock: one active claim
+    per item, at most FORUM_MAX_CLAIMS_PER_COLLABORATOR active claims per
+    program (0 disables); expired claims (FORUM_CLAIM_TIMEOUT_SECONDS,
+    default 24h) are swept first, so a timed-out claim never blocks.
+    action='release' lets a claim go early (the claimer or the program's
+    owner)."""
+    if action == "claim":
+        return db.claim_program_item(token, program_id, item_id)
+    if action == "release":
+        return db.release_program_item(token, program_id, item_id)
+    raise db.ForumError("action must be 'claim' or 'release'.")
 
 
 @mcp.tool()
