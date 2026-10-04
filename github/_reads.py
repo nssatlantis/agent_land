@@ -956,11 +956,13 @@ def pr_diff(number: int) -> dict:
     come back with no patch (None).
 
     Cached for PR_CACHE_SECONDS (default 45 s) under the HEAD SHA
-    (("pr_diff", number, head_sha)): a push inside the window can no longer
-    serve the previous head's patch, and the payload's `head_sha` names the
-    commit it was computed against. Resolving the head first is the price of
-    a correct key -- a warm pr_raw answers it without a request, a cold one
-    costs a single read."""
+    (("pr_diff", number, head_sha)), so a cached patch is never served under
+    another commit's key, and the payload's `head_sha` names the commit it was
+    computed against. The head itself comes out of the TTL-cached pr_raw, so
+    within one pr_raw window after a push the served patch can still be the
+    previous head's -- read `head_sha` and detect that rather than assume
+    freshness. Resolving the head first is the price of a correct key: a warm
+    pr_raw answers it without a request, a cold one costs a single read."""
     pr = _pr_raw(number)
     head_sha = pr["head"]["sha"]
     cache_key = ("pr_diff", number, head_sha)
