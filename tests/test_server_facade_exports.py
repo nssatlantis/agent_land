@@ -93,8 +93,7 @@ EXPECTED = [
     "create_invoice",
     "list_invoices",
     "get_invoice",
-    "accept_invoice",
-    "decline_invoice",
+    "decide_invoice",
     "pay_invoice",
     "cancel_invoice",
     "buy_bond",
@@ -117,7 +116,6 @@ EXPECTED = [
     "unflag_todo_item",
     # discovery tools
     "search",
-    "comments",
     "list_events",
     "get_citizen_profiles",
     "rate_skill",
@@ -266,6 +264,137 @@ def test_server_repo_search_stays_module():
     assert callable(repo_pkg.repo_search), "tool lives on server.tools.repo"
 
 
+def test_program_claim_legacy_tool_removed():
+    """Hard-remove pin (proposal #929): release_program_item must not exist
+    as a tool on any surface. db.release_program_item is protocol-agnostic
+    core and is not asserted here."""
+    import server
+    import server.tools.programs as _programs_tools
+    from tests._setup import expect_error
+
+    assert not hasattr(_programs_tools, "release_program_item"), (
+        "release_program_item is still defined"
+    )
+    assert not hasattr(server, "release_program_item"), (
+        "release_program_item still on the facade"
+    )
+    # Derive the vocabulary from the live docstring, never a hardcoded
+    # tuple, so a third action turns this arm red for free.
+    _advertised = set(
+        re.findall(
+            r"action='([a-z_]+)'", _programs_tools.claim_program_item.__doc__ or ""
+        )
+    )
+    assert _advertised == {"claim", "release"}, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
+    # The refusal fires before any db touch, so any token and ids do: drive
+    # a bad action and require every quoted member named in the refusal.
+    _err = expect_error(_programs_tools.claim_program_item, "x", 0, 0, "bogus")
+    _missing = sorted(a for a in _advertised if f"'{a}'" not in _err)
+    assert not _missing, (
+        f"the refusal under-reports advertised actions {_missing}: {_err}"
+    )
+
+
+def test_removed_program_claim_name_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #929): claim_program_item survives as
+    the dispatcher, so only release_program_item is forbidden - and only
+    outside one dated record. The 2026-09-20 full-visit changelog line names
+    both tools as of that date; like HISTORY.md it stays byte-identical,
+    so the pin exempts exactly that line and nothing else."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    _HISTORICAL = (
+        "`claim_program_item`/`release_program_item`, "
+        "`add_program_item`/`update_program`/`create_program` (proposal #529)."
+    )
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        _root / "rules_text.py",
+    ):
+        assert _p.exists(), _p
+        assert "release_program_item" not in _p.read_text(encoding="utf-8"), (
+            f"release_program_item still advertised in {_p.name}"
+        )
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _text = _p.read_text(encoding="utf-8").replace(_HISTORICAL, "")
+        assert "release_program_item" not in _text, (
+            f"release_program_item still advertised in {_p.name}"
+        )
+    # Defining module: db.release_program_item is a true statement, so the
+    # rule is db-qualified-or-absent (negative lookbehind, not a prefix
+    # strip - a bare pattern matches inside db.release_program_item).
+    _lookbehind = re.compile(r"(?<![.\w])release_program_item\b")
+    _hits = _lookbehind.findall(
+        (_root / "server" / "tools" / "programs.py").read_text(encoding="utf-8")
+    )
+    assert not _hits, f"programs.py names the removed tool unqualified: {_hits}"
+
+
+def test_decide_invoice_legacy_tools_removed():
+    """Hard-remove pin (proposal #931): accept_invoice and decline_invoice
+    must not exist as tools on any surface. db.accept_invoice and
+    db.decline_invoice are protocol-agnostic core and are not asserted here."""
+    import server
+    import server.tools.economy as _economy_tools
+    from tests._setup import expect_error
+
+    for _gone in ("accept_invoice", "decline_invoice"):
+        assert not hasattr(_economy_tools, _gone), f"{_gone} is still defined"
+        assert not hasattr(server, _gone), f"{_gone} still on the facade"
+    # Derive the vocabulary from the live docstring, never a hardcoded
+    # tuple, so a third action turns this arm red for free.
+    _advertised = set(
+        re.findall(r"action='([a-z_]+)'", _economy_tools.decide_invoice.__doc__ or "")
+    )
+    assert _advertised == {"accept", "decline"}, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
+    # The refusal fires before any db touch, so any token and id do: drive
+    # a bad action and require every quoted member named in the refusal.
+    _err = expect_error(_economy_tools.decide_invoice, "x", 0, "bogus")
+    _missing = sorted(a for a in _advertised if f"'{a}'" not in _err)
+    assert not _missing, (
+        f"the refusal under-reports advertised actions {_missing}: {_err}"
+    )
+
+
+def test_removed_invoice_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #931): decide_invoice survives, so
+    only accept_invoice and decline_invoice are forbidden. The canonical
+    sweep lives in the shared helper (finding #142) - this arm passes its
+    names plus its defining-module lookbehind and keeps only the
+    db-adjacent exact pins inline. No dated record names them (verified by
+    census)."""
+    from pathlib import Path
+
+    from tests._setup import assert_no_removed_tool_names
+
+    _root = Path(REPO_ROOT)
+    assert_no_removed_tool_names(
+        ("accept_invoice", "decline_invoice"),
+        root=_root,
+        lookbehind_modules=("server/tools/economy.py",),
+    )
+    # db/_invoices.py defines db.accept_invoice/db.decline_invoice, so neither
+    # the strict rule nor the lookbehind can judge it (both red on the db
+    # layer itself - CI proved exactly that on the first push: the two defs
+    # plus one internal comment). Pin its three reworded nudge strings
+    # exactly instead: presence of each replacement plus absence of the
+    # precise dead string it replaced.
+    _inv_text = (_root / "db" / "_invoices.py").read_text(encoding="utf-8")
+    assert "decide_invoice({iid}, action='accept')" in _inv_text
+    assert "decide_invoice({iid}, action='decline')" in _inv_text
+    assert "accept_invoice({iid})" not in _inv_text
+    assert "decline_invoice({iid})" not in _inv_text
+    # Fourth site, same file: the create_invoice db docstring carried a bare
+    # parenthesized reference neither ({iid}) shape above can see.
+    assert "(accept_invoice) before anything nudges" not in _inv_text
+
+
 def test_comments_legacy_tools_removed():
     """Hard-remove pin (proposal #937): list_comments and agent_comments
     must not exist as tools on any surface. db.list_comments and
@@ -345,6 +474,10 @@ if __name__ == "__main__":
     test_server_facade_exports_present_in_source()
     test_server_facade_exports_present_at_runtime()
     test_server_repo_search_stays_module()
+    test_decide_invoice_legacy_tools_removed()
+    test_removed_invoice_names_absent_from_shipped_prose()
+    test_program_claim_legacy_tool_removed()
+    test_removed_program_claim_name_absent_from_shipped_prose()
     test_comments_legacy_tools_removed()
     test_removed_comment_names_absent_from_shipped_prose()
     print("test_server_facade_exports: all assertions passed")

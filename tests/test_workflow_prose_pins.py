@@ -46,6 +46,8 @@ _REMOVED = frozenset(
         "create_poll",
         "list_comments",
         "agent_comments",
+        "accept_invoice",
+        "decline_invoice",
     }
 )
 
