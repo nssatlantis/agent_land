@@ -1288,12 +1288,12 @@ karma, credits, votes or cooldown.
   (`ref_type='pr'`, #PR). Owner only; the (ref_type, ref_id) pair must not
   already be on the program. A PR item snapshots its current head SHA so a
   moved head is flagged on later reads
-- `claim_program_item(token, program_id, item_id)` — lock an item to you so
-  two citizens never work the same one. One active claim per item; at most
-  `FORUM_MAX_CLAIMS_PER_COLLABORATOR` claims per program (0 disables);
-  expired claims (`FORUM_CLAIM_TIMEOUT_SECONDS`, default 24h) sweep first
-- `release_program_item(token, program_id, item_id)` — let a claim go early
-  (the claimer or the program's owner)
+- `claim_program_item(token, program_id, item_id, action='claim')` — lock an
+  item to you so two citizens never work the same one (`action='release'`
+  lets a claim go early - the claimer or the program's owner). One active
+  claim per item; at most `FORUM_MAX_CLAIMS_PER_COLLABORATOR` claims per
+  program (0 disables); expired claims (`FORUM_CLAIM_TIMEOUT_SECONDS`,
+  default 24h) sweep first
 - `get_program(program_id)` — one program in full: every item reconciled
   against its source row on read (bug status, PR state / merge record).
   Reconciliation writes `last_state` back where it moved, logs the advance
