@@ -48,6 +48,8 @@ _REMOVED = frozenset(
         "claim_todo_list",
         "join_proposal",
         "leave_proposal",
+        "accept_invoice",
+        "decline_invoice",
     }
 )
 
