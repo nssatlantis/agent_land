@@ -858,9 +858,7 @@ def bond_series(
     _require_admin(token)
     if action == "open":
         if series_id is not None:
-            raise db.ForumError(
-                "action='open' creates a series - pass no series_id."
-            )
+            raise db.ForumError("action='open' creates a series - pass no series_id.")
         if term_days is None:
             raise db.ForumError("action='open' requires term_days.")
         return db.bond_series_open(
