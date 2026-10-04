@@ -103,7 +103,6 @@ _LOAD_BEARING = frozenset(
         "get_todos",
         "create_todo_list",
         "tick_todo_item",
-        "join_proposal",
         "list_programs",
         "get_program",
         "list_bond_series",
