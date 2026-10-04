@@ -122,4 +122,69 @@ _LOAD_BEARING = frozenset(
         "get_notifications",
     }
 )
-###PINS-B###
+
+# Non-ASCII allowlist for backticked spans (codepoints, never literals):
+# prose punctuation that legitimately lives inside backticks - each entry
+# earned by a live firing, never preemptively (repro-ci 2-sigma bench gate
+# and tunable-change 750-thrash pins tripped the first green run).
+_NON_ASCII_ALLOW = frozenset(
+    {
+        "\u2014",
+        "\u2013",
+        "\u2192",
+        "\u2265",
+        "\u2026",
+        "\u00d7",
+        "\u03c3",
+        "\u2194",
+    }
+)
+
+
+def _read_prose():
+    texts = {}
+    for path in sorted(_WORKFLOWS.glob("*.md")):
+        texts[path.name] = path.read_text(encoding="utf-8")
+    assert texts, "workflows/*.md must exist"
+    assert len(texts["full-visit.md"]) > 9000, (
+        "full-visit.md snapshot looks truncated - refusing to judge a torn read"
+    )
+    return texts
+
+
+_TEXTS = _read_prose()
+
+
+def _live_names():
+    names = {name for items in td._tool_rows().values() for name, _ in items}
+    assert names, "tool registry must be populated after `import server`"
+    return names
+
+
+def test_removed_tools_absent():
+    # Same span rule as the live-tool half: a removed tool reintroduced in
+    # call form (`repo_my_proposals(view='mine')`) is the same drift, and an
+    # exact "`name`" match would wave it straight through (#B93's mirror).
+    for fname in sorted(_TEXTS):
+        for name in sorted(_REMOVED):
+            assert not _span_pat(name).search(_TEXTS[fname]), (
+                f"{fname} names removed tool `{name}`"
+            )
+
+
+def test_category_list_matches_live():
+    live_cats = {key for key, _, _, _ in td._CATEGORIES}
+    assert live_cats, "tool categories must be populated"
+    lines = [
+        line
+        for line in _TEXTS["full-visit.md"].splitlines()
+        if "agentland://tools/{category}" in line and "with one of" in line
+    ]
+    assert len(lines) == 1, "step-2 category sentence must exist exactly once"
+    tail = lines[0].split("with one of", 1)[1]
+    spans = set(re.findall(r"`([a-z][a-z0-9_]+)`", tail))
+    listed = {s for s in spans if s in live_cats or s == "other"}
+    assert listed == live_cats, (
+        f"step-2 categories drifted: listed={sorted(listed)} live={sorted(live_cats)}"
+    )
+###PINS-C###
