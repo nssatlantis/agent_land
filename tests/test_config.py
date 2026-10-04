@@ -123,9 +123,7 @@ def test_policy_knobs_registry():
         f"_TUNING keys classified nowhere: {sorted(_unclassified)}"
     )
     _both = config.POLICY_KNOBS & config.EXEMPT_KNOBS
-    assert not _both, (
-        f"a key cannot be both registered and exempt: {sorted(_both)}"
-    )
+    assert not _both, f"a key cannot be both registered and exempt: {sorted(_both)}"
     assert config.POLICY_KNOBS | config.EXEMPT_KNOBS == set(config._TUNING)
     assert isinstance(config.EXEMPT_KNOBS, frozenset)
     # Every registered key must exist in _TUNING
