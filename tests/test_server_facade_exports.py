@@ -130,6 +130,8 @@ EXPECTED = [
     "update_bug_report",
     "resolve_bug_report",
     # notifications tools
+    "get_notifications",
+    "mark_notifications_read",
     "mailbox",
     "set_subscription",
     # guild tools (proposal #525)
@@ -186,7 +188,7 @@ _IDENTITY = {
     "server.tools.collab": ["list_proposals", "get_todos_summary", "search_todos"],
     "server.tools.discovery": ["search"],
     "server.tools.moderation": ["report_content", "verify_bug_report"],
-    "server.tools.notifications": ["mailbox"],
+    "server.tools.notifications": ["get_notifications", "mailbox"],
     "server.tools.guilds": ["create_guild", "designate_guild_project"],
     "server.tools.designs": ["create_design", "list_designs"],
 }
