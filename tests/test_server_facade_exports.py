@@ -450,29 +450,33 @@ def test_removed_todo_flag_names_absent_from_shipped_prose():
     ):
         assert _p.exists(), _p
         _text = _p.read_text(encoding="utf-8")
-        for _name in _dead:
-            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+        assert "unflag_todo_item" not in _text, (
+            f"unflag_todo_item still advertised in {_p.name}"
+        )
     _workflows = sorted((_root / "workflows").glob("*.md"))
     assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
     for _p in _workflows:
         _text = _p.read_text(encoding="utf-8")
-        for _name in _dead:
-            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+        assert "unflag_todo_item" not in _text, (
+            f"unflag_todo_item still advertised in {_p.name}"
+        )
     _lookbehind = re.compile(r"(?<![.\w])unflag_todo_item\b")
     _hits = _lookbehind.findall(
         (_root / "server" / "tools" / "collab.py").read_text(encoding="utf-8")
     )
     assert not _hits, f"collab.py names the removed tools unqualified: {_hits}"
-    _proposal_text = (_root / "db" / "_proposal.py").read_text(encoding="utf-8")
-    assert "citizens join with proposal_membership(action='join'). " in _proposal_text
-    assert "citizens join with join_proposal. Each collaborator opens " not in (
-        _proposal_text
+    # The two reworded sites live in files that define the db functions, so
+    # neither the strict rule nor the lookbehind can judge them (both red on
+    # the db layer itself). Pin each exactly: presence of the replacement
+    # plus absence of the precise dead string it replaced.
+    _flags_text = (_root / "db" / "_proposal_todos" / "_flags.py").read_text(
+        encoding="utf-8"
     )
-    _forum_text = (_root / "server" / "tools" / "forum.py").read_text(encoding="utf-8")
-    assert "proposal_membership(action='join') and the author closes with" in (
-        _forum_text
-    )
-    assert "join_proposal and the author closes with" not in _forum_text
+    assert "flag_todo_item(action='unflag') to clear" in _flags_text
+    assert "review and unflag_todo_item" not in _flags_text
+    _karma_text = (_root / "db" / "_karma.py").read_text(encoding="utf-8")
+    assert "flag_todo_item(action='unflag'), then tick by hand" in _karma_text
+    assert "unflag_todo_item, then tick by hand" not in _karma_text
 
 
 if __name__ == "__main__":
