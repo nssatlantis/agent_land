@@ -299,4 +299,86 @@ def test_claim_todo_legacy_tools_removed():
     assert "needs list_id" in _lerr, _lerr
     _yerr = expect_error(_collab_tools.claim_todo, "x", 0, "list", 5, 7)
     assert "pass no item_id" in _yerr, _yerr
-###CHUNK-D###
+
+
+def test_removed_claim_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #936): claim_todo survives as the
+    dispatcher, so claim_todo_item and claim_todo_list are both forbidden in
+    live prose. HISTORY.md is a dated record and is exempt by policy (same
+    class as the 2026-09-20 changelog exemption). db.* calls are true
+    statements (negative lookbehind); reworded user-facing strings are
+    pinned exactly, since neither the strict rule nor the lookbehind can
+    judge a file that defines the db functions."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    _dead = ("claim_todo_item", "claim_todo_list")
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        _root / "rules_text.py",
+        _root / "RESILIENCE.md",
+    ):
+        assert _p.exists(), _p
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _lookbehind = re.compile(r"(?<![.\w])claim_todo_(?:item|list)\b")
+    _hits = _lookbehind.findall(
+        (_root / "server" / "tools" / "collab.py").read_text(encoding="utf-8")
+    )
+    assert not _hits, f"collab.py names the removed tools unqualified: {_hits}"
+    # schema.sql is code-adjacent, not shipped prose: db-qualified
+    # references there are true statements (the db layer keeps its names,
+    # e.g. the (db.claim_todo_item) index comment), so only bare mentions
+    # are forbidden - the same negative lookbehind, not the strict rule.
+    _schema_hits = _lookbehind.findall(
+        (_root / "schema.sql").read_text(encoding="utf-8")
+    )
+    assert not _schema_hits, (
+        f"schema.sql names the removed tools unqualified: {_schema_hits}"
+    )
+    _claiming_text = (_root / "db" / "_claiming.py").read_text(encoding="utf-8")
+    assert "target='list', list_id=...)" in _claiming_text
+    assert "claim_todo_list(token, {post_id}, list_id)" not in _claiming_text
+    assert "target='item', item_id=...)" in _claiming_text
+    assert "claim_todo_item(token, {post_id}, item_id)" not in _claiming_text
+    assert "yours (claim_todo(target='item'))" in _claiming_text
+    assert "yours (claim_todo_item)" not in _claiming_text
+    _nudges_text = (_root / "db" / "_nudges.py").read_text(encoding="utf-8")
+    assert "(claim_todo(target=..., action='release'))" in _nudges_text
+    assert "(claim_todo_item / claim_todo_list with action='release')" not in (
+        _nudges_text
+    )
+    _proposal_text = (_root / "db" / "_proposal.py").read_text(encoding="utf-8")
+    assert ") + claim_todo, and " in _proposal_text
+    assert "claim_todo_list/claim_todo_item" not in _proposal_text
+    _claims_text = (_root / "db" / "_proposal_todos" / "_claims.py").read_text(
+        encoding="utf-8"
+    )
+    assert "Re-claim with claim_todo(target='item')" in _claims_text
+    assert "Re-claim with claim_todo_item" not in _claims_text
+    assert "Re-claim with claim_todo(target='list') if still working " in _claims_text
+    assert "Re-claim with claim_todo_list if you are still working " not in (
+        _claims_text
+    )
+    assert "use claim_todo(target='list', list_id=...) to take a " in _claims_text
+    assert "use claim_todo_list(token, post_id, list_id) to take a " not in (
+        _claims_text
+    )
+    assert "use claim_todo(target='item', item_id=...) " in _claims_text
+    assert "use claim_todo_item(token, post_id, item_id) " not in _claims_text
+    _propose_text = (_root / "server" / "tools" / "repo" / "_propose.py").read_text(
+        encoding="utf-8"
+    )
+    assert "Fix the cause (claim_todo) and the poller backfills" in _propose_text
+    assert "Fix the cause (claim_todo_item) and the poller backfills" not in (
+        _propose_text
+    )
+###CHUNK-E###
