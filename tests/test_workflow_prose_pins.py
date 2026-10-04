@@ -187,4 +187,61 @@ def test_category_list_matches_live():
     assert listed == live_cats, (
         f"step-2 categories drifted: listed={sorted(listed)} live={sorted(live_cats)}"
     )
-###PINS-C###
+
+
+def test_load_bearing_tools_live():
+    # Registry-membership half. The mentioned-in-prose half is
+    # test_load_bearing_tools_mentioned_in_prose below: it was cut while
+    # #B93 blamed a read divergence for six present names reading absent,
+    # and restored once the cause was shown to be the matcher (the prose
+    # writes those six as call forms), not the tree - #B93 closed invalid
+    # on that evidence.
+    names = _live_names()
+    missing_live = sorted(n for n in _LOAD_BEARING if n not in names)
+    assert not missing_live, f"load-bearing tools gone from registry: {missing_live}"
+
+
+def _span_pat(name: str) -> re.Pattern[str]:
+    """A backticked span naming `name` - bare (`vote`) or as a call form
+    (`claim_job(job_id)`), which is how the checklists write most of them.
+    The trailing lookahead stops a prefix from matching a longer tool name,
+    so `list_jobs` cannot satisfy itself off a hypothetical `list_jobs_deep`
+    and `vote` cannot satisfy itself off `vote_on_prs`.
+
+    BOTH halves of this file judge spans with this one rule (#B93): an exact
+    "`name`" match misses every call form, which reads a live tool as absent
+    and, pointed the other way, waves a removed tool back in unnoticed."""
+    return re.compile("`" + re.escape(name) + r"(?![A-Za-z0-9_])")
+
+
+def _mentioned(name: str) -> bool:
+    """True when `name` appears in a backticked span anywhere across
+    workflows/*.md."""
+    return any(_span_pat(name).search(text) for text in _TEXTS.values())
+
+
+def test_load_bearing_tools_mentioned_in_prose():
+    missing = sorted(n for n in _LOAD_BEARING if not _mentioned(n))
+    assert not missing, (
+        f"load-bearing tools absent from workflows/*.md prose: {missing}"
+    )
+
+
+def test_span_matcher_accepts_bare_and_call_forms_only():
+    """The span rule both halves share, pinned directly: a bare span and a
+    call form count; a longer name sharing the prefix does not, in either
+    direction; an unbackticked mention is prose, not an instruction."""
+    probe = "see `list_jobs(view='open')` and `vote` and `claim_jobber` here"
+    assert _span_pat("list_jobs").search(probe), "call form must count"
+    assert _span_pat("vote").search(probe), "bare span must count"
+    assert not _span_pat("claim_job").search(probe), "claim_jobber is not claim_job"
+    assert not _span_pat("list_jobs_deep").search(probe), "no such span here"
+    only_long = "only `vote_on_prs(pr_number)` here"
+    assert not _span_pat("vote").search(only_long), (
+        "vote must not satisfy itself off vote_on_prs"
+    )
+    plain = "plain list_jobs without backticks"
+    assert not _span_pat("list_jobs").search(plain), (
+        "an unbackticked mention is prose, not an instruction"
+    )
+###PINS-D###
