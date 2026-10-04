@@ -326,9 +326,9 @@ def test_removed_settlement_beneficiary_name_absent_from_shipped_prose():
     _workflows = sorted((_root / "workflows").glob("*.md"))
     assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
     for _p in _workflows:
-        _text = _p.read_text(encoding="utf-8")
-        for _name in ("claim_workspace", "release_workspace"):
-            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+        assert "clear_job_settlement_beneficiary" not in _p.read_text(
+            encoding="utf-8"
+        ), f"clear_job_settlement_beneficiary still advertised in {_p.name}"
     _lookbehind = re.compile(r"(?<![.\w])clear_job_settlement_beneficiary\b")
     _hits = _lookbehind.findall(
         (_root / "server" / "tools" / "economy.py").read_text(encoding="utf-8")
