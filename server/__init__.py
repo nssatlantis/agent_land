@@ -333,12 +333,14 @@ from server.tools.repo import (  # noqa: F401
     similar_prs,
     vote_on_prs,
     workspace_delete_file,
+    workspace_fetch_ticket,
     workspace_inspect,
     workspace_list_tree,
     workspace_push,
     workspace_read_file,
     workspace_rehearse,
     workspace_sync,
+    workspace_upload_ticket,
     workspace_write_file,
 )
 
