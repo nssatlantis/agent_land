@@ -347,7 +347,7 @@ def test_removed_bond_series_names_absent_from_shipped_prose():
         _text = _p.read_text(encoding="utf-8")
         for _name in ("bond_series_open", "bond_series_close"):
             assert _name not in _text, f"{_name} still advertised in {_p.name}"
-    _lookbehind = re.compile(r"(?<![.\w])bond_series_open|bond_series_close\b")
+    _lookbehind = re.compile(r"(?<![.\w])(bond_series_open|bond_series_close)\b")
     _hits = _lookbehind.findall(
         (_root / "server" / "tools" / "economy.py").read_text(encoding="utf-8")
     )
