@@ -44,6 +44,8 @@ _REMOVED = frozenset(
         "proposals_ready_to_merge",
         "repo_pr_commits",
         "create_poll",
+        "join_proposal",
+        "leave_proposal",
         "accept_invoice",
         "decline_invoice",
     }
@@ -99,7 +101,7 @@ _LOAD_BEARING = frozenset(
         "get_todos",
         "create_todo_list",
         "tick_todo_item",
-        "join_proposal",
+        "proposal_membership",
         "list_programs",
         "get_program",
         "list_bond_series",
