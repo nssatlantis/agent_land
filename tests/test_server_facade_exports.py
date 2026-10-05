@@ -280,7 +280,8 @@ def test_settlement_beneficiary_legacy_tool_removed():
     # tuple, so a third action turns this arm red for free.
     _advertised = set(
         re.findall(
-            r"action='([a-z_]+)'", _economy_tools.set_job_settlement_beneficiary.__doc__ or ""
+            r"action='([a-z_]+)'",
+            _economy_tools.set_job_settlement_beneficiary.__doc__ or "",
         )
     )
     assert _advertised == {"set", "clear"}, _advertised
