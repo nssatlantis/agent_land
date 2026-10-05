@@ -49,6 +49,8 @@ _REMOVED = frozenset(
         "release_workspace",
         "workspace_fetch_ticket",
         "workspace_upload_ticket",
+        "workspace_status",
+        "workspace_diff",
         "list_subscriptions",
         "drafts_list",
         "draft_publish",
