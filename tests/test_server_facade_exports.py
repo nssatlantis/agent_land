@@ -264,43 +264,6 @@ def test_server_repo_search_stays_module():
     assert callable(repo_pkg.repo_search), "tool lives on server.tools.repo"
 
 
-def test_personal_notes_tools_retired():
-    """Retire pin (proposal #933): personal_notes_read and personal_notes_write
-    must not exist as tools on any surface. db.* are protocol-agnostic core,
-    the personal_notes table, the legacy one-way import and the destroy-time
-    cleanup all stay - none of them is asserted here."""
-    import server
-    import server.tools.economy as _economy_tools
-
-    for _gone in ("personal_notes_read", "personal_notes_write"):
-        assert not hasattr(_economy_tools, _gone), f"{_gone} is still defined"
-        assert not hasattr(server, _gone), f"{_gone} still on the facade"
-
-
-def test_retired_personal_notes_names_absent_from_shipped_prose():
-    """Shipped-prose census (proposal #933): the audit found exactly one
-    prose surface naming the tools (README.md). Assert absence there plus
-    the workflows future-guard; db.personal_notes_* calls and the legacy
-    import machinery are true statements (negative lookbehind)."""
-    from pathlib import Path
-
-    _root = Path(REPO_ROOT)
-    _text = (_root / "README.md").read_text(encoding="utf-8")
-    for _name in ("personal_notes_read", "personal_notes_write"):
-        assert _name not in _text, f"{_name} still advertised in README.md"
-    _workflows = sorted((_root / "workflows").glob("*.md"))
-    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
-    for _p in _workflows:
-        _text = _p.read_text(encoding="utf-8")
-        for _name in ("personal_notes_read", "personal_notes_write"):
-            assert _name not in _text, f"{_name} still advertised in {_p.name}"
-    _lookbehind = re.compile(r"(?<![.\w])(personal_notes_read|personal_notes_write)\b")
-    _hits = _lookbehind.findall(
-        (_root / "server" / "tools" / "economy.py").read_text(encoding="utf-8")
-    )
-    assert not _hits, f"economy.py names retired tools unqualified: {_hits}"
-
-
 def test_program_claim_legacy_tool_removed():
     """Hard-remove pin (proposal #929): release_program_item must not exist
     as a tool on any surface. db.release_program_item is protocol-agnostic
@@ -432,14 +395,87 @@ def test_removed_invoice_names_absent_from_shipped_prose():
     assert "(accept_invoice) before anything nudges" not in _inv_text
 
 
+def test_proposal_membership_legacy_tools_removed():
+    """Hard-remove pin (proposal #935): join_proposal and leave_proposal
+    must not exist as tools on any surface. db.join_proposal and
+    db.leave_proposal are protocol-agnostic core and are not asserted here."""
+    import server
+    import server.tools.collab as _collab_tools
+    from tests._setup import expect_error
+
+    for _dead in ("join_proposal", "leave_proposal"):
+        assert not hasattr(_collab_tools, _dead), f"{_dead} is still defined"
+        assert not hasattr(server, _dead), f"{_dead} still on the facade"
+    # Derive the vocabulary from the live docstring, never a hardcoded
+    # tuple, so a third action turns this arm red for free.
+    _advertised = set(
+        re.findall(
+            r"action='([a-z_]+)'", _collab_tools.proposal_membership.__doc__ or ""
+        )
+    )
+    assert _advertised == {"join", "leave"}, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
+    # The refusal fires before any db touch, so any token and ids do: drive
+    # a bad action and require every quoted member named in the refusal.
+    _err = expect_error(_collab_tools.proposal_membership, "x", 0, "bogus")
+    _missing = sorted(a for a in _advertised if f"'{a}'" not in _err)
+    assert not _missing, (
+        f"the refusal under-reports advertised actions {_missing}: {_err}"
+    )
+
+
+def test_removed_membership_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #935): proposal_membership survives as
+    the dispatcher, so join_proposal and leave_proposal are both forbidden in
+    live prose. db.* calls are true statements (negative lookbehind); the two
+    reworded call-adjacent strings (db note, forum docstring) are pinned
+    exactly, since neither the strict rule nor the lookbehind can judge a
+    file that defines the db functions."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    _dead = ("join_proposal", "leave_proposal")
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        _root / "rules_text.py",
+        _root / "schema.sql",
+    ):
+        assert _p.exists(), _p
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _lookbehind = re.compile(r"(?<![.\w])(?:join|leave)_proposal\b")
+    _hits = _lookbehind.findall(
+        (_root / "server" / "tools" / "collab.py").read_text(encoding="utf-8")
+    )
+    assert not _hits, f"collab.py names the removed tools unqualified: {_hits}"
+    _proposal_text = (_root / "db" / "_proposal.py").read_text(encoding="utf-8")
+    assert "citizens join with proposal_membership(action='join'). " in _proposal_text
+    assert "citizens join with join_proposal. Each collaborator opens " not in (
+        _proposal_text
+    )
+    _forum_text = (_root / "server" / "tools" / "forum.py").read_text(encoding="utf-8")
+    assert "proposal_membership(action='join') and the author closes with" in (
+        _forum_text
+    )
+    assert "join_proposal and the author closes with" not in _forum_text
+
+
 if __name__ == "__main__":
     test_server_facade_exports_present_in_source()
     test_server_facade_exports_present_at_runtime()
     test_server_repo_search_stays_module()
-    test_personal_notes_tools_retired()
-    test_retired_personal_notes_names_absent_from_shipped_prose()
-    test_program_claim_legacy_tool_removed()
-    test_removed_program_claim_name_absent_from_shipped_prose()
     test_decide_invoice_legacy_tools_removed()
     test_removed_invoice_names_absent_from_shipped_prose()
+    test_program_claim_legacy_tool_removed()
+    test_removed_program_claim_name_absent_from_shipped_prose()
+    test_proposal_membership_legacy_tools_removed()
+    test_removed_membership_names_absent_from_shipped_prose()
     print("test_server_facade_exports: all assertions passed")

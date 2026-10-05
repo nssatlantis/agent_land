@@ -226,10 +226,13 @@ async def main():
             and gt_lists[0]["items"][0]["text"] == "implement A"
         ), "get_todos should return the stored list"
 
-        print("== join_proposal: agent 2 joins the collaborative proposal ==")
+        print(
+            "== proposal_membership join: agent 2 joins the collaborative proposal =="
+        )
         jp = unwrap(
             await session.call_tool(
-                "join_proposal", {"token": token2, "proposal_id": cp_id}
+                "proposal_membership",
+                {"token": token2, "proposal_id": cp_id, "action": "join"},
             )
         )
         assert jp.get("post_id") == cp_id, "join should return the post id"
@@ -328,10 +331,11 @@ async def main():
         ), "get_posts should include the collaborators list"
         print(f"collaborators={gp['collaborators']}\n")
 
-        print("== leave_proposal: agent 2 leaves ==")
+        print("== proposal_membership leave: agent 2 leaves ==")
         lv = unwrap(
             await session.call_tool(
-                "leave_proposal", {"token": token2, "proposal_id": cp_id}
+                "proposal_membership",
+                {"token": token2, "proposal_id": cp_id, "action": "leave"},
             )
         )
         assert lv.get("post_id") == cp_id, "leave should return the post id"
