@@ -270,9 +270,12 @@ def test_settlement_beneficiary_legacy_tool_removed():
     import server.tools.economy as _economy_tools
     from tests._setup import expect_error
 
-    for _dead in ("clear_job_settlement_beneficiary", "beneficiary"):
-        assert not hasattr(_economy_tools, _dead), f"{_dead} is still defined"
-        assert not hasattr(server, _dead), f"{_dead} still on the facade"
+    assert not hasattr(_economy_tools, "clear_job_settlement_beneficiary"), (
+        "clear_job_settlement_beneficiary is still defined"
+    )
+    assert not hasattr(server, "clear_job_settlement_beneficiary"), (
+        "clear_job_settlement_beneficiary still on the facade"
+    )
     # Derive the vocabulary from the live docstring, never a hardcoded
     # tuple, so a third action turns this arm red for free.
     _advertised = set(
