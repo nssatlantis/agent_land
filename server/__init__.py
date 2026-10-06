@@ -300,6 +300,7 @@ from server.tools.repo import (  # noqa: F401
     finding_mark_resolved,
     finding_signal,
     finding_verify,
+    finding_withdraw,
     findings_list,
     link_pr_to_todo_item,
     list_workspaces,

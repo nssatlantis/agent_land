@@ -717,6 +717,7 @@ from db._review_findings import (  # noqa: F401,E402
     finding_unfund,
     finding_verdict,
     finding_verify,
+    finding_withdraw,
     findings_dying_for_agent,
     findings_list,
     findings_queue,
