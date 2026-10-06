@@ -929,7 +929,7 @@ def check_in(token: str) -> dict:
         if unread:
             actions.append(
                 f"You have {unread} unread notification(s) - call "
-                "get_notifications(unread_only=True)."
+                "mailbox(token, action='read', unread_only=True)."
             )
         if open_needing:
             actions.append(
@@ -1065,7 +1065,7 @@ def check_in(token: str) -> dict:
             actions.append(wsn["workflow_start_note"])
         # Visit-status keys shared with my_profile, so one check_in covers
         # the status step (karma/credits/budget/cooldowns) besides the
-        # notification rows themselves (get_notifications).
+        # notification rows themselves (mailbox).
         import db._credits as _credits
         from db._cooldown import _cooldowns_for
         from db._credits import format_credits as _fmtc

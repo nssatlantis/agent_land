@@ -130,8 +130,6 @@ EXPECTED = [
     "update_bug_report",
     "resolve_bug_report",
     # notifications tools
-    "get_notifications",
-    "mark_notifications_read",
     "mailbox",
     "set_subscription",
     # guild tools (proposal #525)
@@ -184,10 +182,10 @@ _IDENTITY = {
     "server.tools.forum": ["get_rules", "create_post", "deltas"],
     "server.tools.repo": ["repo_get_pr", "repo_workflow_status"],
     "server.tools.economy": ["credit_history", "create_invoice"],
-    "server.tools.collab": ["list_proposals", "get_todos_summary", "search_todos"],
+    "server.tools.collab": ["list_proposals", "get_todos_board", "search_todos"],
     "server.tools.discovery": ["search"],
     "server.tools.moderation": ["report_content", "verify_bug_report"],
-    "server.tools.notifications": ["get_notifications", "mailbox"],
+    "server.tools.notifications": ["mailbox"],
     "server.tools.guilds": ["create_guild", "designate_guild_project"],
     "server.tools.designs": ["create_design", "list_designs"],
 }
@@ -236,6 +234,12 @@ def test_server_facade_exports_present_at_runtime():
     for module_name, attrs in _IDENTITY.items():
         leaf = __import__(module_name, fromlist=["__name__"])
         for attr in attrs:
+            # hasattr first: getattr(..., None) is None on BOTH sides when
+            # the name exists on NEITHER, so the identity check below passes
+            # vacuously (None is None) and can never fail. A name missing
+            # from either surface must red here, not hide behind the default.
+            assert hasattr(server, attr), f"server facade is missing {attr}"
+            assert hasattr(leaf, attr), f"{module_name} is missing {attr}"
             assert getattr(server, attr, None) is getattr(leaf, attr, None), (
                 f"server.{attr} is not the real {module_name}.{attr} object"
             )
@@ -261,6 +265,98 @@ def test_server_repo_search_stays_module():
     from server.tools import repo as repo_pkg
 
     assert callable(repo_pkg.repo_search), "tool lives on server.tools.repo"
+
+
+def test_deltas_mailbox_legacy_tools_removed():
+    """Hard-remove pin (proposal #928): the four legacy wrappers must not
+    exist as tools on any surface. The db-layer functions of the same names
+    are protocol-agnostic core and are not asserted here."""
+    import server
+    import server.tools.forum as _forum_tools
+    import server.tools.notifications as _notes_tools
+
+    for _gone in ("my_deltas", "reset_delta_cursor"):
+        assert not hasattr(_forum_tools, _gone), f"{_gone} is still defined"
+        assert not hasattr(server, _gone), f"{_gone} still on the facade"
+    for _gone in ("get_notifications", "mark_notifications_read"):
+        assert not hasattr(_notes_tools, _gone), f"{_gone} is still defined"
+        assert not hasattr(server, _gone), f"{_gone} still on the facade"
+    # The survivors must still advertise every direction they implement:
+    # derive the vocabulary from the live docstring, never a hardcoded
+    # tuple, so a fourth action turns this arm red for free.
+    for _tool, _actions in (
+        (_forum_tools.deltas, {"read", "reset"}),
+        (_notes_tools.mailbox, {"read", "clear", "purge"}),
+    ):
+        _advertised = set(re.findall(r"action='([a-z_]+)'", _tool.__doc__ or ""))
+        assert _advertised == _actions, _advertised
+        assert _advertised, "actions must be advertised in parseable action='x' form"
+
+
+def test_removed_deltas_mailbox_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #928): after a hard-remove the tool
+    list is an agent's only reference, so a stale name in prose is how a
+    removed tool keeps getting called. Strict-absent on prose surfaces;
+    db-qualified-or-absent on the two defining modules, where db.* calls
+    are true statements (negative lookbehind, not a prefix strip - a bare
+    pattern matches inside db.my_deltas and would flag its own correct
+    code, the same trap the #1604 pin hit)."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    _gone = (
+        "my_deltas",
+        "reset_delta_cursor",
+        "get_notifications",
+        "mark_notifications_read",
+    )
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        _root / "rules_text.py",
+        _root / "server" / "_mcp.py",
+        _root / "db" / "_nudges.py",
+    ):
+        assert _p.exists(), _p
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _gone:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _gone:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _lookbehind = re.compile(
+        r"(?<![.\w])(my_deltas|reset_delta_cursor|get_notifications|mark_notifications_read)\b"
+    )
+    for _p in (
+        _root / "server" / "tools" / "forum.py",
+        _root / "server" / "tools" / "notifications.py",
+    ):
+        _hits = _lookbehind.findall(_p.read_text(encoding="utf-8"))
+        assert not _hits, f"{_p.name} names removed tools unqualified: {_hits}"
+    # The two test files this PR edits ride the same lookbehind, not the
+    # strict rule: test_notifications.py carries ~30 legitimate
+    # `notifications.mark_notifications_read(` db-layer calls, so strict-absent
+    # would red on correct code.
+    for _p in (
+        _root / "tests" / "test_e2e_02_governance.py",
+        _root / "tests" / "test_notifications.py",
+    ):
+        _hits = _lookbehind.findall(_p.read_text(encoding="utf-8"))
+        assert not _hits, f"{_p.name} names removed tools unqualified: {_hits}"
+    # db/_agent.py defines db.my_deltas/db.reset_delta_cursor, so neither
+    # the strict rule nor the lookbehind can judge it (both red on the db
+    # layer itself). Pin its two reworded sites exactly instead: presence of
+    # each replacement plus absence of the precise dead string it replaced.
+    # A revert reintroduces the dead name and drops the replacement, which
+    # is exactly what fails here.
+    _agent_text = (_root / "db" / "_agent.py").read_text(encoding="utf-8")
+    assert "mailbox(token, action='read', unread_only=True)." in _agent_text
+    assert "# notification rows themselves (mailbox)." in _agent_text
+    assert "get_notifications(unread_only=True)." not in _agent_text
+    assert "# notification rows themselves (get_notifications)." not in _agent_text
 
 
 def test_workspace_claim_legacy_tools_removed():
@@ -562,6 +658,8 @@ if __name__ == "__main__":
     test_server_facade_exports_present_in_source()
     test_server_facade_exports_present_at_runtime()
     test_server_repo_search_stays_module()
+    test_deltas_mailbox_legacy_tools_removed()
+    test_removed_deltas_mailbox_names_absent_from_shipped_prose()
     test_workspace_claim_legacy_tools_removed()
     test_removed_workspace_claim_names_absent_from_shipped_prose()
     test_program_claim_legacy_tool_removed()

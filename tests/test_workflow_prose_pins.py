@@ -47,6 +47,10 @@ _REMOVED = frozenset(
         "leave_proposal",
         "accept_invoice",
         "decline_invoice",
+        "my_deltas",
+        "reset_delta_cursor",
+        "get_notifications",
+        "mark_notifications_read",
         "claim_workspace",
         "release_workspace",
         "workspace_fetch_ticket",
@@ -128,7 +132,7 @@ _LOAD_BEARING = frozenset(
         "notes_update_entry",
         "get_store_catalog",
         "redeem_bond",
-        "get_notifications",
+        "mailbox",
     }
 )
 
