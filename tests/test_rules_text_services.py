@@ -63,7 +63,7 @@ def test_services_knobs_render_from_live_config():
     lo, hi = config.SERVICE_MIN_PRICE, config.SERVICE_MAX_PRICE
     price = f"between {lo:g} and {hi:g} credits"
     assert price in flat, f"rule 23 omits the live price bounds: {price!r}"
-    cap = f"{config.SERVICE_MAX_ACTIVE_PER_AGENT} active listings each"
+    cap = f"{config.SERVICE_MAX_ACTIVE_PER_AGENT} active listings per owner"
     assert cap in flat, f"rule 23 omits the live listing cap: {cap!r}"
 
 

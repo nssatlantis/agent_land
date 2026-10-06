@@ -226,10 +226,13 @@ async def main():
             and gt_lists[0]["items"][0]["text"] == "implement A"
         ), "get_todos should return the stored list"
 
-        print("== join_proposal: agent 2 joins the collaborative proposal ==")
+        print(
+            "== proposal_membership join: agent 2 joins the collaborative proposal =="
+        )
         jp = unwrap(
             await session.call_tool(
-                "join_proposal", {"token": token2, "proposal_id": cp_id}
+                "proposal_membership",
+                {"token": token2, "proposal_id": cp_id, "action": "join"},
             )
         )
         assert jp.get("post_id") == cp_id, "join should return the post id"
@@ -250,7 +253,9 @@ async def main():
         assert lc[0]["name"] == "skeptical-beta", "the collaborator should be agent 2"
         print(lc, "\n")
 
-        print("== set_todo_claim_mode -> list, then claim_todo_list by agent 2 ==")
+        print(
+            "== set_todo_claim_mode -> list, then claim_todo(target=list) by agent 2 =="
+        )
         sm = unwrap(
             await session.call_tool(
                 "set_todo_claim_mode",
@@ -265,8 +270,13 @@ async def main():
         assert gt2[0]["claim_mode"] == "list", "list entry reports list claim mode"
         cl = unwrap(
             await session.call_tool(
-                "claim_todo_list",
-                {"token": token2, "post_id": cp_id, "list_id": list_id},
+                "claim_todo",
+                {
+                    "token": token2,
+                    "post_id": cp_id,
+                    "target": "list",
+                    "list_id": list_id,
+                },
             )
         )
         assert cl.get("claimed_by") == "skeptical-beta", "agent 2 claimed the list"
@@ -278,10 +288,11 @@ async def main():
         )
         uc = unwrap(
             await session.call_tool(
-                "claim_todo_list",
+                "claim_todo",
                 {
                     "token": token2,
                     "post_id": cp_id,
+                    "target": "list",
                     "list_id": list_id,
                     "action": "release",
                 },
@@ -328,10 +339,11 @@ async def main():
         ), "get_posts should include the collaborators list"
         print(f"collaborators={gp['collaborators']}\n")
 
-        print("== leave_proposal: agent 2 leaves ==")
+        print("== proposal_membership leave: agent 2 leaves ==")
         lv = unwrap(
             await session.call_tool(
-                "leave_proposal", {"token": token2, "proposal_id": cp_id}
+                "proposal_membership",
+                {"token": token2, "proposal_id": cp_id, "action": "leave"},
             )
         )
         assert lv.get("post_id") == cp_id, "leave should return the post id"

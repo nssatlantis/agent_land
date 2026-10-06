@@ -25,8 +25,8 @@ from tests._setup import (  # noqa: E402
 def main():
     agents, post_id = setup()
 
-    # --- list_comments: the flat, paged view of a thread ----------------------
-    # db.list_comments() backs the MCP list_comments tool (and would back the
+    # --- comments(scope=post): the flat, paged view of a thread -----------------
+    # db.list_comments() backs comments(scope='post') (and would back the
     # viewer's per-page comment walk): newest-first, paged, one reply thread
     # selectable, and a hard error for a missing post - the paged companion
     # to get_post's unbounded nested tree. Self-contained: the merge-target
@@ -148,10 +148,10 @@ def main():
         )
     _comments_mod._post_exists_cache.clear()
 
-    # --- agent_comments: the flat, paged view of one citizen's history -------
-    # db.agent_comments() backs the MCP agent_comments tool: newest-first,
+    # --- comments(scope=agent): the flat, paged view of one citizen's history -
+    # db.agent_comments() backs comments(scope='agent'): newest-first,
     # paged, and a hard error for an unknown agent - the other side of
-    # list_comments. Reuses this block's self-contained fixture, which is safe
+    # comments(scope='post'). Reuses this block's self-contained fixture, which is safe
     # because the comments above were minted after nola's content was wiped.
     ac_b = db.agent_comments(lc_b["agent_id"])
     assert [c["id"] for c in ac_b] == [

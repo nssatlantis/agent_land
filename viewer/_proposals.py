@@ -391,7 +391,7 @@ def _docket_card(
                 f"{merged} PR{'s' if merged != 1 else ''} merged</div>"
             )
     # To-do claim visibility: a collaborative proposal running list or
-    # hybrid claim mode (claim_todo_list) renders which lists are reserved
+    # hybrid claim mode (claim_todo(target='list')) renders which lists are reserved
     # and by whom, so the docket mirrors the badge on the proposal page -
     # item dots aren't shown in pure list mode, the list is the unit of
     # ownership. Hybrid mode renders both, so list claims still surface.

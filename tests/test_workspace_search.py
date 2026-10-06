@@ -90,7 +90,7 @@ def _claim(agents, wstools, key, title):
     tok = agents[key]["token"]
     prop = db.create_proposal(tok, title, "body")
     pid = prop["post_id"]
-    claimed = wstools.claim_workspace(tok, pid, "dev")
+    claimed = wstools.workspace_claim(tok, "claim", pid, "dev")
     assert claimed["claim"]["status"] == "active", claimed
     return pid, tok
 
@@ -120,7 +120,7 @@ def test_search_live_and_all_text(agents, wstools):
         assert "findme" in mod["matches"][0]["text"], mod
         upper = s(tok, pid, "dev", "FINDME")
         assert {m["path"] for m in upper["matches"]} == paths, upper
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
     print("  live dirty + all-text + .github: ok")
@@ -154,7 +154,7 @@ def test_search_skips(agents, wstools):
         got = s(tok, pid, "dev", marker)
         paths = [m["path"] for m in got["matches"]]
         assert paths == ["live.txt"], got
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
     print("  git/manifest/symlink/binary/empty skips: ok")
@@ -191,7 +191,7 @@ def test_search_caps_and_validation(agents, wstools):
         w(tok, pid, "dev", "big.txt", "z" * ((1 << 20) + 1))
         big = s(tok, pid, "dev", "zzzzzzzzzz")
         assert all(m["path"] != "big.txt" for m in big["matches"]), big
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
     print("  caps/trim/validation/over-cap: ok")
@@ -213,7 +213,7 @@ def test_search_owner_and_clocks(agents, wstools):
         after_manifest = ws.claim_tree_info(aid, pid, "dev")["manifest"]
         assert after_record >= before_record, (before_record, after_record)
         assert after_manifest["updated_at"] > before_manifest["updated_at"]
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
     print("  owner isolation + both clocks: ok")
@@ -315,7 +315,7 @@ def test_search_at_ref(agents, wstools):
         after_manifest = ws.claim_tree_info(aid, pid, "dev")["manifest"]
         assert after_record >= before_record, (before_record, after_record)
         assert after_manifest["updated_at"] > before_manifest["updated_at"]
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
     print("  ref search (committed vs dirty): ok")

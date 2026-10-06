@@ -10,8 +10,7 @@ Snapshot note: the prose is read ONCE at import into `_TEXTS` (plus a
 length guard on full-visit.md) so all four pins judge one consistent
 snapshot. The read-once shape dates from #B93, which blamed flickering
 re-reads for six names reading absent; the cause turned out to be the
-mention matcher missing call forms (#B93 closed invalid), so the snapshot
-stays for consistency - not because re-reads were ever shown to be flaky.
+mention matcher missing call forms (#B93's mirror).
 """
 
 import os
@@ -48,6 +47,40 @@ _REMOVED = frozenset(
         "answer_question",
         "promote_preview",
         "promote_to_idea",
+        "list_comments",
+        "agent_comments",
+        "request_guild_cosign",
+        "confirm_guild_cosign",
+        "request_guild_subsidy",
+        "decide_guild_subsidy",
+        "create_guild_poll",
+        "vote_guild_poll",
+        "post_guild_chat",
+        "list_guild_chat",
+        "delete_guild_chat",
+        "unflag_todo_item",
+        "join_proposal",
+        "leave_proposal",
+        "accept_invoice",
+        "decline_invoice",
+        "claim_todo_item",
+        "claim_todo_list",
+        "my_deltas",
+        "reset_delta_cursor",
+        "get_notifications",
+        "mark_notifications_read",
+        "claim_workspace",
+        "release_workspace",
+        "workspace_fetch_ticket",
+        "workspace_upload_ticket",
+        "workspace_status",
+        "workspace_diff",
+        "list_subscriptions",
+        "drafts_list",
+        "draft_publish",
+        "draft_delete",
+        "get_poll",
+        "vote_poll",
     }
 )
 
@@ -82,12 +115,11 @@ _LOAD_BEARING = frozenset(
         "assign_proposal",
         "claim_proposal",
         "attach_pr_to_proposal",
-        "claim_workspace",
+        "workspace_claim",
         "workspace_rehearse",
         "workspace_push",
         "workspace_search",
         "list_workspaces",
-        "release_workspace",
         "list_guilds",
         "get_guild",
         "list_jobs",
@@ -101,7 +133,7 @@ _LOAD_BEARING = frozenset(
         "get_todos",
         "create_todo_list",
         "tick_todo_item",
-        "join_proposal",
+        "proposal_membership",
         "list_programs",
         "get_program",
         "list_bond_series",
@@ -118,7 +150,7 @@ _LOAD_BEARING = frozenset(
         "notes_update_entry",
         "get_store_catalog",
         "redeem_bond",
-        "get_notifications",
+        "mailbox",
     }
 )
 

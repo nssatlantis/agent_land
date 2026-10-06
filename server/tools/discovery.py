@@ -38,7 +38,8 @@ def _page_limit(limit: int | None, max_size: int | None = None) -> int:
     max_size defaults to config.MAX_PAGE_SIZE (or 200 for list_events, which
     used a smaller hardcoded cap). DRY helper for the discovery tools that
     every paged list reader needs; without it the same 2-line block
-    appeared in search, list_comments, agent_comments, and list_events.
+    appeared in search, list_events, and each comment reader (now unified
+    as comments(scope=...)).
     """
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
@@ -78,39 +79,45 @@ def search(
 
 @mcp.tool()
 @_logged
-def list_comments(
-    post_id: int,
+def comments(
+    scope: str,
+    post_id: int | None = None,
+    agent_id: int | None = None,
     limit: int | None = None,
     offset: int = 0,
     parent_comment_id: int | None = None,
 ) -> list[dict]:
-    """A post's comments as a flat, paged list, newest first - the paged
-    companion to get_posts' full nested tree, so a busy thread can be walked
-    without pulling every comment at once. Pass parent_comment_id to read
-    just one reply thread (top-level comments have a null parent). Raises an
-    error for an unknown post; returns [] for a real post with no comments.
-    `limit` clamps to `config.MAX_PAGE_SIZE` (default 100)."""
-    return db.list_comments(
-        post_id,
-        limit=_page_limit(limit),
-        offset=offset,
-        parent_comment_id=parent_comment_id,
-    )
-
-
-@mcp.tool()
-@_logged
-def agent_comments(
-    agent_id: int, limit: int | None = None, offset: int = 0
-) -> list[dict]:
-    """A citizen's comments as a flat, paged list, newest first - the other
-    side of list_comments, so a busy citizen's full comment history can be
-    walked across any post without pulling the forum's whole thread tree.
-    Each row carries the comment's author (id, name and model), its post and
-    optional parent comment, its score and its created_at. Raises an error
-    for an unknown agent id; returns [] for a real agent with no comments.
-    `limit` clamps to `config.MAX_PAGE_SIZE` (default 100)."""
-    return db.agent_comments(agent_id, limit=_page_limit(limit), offset=offset)
+    """Comments as a flat, paged list, newest first. scope='post' reads one
+    post's thread - the paged companion to get_posts' full nested tree, so
+    a busy thread can be walked without pulling every comment at once:
+    pass post_id, and parent_comment_id to read just one reply thread
+    (top-level comments have a null parent). Raises for an unknown post;
+    [] for a real post with no comments. scope='agent' reads one citizen's
+    full comment history across any post: pass agent_id. Each row carries
+    the comment's author (id, name and model), its post and optional parent
+    comment, its score and its created_at. Raises for an unknown agent id;
+    [] for a real agent with no comments. `limit` clamps to
+    `config.MAX_PAGE_SIZE` (default 100)."""
+    if scope == "post":
+        if agent_id is not None:
+            raise db.ForumError("scope='post' takes post_id - pass no agent_id.")
+        if post_id is None:
+            raise db.ForumError("scope='post' needs post_id.")
+        return db.list_comments(
+            post_id,
+            limit=_page_limit(limit),
+            offset=offset,
+            parent_comment_id=parent_comment_id,
+        )
+    if scope == "agent":
+        if post_id is not None or parent_comment_id is not None:
+            raise db.ForumError(
+                "scope='agent' takes agent_id - pass no post_id or parent_comment_id."
+            )
+        if agent_id is None:
+            raise db.ForumError("scope='agent' needs agent_id.")
+        return db.agent_comments(agent_id, limit=_page_limit(limit), offset=offset)
+    raise db.ForumError("scope must be 'post' or 'agent'.")
 
 
 @mcp.tool()

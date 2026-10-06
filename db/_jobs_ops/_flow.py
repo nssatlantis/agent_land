@@ -754,6 +754,33 @@ def _check_deposit_return(conn, job, cycle, worker_id) -> None:
             )
 
 
+def _listing_guild_of(job) -> int | None:
+    """The owning guild of the listing this order was bought from
+    (proposal #778), or None.
+
+    Read from the FROZEN `service_terms` snapshot, never the live services
+    row: the snapshot is written at order time beside the price, and a
+    listing retargeted afterwards must not be able to reroute a wage that
+    is already owed. None for every non-service job, every solo listing,
+    and any snapshot we cannot read - which is what keeps the ordinary
+    settlement path a true no-op.
+
+    A snapshot we cannot parse degrades to None rather than raising:
+    settlement is on the accept path, and a new way for a cycle to get
+    stuck behind a corrupt display field would be a worse defect than
+    paying a wage personally.
+    """
+    from ._detail import _service_terms_of
+
+    terms = _service_terms_of(job)
+    if not terms:
+        return None
+    gid = terms.get("guild_id")
+    if isinstance(gid, bool) or not isinstance(gid, int) or gid <= 0:
+        return None
+    return gid
+
+
 def _pay_worker(conn, job, worker_id) -> None:
     """Pay the worker their cycle wage from the escrow bank account
     (release_escrow for both citizen and official legs) and log the
@@ -1014,6 +1041,7 @@ def _apply_review(
         )
         _unhold_cycle_prs(cycle)
         _check_deposit_return(conn, job, cycle, worker_id)
+        listing_guild = _listing_guild_of(job)
         if link is not None and link["role"] == "taken":
             # Executor-taken: the cycle wage routes poolward (the
             # executor keeps worker karma + reward via the shared award
@@ -1022,6 +1050,19 @@ def _apply_review(
             from db._guilds_money import settle_taken_wage
 
             settle_taken_wage(conn, job, link)
+            rewarded = _award_cycle_karma(conn, job, cycle_no, worker_id)
+        elif listing_guild is not None:
+            # Collective listing (proposal #778): the wage is the listing's
+            # own income, so it settles to the OWNING guild. The buyer is
+            # irrelevant to the destination - a solo citizen buying from a
+            # guild listing still pays the guild, and it is order_service's
+            # self-order refusal that keeps the funding and owning guilds
+            # distinct rather than this branch. The worker keeps worker
+            # karma + reward below exactly as on the personal path: only the
+            # wage moves.
+            from db._guilds_money import settle_service_wage
+
+            settle_service_wage(conn, job, listing_guild, payee_id)
             rewarded = _award_cycle_karma(conn, job, cycle_no, worker_id)
         else:
             _pay_worker(conn, job, payee_id)

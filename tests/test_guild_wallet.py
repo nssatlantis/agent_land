@@ -162,8 +162,98 @@ def test_sweep_travels_to_treasury():
     with db._conn() as conn:
         t_after = _cr.treasury_balance(conn)
     assert t_after - t_before == 10, (t_before, t_after)
+    # The same DELTA form, on the pre-existing twin of this PR's fee
+    # writer: both are shape (a) - paired -guild/+treasury plus a `fee`
+    # memo row, no withhold pair. Pinning only the new writer would leave
+    # the instance that already ships on main open (finding #138).
+    assert _pool(gid) - 500 == _memo(gid) - 500, (_pool(gid), _memo(gid))
     _rule_d(gid)
     print("  sweep travels to treasury: ok")
+
+
+def test_listing_fee_moves_both_trails_by_the_same_delta():
+    """138 - a `fee` memo row must move BOTH readers by the same amount.
+
+    `kind='fee'` is absent from `_INFLOW_KINDS` (db/_guilds.py:36 - deposit,
+    grant_t1, grant_t2, subsidy, match, stake, job, bond), so the memo reader
+    weights a fee row as -units. This writer is shape (a): the value LEAVES the
+    pool, so `spend_from_guild` writes a paired -guild/+treasury leg (the wallet
+    drops) and the `fee` memo row drops the memo by the same amount. Rule D
+    (`wallet - memo == retained`) therefore holds with NO
+    `guild_retain_withhold` pair, and writing one would double-count the
+    departure - that primitive is for a WITHHOLDING, where the pool KEEPS the
+    value and only the memo is extinguished. `guild_stake`'s placement fee is
+    that other shape, and it is why it writes one.
+
+    The existing fee pins assert ABSOLUTE values. Absolute values are the weak
+    form: drop the memo row and the wallet still drops, so a lockstep edit
+    keeps the two equal and the suite stays green. The delta is the property
+    that actually catches it, and it is the one assertion #B211's census found
+    nowhere in the repo.
+
+    Driven through the real listing, not `db.spend_from_guild`: that helper
+    writes the CREDIT leg only, and the memo row is a separate INSERT inside
+    create_service. Calling it directly would exercise one of the two writes
+    and pass either way - the mirror of pinning a function while the caller
+    supplies an input production never produces.
+
+    The sign is asserted separately, and it is the non-obvious half: the row
+    stores POSITIVE units and the READER supplies the minus. Pinning
+    `units == -amount` would encode the opposite convention and redden a
+    correct writer.
+    """
+    founder, guild = _found()
+    gid = guild["id"]
+    # prepare_guild_commission re-locks below 2 members, so a collective
+    # listing needs a mate. The mate moves no money, so the trails below are
+    # still the founder's deposit alone.
+    _add_mate(founder, gid)
+    db.guild_deposit(founder["token"], gid, 25.0)
+    before_pool, before_memo = _pool(gid), _memo(gid)
+    assert before_pool == before_memo == 500, (before_pool, before_memo)
+
+    db.create_service(
+        founder["token"],
+        "collective listing",
+        "shelf space for a member's work",
+        1.0,
+        steps=["do the thing", "report back"],
+        guild_id=gid,
+    )
+    after_pool, after_memo = _pool(gid), _memo(gid)
+
+    # THE arm: one equality - the one #B211's census shows is absent repo-wide.
+    drop_pool = before_pool - after_pool
+    drop_memo = before_memo - after_memo
+    assert drop_pool == drop_memo, (
+        "both readers must move by the SAME delta: wallet "
+        f"{before_pool}->{after_pool} (drop {drop_pool}), memo "
+        f"{before_memo}->{after_memo} (drop {drop_memo})"
+    )
+    assert drop_pool > 0, (drop_pool, drop_memo)
+    # The value LEFT, so the treasury is the counterparty - not a member.
+    with db._conn() as conn:
+        t_rows = conn.execute(
+            "SELECT COUNT(*) FROM credit_entries WHERE account = 'treasury'"
+            " AND reason LIKE 'service_listing_fee%'"
+        ).fetchone()[0]
+    assert t_rows == 1, t_rows
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT kind, units FROM guild_ledger WHERE guild_id = ?"
+            " AND kind = 'fee' ORDER BY id DESC LIMIT 1",
+            (gid,),
+        ).fetchone()
+    assert row is not None, "no fee memo row was written"
+    assert row["units"] > 0, (
+        f"units are stored POSITIVE and the reader negates; got {dict(row)}"
+    )
+    assert row["units"] == drop_pool, (dict(row), drop_pool)
+    # No withhold is owed here, and _rule_d is the house instrument that says
+    # so: a spurious retain pair would make retained non-zero and turn
+    # wallet - memo == retained red on exactly this guild.
+    _rule_d(gid)
+    print("  listing fee moves both trails by one delta: ok")
 
 
 def test_withdraw_draws_wallet():
@@ -543,4 +633,5 @@ if __name__ == "__main__":
     test_divergence_names_the_two_trails_disagreeing()
     test_divergence_names_retained_disagreeing_with_the_trails()
     test_healthy_row_reports_no_divergence_explicitly()
+    test_listing_fee_moves_both_trails_by_the_same_delta()
     print("\n== test_guild_wallet: all passed ==")

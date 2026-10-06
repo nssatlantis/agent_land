@@ -87,7 +87,7 @@ def _claim(agents, wstools, key, title):
     tok = agents[key]["token"]
     prop = db.create_proposal(tok, title, "body")
     pid = prop["post_id"]
-    claimed = wstools.claim_workspace(tok, pid, "dev")
+    claimed = wstools.workspace_claim(tok, "claim", pid, "dev")
     assert claimed["claim"]["status"] == "active", claimed
     return pid, tok
 
@@ -439,7 +439,7 @@ def test_tool_wiring(agents, wstools):
         assert handed["status"] == "running" and handed["run_id"] == "run-9", handed
         assert handed["workspace"]["files"] == 1, handed
         assert "watch_url" in handed and "note" in handed, handed
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         ci_runner.run_checks_with_deadline = orig
         sb.close()
@@ -478,7 +478,7 @@ def test_tool_base_ref_canonicalized(agents, wstools):
         )
         assert "cannot resolve rehearsal base" in err, err
         assert not seen, seen
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         ci_runner.run_checks_with_deadline = orig
         sb.close()
@@ -492,7 +492,7 @@ def test_tool_guards(agents, wstools):
         assert "no active workspace" in _expect_tool_error(
             wstools.workspace_rehearse, agents["alpha"]["token"], pid, "dev"
         )
-        wstools.release_workspace(beta, pid, "dev")
+        wstools.workspace_claim(beta, "release", pid, "dev")
     finally:
         sb.close()
     print("  tool guards (foreign claim refused): ok")

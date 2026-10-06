@@ -111,6 +111,17 @@ def run(conn) -> None:
     _ensure_column(conn, "jobs", "service_id", "INTEGER REFERENCES services(id)")
     _ensure_column(conn, "jobs", "service_terms", "TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_service ON jobs(service_id)")
+    # Collective listing ownership (proposal #778): the owning guild on
+    # services, NULL on every pre-existing row. Same pairing rule as the
+    # jobs arm above, for the same reason - schema.sql alone leaves a
+    # live database WITHOUT the column, because CREATE TABLE IF NOT
+    # EXISTS does not ALTER an existing table. The index rides here and
+    # not in schema.sql: a CREATE INDEX on a just-added column crashes
+    # upgrades (see the note above). Both halves in one migration, or
+    # the column and its index can exist in one deploy and vanish in the
+    # next - the exact drift this pairing exists to prevent.
+    _ensure_column(conn, "services", "guild_id", "INTEGER REFERENCES guilds(id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_services_guild ON services(guild_id)")
     # Overdue-nudge stamp per cycle (NULL = never nudged): existing rows
     # predate the column and correctly read as never-nudged.
     _ensure_column(conn, "job_cycles", "overdue_notified_at", "TEXT")

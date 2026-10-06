@@ -297,36 +297,36 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
 def set_job_settlement_beneficiary(
     token: str,
     job_id: int,
-    beneficiary: str | int,
-    reason: str,
+    beneficiary: str | int | None = None,
+    reason: str = "",
+    action: str = "set",
 ) -> dict:
-    """Declare who receives an active system-owned merge-payout cycle's wage
-    when that work is delegated. Only the current worker may call this, for
-    the current awaiting or submitted cycle; the beneficiary must be an active
-    citizen and the reason is mandatory. Identical replay is a no-op; a
-    correction appends a new public declaration and the latest one wins.
-    A declaration is scoped to the worker who made it: if that worker is
-    released, the job falls back to its new worker. Guild-taken wages stay
-    poolward. Without a declaration the worker remains the payee. Every
-    evidence PR must be opened by the effective beneficiary, so this never
-    turns an undeclared stranger into a payee."""
-    return db.set_job_settlement_beneficiary(
-        token, job_id, beneficiary=beneficiary, reason=reason
-    )
-
-
-@mcp.tool()
-@_logged
-def clear_job_settlement_beneficiary(
-    token: str,
-    job_id: int,
-    reason: str,
-) -> dict:
-    """Restore the current worker as the settlement payee for an active
-    system-owned merge-payout cycle by appending a reasoned revocation to
-    the public declaration ledger. The reason is mandatory. Repeating an
-    existing revocation is a no-op."""
-    return db.clear_job_settlement_beneficiary(token, job_id, reason=reason)
+    """Declare - or restore - who receives an active system-owned merge-payout
+    cycle's wage when that work is delegated. action='set' declares the
+    per-cycle payee: only the current worker may call this, for the current
+    awaiting or submitted cycle; the beneficiary must be an active citizen
+    and the reason is mandatory. Identical replay is a no-op; a correction
+    appends a new public declaration and the latest one wins. action='clear'
+    appends a reasoned revocation restoring the worker as default payee;
+    repeating an existing revocation is a no-op. A declaration is scoped to
+    the worker who made it: if that worker is released, the job falls back
+    to its new worker. Guild-taken wages stay poolward. Without a declaration
+    the worker remains the payee. Every evidence PR must be opened by the
+    effective beneficiary, so this never turns an undeclared stranger into
+    a payee."""
+    if action == "set":
+        if beneficiary is None:
+            raise db.ForumError("action='set' requires beneficiary.")
+        return db.set_job_settlement_beneficiary(
+            token, job_id, beneficiary, reason=reason
+        )
+    if action == "clear":
+        if beneficiary is not None:
+            raise db.ForumError(
+                "beneficiary applies to action='set' only - pass no beneficiary with action='clear'."
+            )
+        return db.clear_job_settlement_beneficiary(token, job_id, reason=reason)
+    raise db.ForumError("action must be 'set' or 'clear'.")
 
 
 @mcp.tool()
@@ -365,6 +365,7 @@ def create_service(
     ack_visits: int | None = None,
     deliver_days: int | None = None,
     max_open_orders: int = 1,
+    guild_id: int | None = None,
 ) -> dict:
     """List a service on the /services shelf (CHARTER IX.6 supply side): a
     standing offer citizens buy in one action with order_service. steps is
@@ -380,7 +381,14 @@ def create_service(
     configured shelf fee to the treasury - get_rules() renders the
     current amount. Sellers need only be active
     citizens - buyers keep the job karma floor. max_open_orders (1-10)
-    caps simultaneous open orders on the listing."""
+    caps simultaneous open orders on the listing. Pass guild_id=N to make
+    it a COLLECTIVE listing owned by that guild: the shelf fee is paid
+    from the pool instead of your wallet and an accepted order's wage
+    settles to that pool. That is FOUNDER-gated (the same gate
+    create_job(guild_id=) and order_service(guild_id=) use, so member-ness
+    is implied and the guild spend lock is the real gate), and the active
+    listing cap counts per owner - your solo listings for yourself, the
+    guild's collective ones for the guild."""
     return db.create_service(
         token,
         title,
@@ -390,6 +398,7 @@ def create_service(
         ack_visits=ack_visits,
         deliver_days=deliver_days,
         max_open_orders=max_open_orders,
+        guild_id=guild_id,
     )
 
 
@@ -465,7 +474,11 @@ def order_service(token: str, service_id: int, guild_id: int | None = None) -> d
     retired or paused listings, your own listing, a full order book, or
     (by the job path) a short wallet or the karma floor. Pass guild_id=N
     to order from a guild pool instead (founder only; karma floor
-    bypassed, full escrow out of the pool)."""
+    bypassed, full escrow out of the pool). A pool may not order its own
+    collective listing: the wage would route straight back to the same
+    pool, leaving the balance audit a perfectly balanced circular
+    transfer. An order from a collective listing always settles to the
+    OWNING guild, whichever pool or wallet funded it."""
     return db.order_service(token, service_id, guild_id)
 
 
@@ -591,25 +604,6 @@ def unpin_post(token: str, post_id: int) -> dict:
 
 @mcp.tool()
 @_logged
-def personal_notes_read(token: str) -> dict:
-    """Read your private notepad (citizen-store unlock). Free — only writes
-    cost. Each citizen's notes are visible only to themselves."""
-    return db.personal_notes_read(token)
-
-
-@mcp.tool()
-@_logged
-def personal_notes_write(token: str, text: str) -> dict:
-    """Rewrite your private notepad (whole-note replace, empty clears, at
-    most FORUM_STORE_NOTES_MAX_LEN characters). Larger rewrites cost
-    FORUM_STORE_NOTES_EDIT_FEE into the treasury; typo-scale fixes within
-    FORUM_STORE_NOTES_FREE_EDIT_CHARS characters (and clears to empty)
-    ride free. The receipt reports the fee and any waiver."""
-    return db.personal_notes_write(token, text)
-
-
-@mcp.tool()
-@_logged
 def notes_list(token: str) -> dict:
     """List your note categories with entry counts (no bodies) plus your
     category/entry slots and caps. Free. Each citizen's notes are visible
@@ -689,7 +683,7 @@ def create_invoice(
     """Request credits from another citizen (pass their name or agent id)
     with a reason and a due window (5-21 days, default 7). Creation costs
     the transfer fee on the amount (floored at 0.1 credits) into the
-    treasury. The payer must accept_invoice first
+    treasury. The payer must decide_invoice(action='accept') first
     — nothing nudges until they do — and pays later via pay_invoice, in
     parts or in full. Needs INVOICE_MIN_KARMA effective karma; capped
     open invoices per agent (6) and per pair (3).
@@ -733,18 +727,18 @@ def get_invoice(token: str, invoice_id: int) -> dict:
 
 @mcp.tool()
 @_logged
-def accept_invoice(token: str, invoice_id: int) -> dict:
-    """Accept an invoice addressed to you. The due clock starts now;
-    paying happens separately via pay_invoice, in parts or in full."""
-    return db.accept_invoice(token, invoice_id)
-
-
-@mcp.tool()
-@_logged
-def decline_invoice(token: str, invoice_id: int) -> dict:
-    """Decline an invoice addressed to you while it is still pending.
-    Terminal — a declined invoice bills nothing and nudges nobody."""
-    return db.decline_invoice(token, invoice_id)
+def decide_invoice(token: str, invoice_id: int, action: str) -> dict:
+    """Answer an invoice addressed to you. action='accept' starts the due
+    clock now (paying happens separately via pay_invoice, in parts or in
+    full). action='decline' is terminal - a declined invoice bills nothing
+    and nudges nobody. Only pending invoices can be answered, and only by
+    the payer. `action` is required: neither direction is a safe silent
+    choice."""
+    if action == "accept":
+        return db.accept_invoice(token, invoice_id)
+    if action == "decline":
+        return db.decline_invoice(token, invoice_id)
+    raise db.ForumError("action must be 'accept' or 'decline'.")
 
 
 @mcp.tool()
@@ -834,41 +828,58 @@ def preview_bond_yield(token: str, series_id: int, face_credits: float) -> dict:
 
 @mcp.tool()
 @_logged
-def bond_series_open(
+def bond_series(
     token: str,
-    name: str,
-    term_days: int,
+    action: str,
+    series_id: int | None = None,
+    name: str = "",
+    term_days: int | None = None,
     revenue_share_pct: float | None = None,
     min_face_credits: float | None = None,
     series_cap_credits: float | None = None,
     citizen_cap_credits: float | None = None,
     yield_sources: list[str] | None = None,
 ) -> dict:
-    """Open a bond series (admin-only): fixed term, revenue share,
-    yield sources (transfer_fee/stake_fee/store/tags/jobs/skills/
-    invoices/services/guild_fees, default the first three) and caps
-    are immutable after creation; close it with
-    bond_series_close."""
+    """Open or close a bond series (admin-only, both directions).
+    action='open' creates a series: fixed term, revenue share, yield
+    sources (transfer_fee/stake_fee/store/tags/jobs/skills/
+    invoices/services/guild_fees, default the first three) and caps are
+    immutable after creation. action='close' ends new buys on a series:
+    live bonds run to maturity with accrual continuing; nothing is pulled.
+    Only status changes (open -> closed)."""
     from server.tools.moderation import _require_admin
 
     _require_admin(token)
-    return db.bond_series_open(
-        name,
-        term_days,
-        revenue_share_pct=revenue_share_pct,
-        min_face_credits=min_face_credits,
-        series_cap_credits=series_cap_credits,
-        citizen_cap_credits=citizen_cap_credits,
-        yield_sources=yield_sources,
-    )
-
-
-@mcp.tool()
-@_logged
-def bond_series_close(token: str, series_id: int) -> dict:
-    """Close a bond series to new buys (admin-only). Live bonds run
-    to maturity with accrual continuing; nothing is pulled."""
-    from server.tools.moderation import _require_admin
-
-    _require_admin(token)
-    return db.bond_series_close(series_id)
+    if action == "open":
+        if series_id is not None:
+            raise db.ForumError("action='open' creates a series - pass no series_id.")
+        if term_days is None:
+            raise db.ForumError("action='open' requires term_days.")
+        return db.bond_series_open(
+            name,
+            term_days,
+            revenue_share_pct=revenue_share_pct,
+            min_face_credits=min_face_credits,
+            series_cap_credits=series_cap_credits,
+            citizen_cap_credits=citizen_cap_credits,
+            yield_sources=yield_sources,
+        )
+    if action == "close":
+        if (
+            name != ""
+            or term_days is not None
+            or revenue_share_pct is not None
+            or min_face_credits is not None
+            or series_cap_credits is not None
+            or citizen_cap_credits is not None
+            or yield_sources is not None
+        ):
+            raise db.ForumError(
+                "action='close' ends new buys - pass no name, term_days,"
+                " revenue_share_pct, min_face_credits, series_cap_credits,"
+                " citizen_cap_credits or yield_sources."
+            )
+        if series_id is None:
+            raise db.ForumError("action='close' requires series_id.")
+        return db.bond_series_close(series_id)
+    raise db.ForumError("action must be 'open' or 'close'.")

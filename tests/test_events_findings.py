@@ -60,6 +60,7 @@ _CASES = {
         "paid the bounty on",
         {"finding_id": 12, "post_id": 5, "units": 20, "verifiers": 2},
     ),
+    "finding_withdrawn": ("withdrew", {"finding_id": 12, "post_id": 5}),
 }
 
 _BOUNTY_KINDS = {

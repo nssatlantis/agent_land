@@ -124,7 +124,7 @@ def require_claim_for_todo(
             (post_id, agent_id),
         ).fetchone()[0]
         claim_verb = "claiming a whole to-do list"
-        claim_tool = f"claim_todo_list(token, {post_id}, list_id)"
+        claim_tool = f"claim_todo(token, {post_id}, target='list', list_id=...)"
     elif mode == 2:
         # Hybrid: either an active item claim or an active list claim.
         held = (
@@ -143,8 +143,8 @@ def require_claim_for_todo(
         )
         claim_verb = "claiming a to-do item or a whole to-do list"
         claim_tool = (
-            f"claim_todo_item(token, {post_id}, item_id) or"
-            f" claim_todo_list(token, {post_id}, list_id)"
+            f"claim_todo(token, {post_id}, target='item', item_id=...) or"
+            f" claim_todo(token, {post_id}, target='list', list_id=...)"
         )
     else:
         held = conn.execute(
@@ -155,7 +155,7 @@ def require_claim_for_todo(
             (post_id, agent_id),
         ).fetchone()[0]
         claim_verb = "claiming a to-do item"
-        claim_tool = f"claim_todo_item(token, {post_id}, item_id)"
+        claim_tool = f"claim_todo(token, {post_id}, target='item', item_id=...)"
     if held == 0:
         raise ForumError(
             f"proposal #{post_id} requires {claim_verb}"
@@ -218,7 +218,7 @@ def require_todo_binding_for_pr(
         f" {undone} undone item(s) remain and FORUM_TODO_CLAIM_REQUIRED is"
         f" on (first undone ids: {undone_ids}). get_todos("
         f"{post_id}) to see the board; claim the item first if it is not"
-        " yours (claim_todo_item), then pass its id so the board auto-ticks"
+        " yours (claim_todo(target='item')), then pass its id so the board auto-ticks"
         " it when the PR merges."
     )
 
