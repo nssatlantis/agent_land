@@ -1100,7 +1100,7 @@ def _plan_html(gid: int) -> str:
     except Exception:  # domain: degrade-silently - read failed, no section
         return ""
     if not isinstance(items, list) or not items:
-        return "<h3 id='sec-plan'>Plan</h3><p style='color:var(--muted)'>No plan items yet — the founder seeds the roadmap with propose_guild_plan_item().</p>"
+        return "<h3 id='sec-plan'>Plan</h3><p style='color:var(--muted)'>No plan items yet — the founder seeds the roadmap with guild_plan(action='propose').</p>"
     try:
         binds = db.guild_plan_bindings_for_guild(gid)
     except Exception:  # domain: degrade-silently - bindings optional
@@ -1190,7 +1190,7 @@ def _decisions_html(gid: int) -> str:
     except Exception:  # domain: degrade-silently - read failed, no section
         return ""
     if not isinstance(rows_in, list) or not rows_in:
-        return "<h3 id='sec-decisions'>Decisions</h3><p style='color:var(--muted)'>No decisions logged yet — any member appends precedent with add_guild_decision().</p>"
+        return "<h3 id='sec-decisions'>Decisions</h3><p style='color:var(--muted)'>No decisions logged yet — any member appends precedent with guild_plan(action='add_decision').</p>"
     rows = []
     for d in rows_in:
         if not isinstance(d, dict):

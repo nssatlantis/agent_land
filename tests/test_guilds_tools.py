@@ -466,6 +466,40 @@ def test_job_wrappers_guild_id():
     assert _pool(gid) == 500 - 60, _pool(gid)
 
 
+def test_plan_edit_leaves_unset_fields():
+    # Finding #146: the edit arm must not empty aim/reach_text when they
+    # are not passed (the old wrapper defaulted both to None = unchanged).
+    # Lean setup on purpose (not _guild()): this test runs last in file
+    # order on a nearly-spent genesis treasury, and it needs only founding
+    # plus a free propose/edit - 100 units and no mate are ample.
+    founder = _new_agent("gt-planedit")
+    _fund(founder["agent_id"], 100)
+    guild = gtools.create_guild(founder["token"], f"PlanEdit-{_SEQ[0]}")
+    gid = guild["id"]
+    item = gtools.guild_plan(
+        founder["token"],
+        action="propose",
+        guild_id=gid,
+        title="Scoped work",
+        aim="Do it well",
+        reach_text="Far",
+    )
+    iid = item["item_id"]
+    out = gtools.guild_plan(
+        founder["token"], action="edit", item_id=iid, title="New title"
+    )
+    assert out["item_id"] == iid, out
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT title, aim, reach_text FROM guild_plan_items WHERE id = ?",
+            (iid,),
+        ).fetchone()
+    assert row["title"] == "New title", dict(row)
+    assert row["aim"] == "Do it well", dict(row)
+    assert row["reach_text"] == "Far", dict(row)
+    print("  plan edit leaves unset fields: ok")
+
+
 # -- run all --
 if __name__ == "__main__":
     test_create_rename_mission_disband()
@@ -480,4 +514,5 @@ if __name__ == "__main__":
     test_list_get_and_profiles()
     test_propose_guild_id_extension()
     test_job_wrappers_guild_id()
+    test_plan_edit_leaves_unset_fields()
     print("\n== test_guilds_tools: all passed ==")

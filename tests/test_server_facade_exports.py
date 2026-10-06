@@ -138,13 +138,7 @@ EXPECTED = [
     "decide_guild_grant",
     "cancel_guild_grant_request",
     "list_guild_grant_requests",
-    "propose_guild_plan_item",
-    "edit_guild_plan_item",
-    "move_guild_plan_stage",
-    "set_guild_plan_owner",
-    "add_guild_decision",
-    "bind_guild_plan_item",
-    "unbind_guild_plan_item",
+    "guild_plan",
     "get_guild_plan",
     "guild_chat",
     "guild_cosign",
@@ -264,6 +258,185 @@ def test_server_repo_search_stays_module():
     from server.tools import repo as repo_pkg
 
     assert callable(repo_pkg.repo_search), "tool lives on server.tools.repo"
+
+
+def test_guild_plan_legacy_tools_removed():
+    """Hard-remove pins (proposal #941): the seven guild-plan wrappers
+    must not exist as tools on any surface. The db.* plan functions are
+    protocol-agnostic core and are not asserted here."""
+    import server
+    import server.tools.guilds as _guild_tools
+    from tests._setup import expect_error
+
+    _dead = (
+        "propose_guild_plan_item",
+        "edit_guild_plan_item",
+        "move_guild_plan_stage",
+        "set_guild_plan_owner",
+        "add_guild_decision",
+        "bind_guild_plan_item",
+        "unbind_guild_plan_item",
+    )
+    for _name in _dead:
+        assert not hasattr(_guild_tools, _name), f"{_name} is still defined"
+        assert not hasattr(server, _name), f"{_name} still on the facade"
+    # Derive the vocabulary from the live docstring, never a hardcoded
+    # tuple, so an eighth action turns this arm red for free.
+    _advertised = set(
+        re.findall(r"action='([a-z_]+)'", _guild_tools.guild_plan.__doc__ or "")
+    )
+    assert _advertised == {
+        "propose",
+        "edit",
+        "move_stage",
+        "set_owner",
+        "add_decision",
+        "bind",
+        "unbind",
+    }, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
+    # The refusal fires before any db touch, so any token and ids do:
+    # drive a bad action and require every quoted member named.
+    _err = expect_error(_guild_tools.guild_plan, "x", "bogus")
+    _missing = sorted(a for a in _advertised if f"'{a}'" not in _err)
+    assert not _missing, (
+        f"the refusal under-reports advertised actions {_missing}: {_err}"
+    )
+    # Required-arg matrix, one arm per dispatcher branch.
+    _perr = expect_error(_guild_tools.guild_plan, "x", "propose")
+    assert "needs guild_id and title" in _perr, _perr
+    _xerr = expect_error(_guild_tools.guild_plan, "x", "propose", 1)
+    assert "pass no item_id" in _xerr, _xerr
+    _eerr = expect_error(_guild_tools.guild_plan, "x", "edit")
+    assert "needs item_id" in _eerr, _eerr
+    _merr = expect_error(_guild_tools.guild_plan, "x", "move_stage", 1)
+    assert "needs item_id and stage" in _merr, _merr
+    _oerr = expect_error(_guild_tools.guild_plan, "x", "set_owner")
+    assert "needs item_id" in _oerr, _oerr
+    _derr = expect_error(_guild_tools.guild_plan, "x", "add_decision")
+    assert "needs guild_id and decision" in _derr, _derr
+    _berr = expect_error(_guild_tools.guild_plan, "x", "bind", 1)
+    assert "needs item_id, kind and target_id" in _berr, _berr
+    _uerr = expect_error(_guild_tools.guild_plan, "x", "unbind", 1)
+    assert "needs item_id, kind and target_id" in _uerr, _uerr
+    # Extended alien-param arms: one driven alien per extended branch. Each
+    # call below sets exactly one alien (everything else clean), so the
+    # refusal names its cause - without the alien the same call would fall
+    # through to a needs-gate message instead.
+    _rerr = expect_error(
+        _guild_tools.guild_plan,
+        "x",
+        "propose",
+        None,
+        1,
+        "T",
+        "",
+        "",
+        None,
+        None,
+        None,
+        None,
+        "r",
+    )
+    assert "pass no reason" in _rerr, _rerr
+    _gerr = expect_error(
+        _guild_tools.guild_plan,
+        "x",
+        "move_stage",
+        1,
+        None,
+        None,
+        "",
+        "",
+        None,
+        "o",
+    )
+    assert "pass no" in _gerr and "owner" in _gerr, _gerr
+    _herr = expect_error(_guild_tools.guild_plan, "x", "set_owner", 1, None, "T")
+    assert "pass no" in _herr and "title" in _herr, _herr
+    _kerr = expect_error(
+        _guild_tools.guild_plan,
+        "x",
+        "add_decision",
+        None,
+        1,
+        None,
+        "",
+        "",
+        None,
+        None,
+        None,
+        None,
+        "",
+        None,
+        "k",
+    )
+    assert "pass no" in _kerr and "kind" in _kerr, _kerr
+    _jerr = expect_error(_guild_tools.guild_plan, "x", "bind", 1, None, "T")
+    assert "pass no" in _jerr and "title" in _jerr, _jerr
+    _zerr = expect_error(
+        _guild_tools.guild_plan,
+        "x",
+        "unbind",
+        1,
+        None,
+        None,
+        "",
+        "",
+        None,
+        None,
+        "s",
+    )
+    assert "pass no" in _zerr and "stage" in _zerr, _zerr
+
+
+def test_removed_plan_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #941): guild_plan survives as the
+    dispatcher, so all seven legacy names are forbidden in live prose.
+    db.* calls are true statements (negative lookbehind); the viewer
+    callout is pinned exactly."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    _dead = (
+        "propose_guild_plan_item",
+        "edit_guild_plan_item",
+        "move_guild_plan_stage",
+        "set_guild_plan_owner",
+        "add_guild_decision",
+        "bind_guild_plan_item",
+        "unbind_guild_plan_item",
+    )
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        _root / "rules_text.py",
+    ):
+        assert _p.exists(), _p
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _lookbehind = re.compile(
+        r"(?<![.\w])(?:propose_guild_plan_item|edit_guild_plan_item|"
+        r"move_guild_plan_stage|set_guild_plan_owner|add_guild_decision|"
+        r"bind_guild_plan_item|unbind_guild_plan_item)\b"
+    )
+    _hits = _lookbehind.findall(
+        (_root / "server" / "tools" / "guilds.py").read_text(encoding="utf-8")
+    )
+    assert not _hits, f"guilds.py names the removed tools unqualified: {_hits}"
+    _viewer_text = (_root / "viewer" / "_guilds.py").read_text(encoding="utf-8")
+    assert "guild_plan(action='propose')" in _viewer_text
+    for _name in _dead:
+        assert _name not in _viewer_text, (
+            f"{_name} still advertised in viewer/_guilds.py"
+        )
 
 
 def test_design_dispatchers_legacy_tools_removed():
@@ -1345,6 +1518,8 @@ if __name__ == "__main__":
     test_server_facade_exports_present_in_source()
     test_server_facade_exports_present_at_runtime()
     test_server_repo_search_stays_module()
+    test_guild_plan_legacy_tools_removed()
+    test_removed_plan_names_absent_from_shipped_prose()
     test_design_dispatchers_legacy_tools_removed()
     test_removed_design_names_absent_from_shipped_prose()
     test_guild_dispatchers_legacy_tools_removed()
