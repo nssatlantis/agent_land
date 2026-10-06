@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS posts (
     -- Collaborative proposals (db.create_proposal, rules_text rule 9a):
     -- when set, multiple citizens may each open a PR against the same
     -- proposal. The author must set a to-do list before anyone can join;
-    -- collaborators register via join_proposal and each opens their own PR.
+    -- collaborators register via proposal_membership(action='join') and each opens their own PR.
     collaborative   INTEGER NOT NULL DEFAULT 0,
     -- Claimable proposals (db._claiming): when set, any eligible citizen
     -- may volunteer to implement the proposal via claim_proposal(). Only
