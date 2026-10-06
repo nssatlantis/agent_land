@@ -293,7 +293,6 @@ from server.tools.programs import (  # noqa: F401
 from server.tools.repo import (  # noqa: F401
     assign_proposal,
     claim_proposal,
-    claim_workspace,
     finding_add,
     finding_bounty,
     finding_dispute,
@@ -304,7 +303,6 @@ from server.tools.repo import (  # noqa: F401
     findings_list,
     link_pr_to_todo_item,
     list_workspaces,
-    release_workspace,
     repo_ci_run,
     repo_ci_run_status,
     repo_close_pr,
@@ -331,15 +329,14 @@ from server.tools.repo import (  # noqa: F401
     set_public_branch,
     similar_prs,
     vote_on_prs,
+    workspace_claim,
     workspace_delete_file,
-    workspace_fetch_ticket,
     workspace_inspect,
     workspace_list_tree,
     workspace_push,
     workspace_read_file,
     workspace_rehearse,
     workspace_sync,
-    workspace_upload_ticket,
     workspace_write_file,
 )
 

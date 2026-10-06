@@ -10,8 +10,7 @@ Snapshot note: the prose is read ONCE at import into `_TEXTS` (plus a
 length guard on full-visit.md) so all four pins judge one consistent
 snapshot. The read-once shape dates from #B93, which blamed flickering
 re-reads for six names reading absent; the cause turned out to be the
-mention matcher missing call forms (#B93 closed invalid), so the snapshot
-stays for consistency - not because re-reads were ever shown to be flaky.
+mention matcher missing call forms (#B93's mirror).
 """
 
 import os
@@ -48,6 +47,18 @@ _REMOVED = frozenset(
         "leave_proposal",
         "accept_invoice",
         "decline_invoice",
+        "claim_workspace",
+        "release_workspace",
+        "workspace_fetch_ticket",
+        "workspace_upload_ticket",
+        "workspace_status",
+        "workspace_diff",
+        "list_subscriptions",
+        "drafts_list",
+        "draft_publish",
+        "draft_delete",
+        "get_poll",
+        "vote_poll",
     }
 )
 
@@ -82,12 +93,11 @@ _LOAD_BEARING = frozenset(
         "assign_proposal",
         "claim_proposal",
         "attach_pr_to_proposal",
-        "claim_workspace",
+        "workspace_claim",
         "workspace_rehearse",
         "workspace_push",
         "workspace_search",
         "list_workspaces",
-        "release_workspace",
         "list_guilds",
         "get_guild",
         "list_jobs",

@@ -60,9 +60,24 @@ def _fail(status: int, message: str) -> ForumError:
     return exc
 
 
-def _validate_ticket_paths(paths: object) -> list:
+def _validate_ticket_paths(paths: object, *, claim_scoped: bool = False) -> list:
     """Shape-check the path list (syntax is enforced by the tool/route
-    layers against the live tree; db only pins shape and the cap)."""
+    layers against the live tree; db only pins shape and the cap).
+
+    ``claim_scoped`` mints a ticket that pins NO path: it admits any
+    engine-guarded path in the tree, so the data plane's own guard is the
+    only path authority. That is what claim auto-mint needs (there is no
+    path set at claim time) and why paths_json's NOT NULL DEFAULT '[]'
+    doubles as the marker. It is opt-in BY NAME rather than inferred from
+    an empty list, so tree-wide reach can never be reached by accident and
+    the plain empty-list refusal below stays a real gate.
+    """
+    if claim_scoped:
+        if paths:
+            raise ForumError(
+                "a claim-scoped ticket pins no paths - pass paths=[] or omit it."
+            )
+        return []
     if not isinstance(paths, (list, tuple)) or not paths:
         raise ForumError("ticket paths must be a non-empty list of file paths.")
     clean = []
@@ -76,7 +91,8 @@ def _validate_ticket_paths(paths: object) -> list:
     if len(clean) > cap:
         raise ForumError(
             f"ticket covers {len(clean)} paths (cap {cap},"
-            " TRANSFER_MAX_PATHS) - mint a second ticket for the rest."
+            " TRANSFER_MAX_PATHS) - a claim-scoped ticket (from"
+            " workspace_claim) carries no path list and no cap."
         )
     return clean
 
@@ -141,24 +157,32 @@ def mint_transfer_ticket(
     paths: list,
     scope: str,
     expect_shas: dict | None = None,
+    *,
+    claim_scoped: bool = False,
 ) -> dict:
     """Mint one ticket over an owned active claim. Returns the raw secret
-    ONCE (it is stored hashed) plus the expiry and the pinned paths.
+    ONCE (it is stored hashed) plus the expiry and the pinned paths (empty
+    for a claim-scoped ticket, which admits any engine-guarded path).
 
     Only the claim owner may mint: the ticket inherits the exact standing
     of workspace file ops (db.get_workspace, owner-only)."""
     if scope not in _VALID_SCOPES:
         raise ForumError("ticket scope must be 'read' or 'write'.")
-    clean_paths = _validate_ticket_paths(paths)
+    clean_paths = _validate_ticket_paths(paths, claim_scoped=claim_scoped)
     pins = None
     if expect_shas is not None:
         if not isinstance(expect_shas, dict):
             raise ForumError("expect_shas must be a {path: sha256} mapping.")
-        unknown = set(expect_shas) - set(clean_paths)
-        if unknown:
-            raise ForumError(
-                f"expect_shas names paths outside this ticket: {sorted(unknown)!r}."
-            )
+        # A claim-scoped ticket pins no paths, so "outside this ticket" is
+        # meaningless there; its pin keys are checked against the LIVE tree
+        # by the minting tool instead, so a typo'd key refuses loudly there
+        # rather than becoming a pin that can never fire.
+        if not claim_scoped:
+            unknown = set(expect_shas) - set(clean_paths)
+            if unknown:
+                raise ForumError(
+                    f"expect_shas names paths outside this ticket: {sorted(unknown)!r}."
+                )
         pins = {}
         for k, v in expect_shas.items():
             if not isinstance(v, str) or not _SHA256_RE.fullmatch(v):
@@ -237,17 +261,29 @@ def _validate_ticket_use(
     if row is None:
         raise _fail(404, "unknown transfer ticket.")
     if row["status"] == "expired" or row["expires_at"] <= _now_iso():
-        raise _fail(410, "transfer ticket expired - mint a fresh one.")
+        raise _fail(
+            410,
+            "transfer ticket expired - workspace_claim(action='renew')"
+            " mints a fresh one.",
+        )
     if row["status"] == "used":
-        raise _fail(409, "transfer ticket already used - mint a fresh one to retry.")
+        raise _fail(
+            409,
+            "transfer ticket already used - workspace_claim(action='renew') to retry.",
+        )
     if row["scope"] != scope:
         raise _fail(
             400,
-            f"ticket is {row['scope']}-only - mint a {scope} ticket"
-            " for this direction.",
+            f"ticket is {row['scope']}-only - use the {scope} ticket"
+            " returned by workspace_claim for this direction.",
         )
     t = _ticket_row_to_dict(row)
-    if path not in t["paths"]:
+    # Membership is enforced only for a PATH-PINNED ticket. A claim-scoped
+    # ticket pins nothing, so its authority is the engine guard
+    # (_guard_transfer_path) that runs on every read and apply under the
+    # tree lock - dropping this gate for it is a scoping change, not a
+    # boundary one.
+    if t["paths"] and path not in t["paths"]:
         raise _fail(400, f"path {path!r} is not covered by this ticket.")
     claim = conn.execute(
         "SELECT id FROM workspace_claims"
@@ -258,8 +294,8 @@ def _validate_ticket_use(
     if claim is None or row["claim_id"] is None or claim["id"] != row["claim_id"]:
         raise _fail(
             404,
-            "workspace for this ticket is gone - release it and"
-            " claim again, then mint a fresh ticket.",
+            "workspace for this ticket is gone - workspace_claim"
+            "(action='release') then action='claim' for a fresh ticket.",
         )
     return t
 
@@ -295,7 +331,7 @@ def redeem_transfer_ticket(ticket: str, scope: str, path: str) -> dict:
                 raise _fail(
                     409,
                     f"path {path!r} was already uploaded on this ticket -"
-                    " mint a fresh ticket to retry it.",
+                    " workspace_claim(action='renew') to retry it.",
                 )
             used = list(t["used_paths"]) + [path]
             now = _now_iso()
