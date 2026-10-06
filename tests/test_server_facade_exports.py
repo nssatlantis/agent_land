@@ -113,7 +113,6 @@ EXPECTED = [
     "close_proposal",
     "attach_pr_to_proposal",
     "flag_todo_item",
-    "unflag_todo_item",
     # discovery tools
     "search",
     "list_events",
@@ -745,6 +744,91 @@ def test_removed_invoice_names_absent_from_shipped_prose():
     assert "(accept_invoice) before anything nudges" not in _inv_text
 
 
+def test_todo_flag_legacy_tool_removed():
+    """Hard-remove pin (proposal #934): unflag_todo_item must not exist as
+    a tool on any surface. db.unflag_todo_item is protocol-agnostic core
+    and is not asserted here."""
+    import server
+    import server.tools.collab as _collab_tools
+    from tests._setup import expect_error
+
+    assert not hasattr(_collab_tools, "unflag_todo_item"), (
+        "unflag_todo_item is still defined"
+    )
+    assert not hasattr(server, "unflag_todo_item"), (
+        "unflag_todo_item still on the facade"
+    )
+    # Derive the vocabulary from the live docstring, never a hardcoded
+    # tuple, so a third action turns this arm red for free.
+    _advertised = set(
+        re.findall(r"action='([a-z_]+)'", _collab_tools.flag_todo_item.__doc__ or "")
+    )
+    assert _advertised == {"flag", "unflag"}, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
+    # The refusal fires before any db touch, so any token and ids do: drive
+    # a bad action and require every quoted member named in the refusal.
+    _err = expect_error(_collab_tools.flag_todo_item, "x", 0, 0, "", "bogus")
+    _missing = sorted(a for a in _advertised if f"'{a}'" not in _err)
+    assert not _missing, (
+        f"the refusal under-reports advertised actions {_missing}: {_err}"
+    )
+    # A reason on the unflag arm is refused, not swallowed: under the old
+    # surface it was a TypeError (loud). The dispatcher must stay loud.
+    _rerr = expect_error(_collab_tools.flag_todo_item, "x", 0, 0, "stale?", "unflag")
+    assert "reason applies to action='flag' only" in _rerr, _rerr
+    # Mirror guard on the flag arm: under the old surface reason was a
+    # required positional (omitting it was a loud TypeError). An empty or
+    # whitespace-only reason is refused, so the mailed justification that
+    # blocks the merge auto-tick can never be a bare ": ".
+    _ferr = expect_error(_collab_tools.flag_todo_item, "x", 0, 0, "   ", "flag")
+    assert "needs a reason" in _ferr, _ferr
+
+
+def test_removed_todo_flag_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #934): flag_todo_item survives as the
+    dispatcher, so only unflag_todo_item is forbidden. The two user-facing
+    strings that named it (author mail, merge-skip hint) are reworded in
+    this diff; db.unflag_todo_item calls are true statements
+    (negative lookbehind)."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        _root / "rules_text.py",
+    ):
+        assert _p.exists(), _p
+        _text = _p.read_text(encoding="utf-8")
+        assert "unflag_todo_item" not in _text, (
+            f"unflag_todo_item still advertised in {_p.name}"
+        )
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _text = _p.read_text(encoding="utf-8")
+        assert "unflag_todo_item" not in _text, (
+            f"unflag_todo_item still advertised in {_p.name}"
+        )
+    _lookbehind = re.compile(r"(?<![.\w])unflag_todo_item\b")
+    _hits = _lookbehind.findall(
+        (_root / "server" / "tools" / "collab.py").read_text(encoding="utf-8")
+    )
+    assert not _hits, f"collab.py names the removed tools unqualified: {_hits}"
+    # The two reworded sites live in files that define the db functions, so
+    # neither the strict rule nor the lookbehind can judge them (both red on
+    # the db layer itself). Pin each exactly: presence of the replacement
+    # plus absence of the precise dead string it replaced.
+    _flags_text = (_root / "db" / "_proposal_todos" / "_flags.py").read_text(
+        encoding="utf-8"
+    )
+    assert "flag_todo_item(action='unflag') to clear" in _flags_text
+    assert "review and unflag_todo_item" not in _flags_text
+    _karma_text = (_root / "db" / "_karma.py").read_text(encoding="utf-8")
+    assert "flag_todo_item(action='unflag'), then tick by hand" in _karma_text
+    assert "unflag_todo_item, then tick by hand" not in _karma_text
+
+
 def test_proposal_membership_legacy_tools_removed():
     """Hard-remove pin (proposal #935): join_proposal and leave_proposal
     must not exist as tools on any surface. db.join_proposal and
@@ -832,6 +916,8 @@ if __name__ == "__main__":
     test_removed_workspace_claim_names_absent_from_shipped_prose()
     test_program_claim_legacy_tool_removed()
     test_removed_program_claim_name_absent_from_shipped_prose()
+    test_todo_flag_legacy_tool_removed()
+    test_removed_todo_flag_names_absent_from_shipped_prose()
     test_decide_invoice_legacy_tools_removed()
     test_removed_invoice_names_absent_from_shipped_prose()
     test_proposal_membership_legacy_tools_removed()
