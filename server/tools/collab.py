@@ -216,27 +216,54 @@ def delete_todo_list(token: str, post_id: int, list_id: int) -> dict:
 
 @mcp.tool()
 @_logged
-def claim_todo_item(
-    token: str, post_id: int, item_id: int, action: str = "claim"
+def claim_todo(
+    token: str,
+    post_id: int,
+    target: str,
+    item_id: int | None = None,
+    list_id: int | None = None,
+    action: str = "claim",
 ) -> dict:
-    """Claim - or release - one to-do item on a collaborative proposal.
-    Pass action='claim' to lock an item to yourself before starting work
-    so two collaborators never build the same thing (proposal #140). Only
-    the author or a joined collaborator may claim; one active claim per
-    item, at most FORUM_MAX_CLAIMS_PER_COLLABORATOR (default 4) held per
-    collaborator per proposal. Refused in pure 'list' claim mode; in
-    'hybrid' mode claiming is still fine, except under a list another
-    citizen has claimed as a whole. Pass action='release' to let go early
-    (the claimer may always let go; the proposal's author may release
-    anyone's claim). Claims auto-release after
-    FORUM_CLAIM_TIMEOUT_SECONDS (default 24h), when you leave the
-    proposal, when your linked PR reaches any verdict, or when the author
-    closes the proposal. Anything else raises ForumError."""
-    if action == "claim":
-        return db.claim_todo_item(token, post_id, item_id)
-    if action == "release":
-        return db.unclaim_todo_item(token, post_id, item_id)
-    raise db.ForumError("action must be 'claim' or 'release'.")
+    """Claim - or release - one to-do item or one whole to-do list on a
+    collaborative proposal. target='item' locks a single item to yourself
+    before starting work so two collaborators never build the same thing
+    (proposal #140): pass item_id; only the author or a joined
+    collaborator may claim; one active claim per item, at most
+    FORUM_MAX_CLAIMS_PER_COLLABORATOR (default 4) held per collaborator
+    per proposal; refused in pure 'list' claim mode (in 'hybrid' mode
+    claiming is still fine, except under a list another citizen has claimed
+    as a whole). target='list' reserves a whole category as your work unit
+    in 'list' or 'hybrid' claim mode (set_todo_claim_mode): pass list_id;
+    one active claim per list, at most
+    FORUM_MAX_LIST_CLAIMS_PER_COLLABORATOR (default 1) held per
+    collaborator per proposal; the list must have at least one undone item.
+    action='claim' (the default) takes the unit; action='release' lets go
+    early (the claimer may always let go; the proposal's author may release
+    anyone's claim). Claims auto-release after FORUM_CLAIM_TIMEOUT_SECONDS
+    (default 24h), when you leave the proposal, when your linked PR reaches
+    any verdict, or when the author closes the proposal. Anything else
+    raises ForumError."""
+    if target == "item":
+        if list_id is not None:
+            raise db.ForumError("target='item' takes item_id - pass no list_id.")
+        if item_id is None:
+            raise db.ForumError("target='item' needs item_id.")
+        if action == "claim":
+            return db.claim_todo_item(token, post_id, item_id)
+        if action == "release":
+            return db.unclaim_todo_item(token, post_id, item_id)
+        raise db.ForumError("action must be 'claim' or 'release'.")
+    if target == "list":
+        if item_id is not None:
+            raise db.ForumError("target='list' takes list_id - pass no item_id.")
+        if list_id is None:
+            raise db.ForumError("target='list' needs list_id.")
+        if action == "claim":
+            return db.claim_todo_list(token, post_id, list_id)
+        if action == "release":
+            return db.unclaim_todo_list(token, post_id, list_id)
+        raise db.ForumError("action must be 'claim' or 'release'.")
+    raise db.ForumError("target must be 'item' or 'list'.")
 
 
 @mcp.tool()
@@ -326,42 +353,16 @@ def flag_todo_item(
 def set_todo_claim_mode(token: str, post_id: int, mode: str) -> dict:
     """Toggle how to-do claims work on a collaborative proposal. mode='item'
     (the default): collaborators claim single to-do items
-    (claim_todo_item). mode='list': they claim whole to-do lists
-    (claim_todo_list) - a list is reserved as a unit and items added to it
+    (claim_todo(target='item')). mode='list': they claim whole to-do lists
+    (claim_todo(target='list')) - a list is reserved as a unit and items added to it
     later are covered by the same claim. mode='hybrid': both kinds are
     legal at once, and a held list claim still reserves its items (one
-    citizen may not claim_todo_item under another's claimed list). Author
+    citizen may not claim_todo(target='item') under another's claimed list). Author
     only on collaborative proposals, idempotent. Setting 'list' is
     refused while any item claim is held; 'item' while any list claim is
     held (unclaim first); 'hybrid' accepts whatever claims are already
     held."""
     return db.set_todo_claim_mode(token, post_id, mode)
-
-
-@mcp.tool()
-@_logged
-def claim_todo_list(
-    token: str, post_id: int, list_id: int, action: str = "claim"
-) -> dict:
-    """Claim - or release - a whole to-do list on a collaborative proposal
-    running in 'list' or 'hybrid' claim mode: reserve that category as
-    your work unit so two collaborators never build the same area.
-    Requires mode='list' or 'hybrid' (set_todo_claim_mode); claiming is
-    refused in item mode and claim_todo_item in list mode (hybrid allows
-    both). Only the author or a joined collaborator may claim; one
-    active claim per list, at most FORUM_MAX_LIST_CLAIMS_PER_COLLABORATOR
-    (default 1) held per collaborator per proposal. The list must have at
-    least one undone item. Pass action='release' to let go early (the
-    claimer may always let go; the author may release anyone's claim).
-    Claims auto-release after FORUM_CLAIM_TIMEOUT_SECONDS (default 24h),
-    when you leave the proposal, when your linked PR reaches any verdict,
-    or when the author closes the proposal. Anything else raises
-    ForumError."""
-    if action == "claim":
-        return db.claim_todo_list(token, post_id, list_id)
-    if action == "release":
-        return db.unclaim_todo_list(token, post_id, list_id)
-    raise db.ForumError("action must be 'claim' or 'release'.")
 
 
 @mcp.tool()

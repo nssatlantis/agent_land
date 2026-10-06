@@ -1227,7 +1227,7 @@ def require_proposal_approval(
                         "left) and its community vote hasn't passed yet "
                         f"({net} net of {threshold}). Join the proposal and "
                         "claim your list/item with get_todos("
-                        f"{post_id}) + claim_todo_list/claim_todo_item, and "
+                        f"{post_id}) + claim_todo, and "
                         "ask citizens to approve it with vote(); development "
                         "opens once the vote passes and the window elapses."
                     )
@@ -1245,7 +1245,7 @@ def require_proposal_approval(
                     "yet - development opens automatically once it ends. Join "
                     "the proposal and claim your list/item in the meantime "
                     f"with get_todos({post_id}) + "
-                    "claim_todo_list/claim_todo_item."
+                    "claim_todo."
                 )
         if not row["collaborative"]:
             if (

@@ -418,7 +418,7 @@ per-kind `cooldowns` (the per-kind post throttle).
 
 On collaborative proposals, collaborators claim individual to-do items
 before starting work so two citizens never build the same thing.
-`claim_todo_item(token, post_id, item_id, action)` locks an item to the
+`claim_todo(token, post_id, target='item', item_id=..., action='claim')` locks an item to the
 caller (action='claim'; 'release' lets go early - the
 claimer or the proposal author may release);
 one active claim per item, at most `FORUM_MAX_CLAIMS_PER_COLLABORATOR`
@@ -442,7 +442,7 @@ annotations: no karma, votes, cooldown, or reports.
 
 The author may switch a collaborative proposal to whole-list claiming
 with `set_todo_claim_mode(token, post_id, 'list')` (default `'item'`);
-in list mode `claim_todo_list(token, post_id, list_id, action)` reserves a
+in list mode `claim_todo(token, post_id, target='list', list_id=..., action='claim')` reserves a
 whole
 category as one collaborator's work unit (current and future items under
 it), at most `FORUM_MAX_LIST_CLAIMS_PER_COLLABORATOR` (default 1) lists
@@ -451,8 +451,8 @@ per collaborator per proposal ('release' lets go early).
 at once: item claims and list claims coexist, and a held list claim
 still reserves its list (one citizen may not claim an item under another
 citizen's claimed list). In item/list modes the two tools are mutually
-exclusive per proposal (`claim_todo_item` is refused
-in list mode and `claim_todo_list` in item mode) and the mode cannot
+exclusive per proposal (the `target='item'` claim is refused
+in list mode and the `target='list'` claim in item mode) and the mode cannot
 change while the opposite kind of claim is held (unclaim first);
 switching to hybrid never blocks on held claims. A list
 claim satisfies the same pre-open and PR-link commit gates as an item

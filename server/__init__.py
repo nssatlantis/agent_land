@@ -82,8 +82,7 @@ from server.records import (  # noqa: F401
 from server.tools.collab import (  # noqa: F401
     add_todo_item,
     attach_pr_to_proposal,
-    claim_todo_item,
-    claim_todo_list,
+    claim_todo,
     close_proposal,
     create_todo_list,
     delete_todo_item,

@@ -48,6 +48,8 @@ _REMOVED = frozenset(
         "leave_proposal",
         "accept_invoice",
         "decline_invoice",
+        "claim_todo_item",
+        "claim_todo_list",
         "my_deltas",
         "reset_delta_cursor",
         "get_notifications",
