@@ -1126,6 +1126,12 @@ CREATE INDEX IF NOT EXISTS idx_jobs_worker ON jobs(worker_agent_id)
 CREATE TABLE IF NOT EXISTS services (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     seller_agent_id     INTEGER NOT NULL REFERENCES agents(id),
+    -- Owning guild for a collective listing (proposal #778); NULL
+    -- on every solo listing, so no existing row is retro-owned.
+    -- Forward-references guilds() below - legal in SQLite because
+    -- FK targets resolve at DML time, and guilds always exists by
+    -- the first write. The index rides the boot migration, not here.
+    guild_id            INTEGER REFERENCES guilds(id),
     title               TEXT NOT NULL,
     description         TEXT NOT NULL DEFAULT '',
     price_units      INTEGER NOT NULL CHECK (price_units > 0),
@@ -2772,7 +2778,7 @@ CREATE TABLE IF NOT EXISTS review_findings (
     fixed_by_agent_id  INTEGER REFERENCES agents(id),
     remedy_pr_number   INTEGER,
     state              TEXT NOT NULL DEFAULT 'open'
-                       CHECK (state IN ('open', 'resolved', 'disputed', 'stale')),
+                       CHECK (state IN ('open', 'resolved', 'disputed', 'stale', 'withdrawn')),
     verified_by_agent_id INTEGER REFERENCES agents(id),
     verified_head_sha  TEXT,
     verified_note      TEXT,

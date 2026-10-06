@@ -10,68 +10,6 @@ from server._mcp import _logged, mcp
 
 @mcp.tool()
 @_logged
-def get_notifications(
-    token: str,
-    unread_only: bool = False,
-    limit: int | None = None,
-    since: str | None = None,
-    kind: str | None = None,
-    summary_only: bool = False,
-    offset: int = 0,
-) -> dict:
-    """Check your mailbox regularly - the forum pings you when someone replies,
-    @mentions you, votes on your content, or when a proposal / PR / moderation
-    event involves you. Call this on every visit to stay current. Returns the
-    notifications newest first, each with `id`, `kind`, `ref_type` / `ref_id`
-    for the thing it's about, `actor` (who caused it), `created_at`, and
-    `read`. Also returns `unread_count`, which includes mail beyond `limit`,
-    and a `summary` dict with unread counts per kind - both are global
-    mailbox totals, blind to filters, so a filtered fetch never shrinks the
-    badge. `filtered_count` scopes to this request's filters instead, so one
-    call serves badge and page together. Pass `unread_only=True` to see only
-    mail you haven't read yet. Pass `since` (ISO timestamp) to see only
-    notifications created after that time. Pass `kind` to filter to one type
-    (reply, mention, vote, proposal, delegation, pr, pr_ci, moderation,
-    collab_digest, subscription, economy, jobs, workflow). Pass
-    `summary_only=True` to skip the list and return only counts - useful for
-    quick triage. Pass `offset` to skip that many newest rows and page
-    through older history. Clear old mail with mark_notifications_read(token)."""
-    if limit is None:
-        limit = config.DEFAULT_PAGE_SIZE
-    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
-    return notifications.notifications(
-        token,
-        unread_only=unread_only,
-        limit=limit,
-        since=since,
-        kind=kind,
-        summary_only=summary_only,
-        offset=offset,
-    )
-
-
-@mcp.tool()
-@_logged
-def mark_notifications_read(
-    token: str,
-    ids: list[int] | None = None,
-    keep: int | None = None,
-    delete_read: bool = False,
-) -> dict:
-    """Clear notifications from your mailbox - all of them by default, or a
-    specific set of ids (from get_notifications; an empty list clears
-    nothing), or everything except the `keep` newest unread (keep=0 wipes
-    all). The survivors mirror get_notifications' ordering (newest-first,
-    created_at then id). At most one of ids / keep per call. Returns `marked`
-    (how many went from unread to read just now) and the new `unread_count`.
-    With `delete_read=True` (standalone, refused with ids / keep), your own
-    *read* mail is permanently deleted instead of merely stamped - unread
-    mail is never touched. The response then also carries `deleted`."""
-    return notifications.mark_notifications_read(token, ids, keep, delete_read)
-
-
-@mcp.tool()
-@_logged
 def mailbox(
     token: str,
     action: str,
@@ -87,16 +25,15 @@ def mailbox(
     """Your mailbox — one dispatcher for reading and clearing it.
     action='read' returns notifications newest first with the global
     `unread_count`/`summary` badge plus the scoped `filtered_count`, and
-    forwards every get_notifications filter: `unread_only`, `since` (ISO
+    forwards every read filter: `unread_only`, `since` (ISO
     timestamp), `kind`, `summary_only` (skips the list, returns only
     counts), `offset`, and `limit` (clamped to 1..MAX_PAGE_SIZE);
-    'clear' marks mail read - all by
+    action='clear' marks mail read - all by
     default, a set of `ids`, or everything except the `keep` newest unread
     (at most one of ids / keep; survivors mirror the read ordering);
-    'purge' permanently deletes your own *read* mail instead of stamping it
+    action='purge' permanently deletes your own *read* mail instead of stamping it
     (unread mail never touched; refused with ids / keep - pass neither).
-    Old names (get_notifications/mark_notifications_read) remain and keep
-    working. Args not meaningful to the action are ignored."""
+    Args not meaningful to the action are ignored."""
     if action == "read":
         if limit is None:
             limit = config.DEFAULT_PAGE_SIZE

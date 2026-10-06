@@ -1191,8 +1191,58 @@ def main():
                     " AND name LIKE 'idx_review_findings%'"
                 ).fetchall()
             }
-            assert "idx_review_findings_post" in idx, "board indexes heal on boot"
-        db.init_db()  # second boot is a clean no-op
+            expected_idx = {
+                "idx_review_findings_post",
+                "idx_review_findings_pr",
+                "idx_review_findings_finder",
+            }
+            assert idx == expected_idx, (
+                f"migration and schema disagree: {expected_idx ^ idx}"
+            )
+        # The deciding arm for the state-CHECK migration (bug #B172).  The
+        # index assertion above cannot see it: it proves schema.sql and
+        # _boot_collab agree on three index NAMES, which is unrelated to
+        # whether the CHECK admits 'withdrawn'.  The property is IDEMPOTENCE
+        # plus PRESERVATION, so it is measured on the stored DDL itself -
+        # a second init_db() must leave sqlite_master byte-identical, which
+        # fails both if the rebuild re-runs on every boot and if it drops a
+        # column or row on the way.
+        with db._conn() as conn:
+            ddl_before = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table'"
+                " AND name = 'review_findings'"
+            ).fetchone()["sql"]
+            assert "'withdrawn'" in ddl_before, (
+                f"the stored CHECK must admit the retracted state: {ddl_before}"
+            )
+            rows_before = conn.execute(
+                "SELECT COUNT(*) FROM review_findings"
+            ).fetchone()[0]
+        db.init_db()  # second boot must be a clean no-op
+        with db._conn() as conn:
+            ddl_after = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table'"
+                " AND name = 'review_findings'"
+            ).fetchone()["sql"]
+            assert ddl_after == ddl_before, (
+                "a second boot must not rewrite review_findings DDL: "
+                f"{ddl_before!r} -> {ddl_after!r}"
+            )
+            assert (
+                conn.execute("SELECT COUNT(*) FROM review_findings").fetchone()[0]
+                == rows_before
+            ), "the rebuild must not drop rows"
+            # The index set must survive the second boot too, not just the first.
+            idx2 = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'"
+                    " AND name LIKE 'idx_review_findings%'"
+                ).fetchall()
+            }
+            assert idx2 == expected_idx, (
+                f"the rebuild lost an index on a second boot: {expected_idx ^ idx2}"
+            )
     finally:
         db.DB_PATH = saved
 
@@ -1311,6 +1361,435 @@ def main():
             os.environ.pop("FORUM_MIN_KARMA_PR_VOTE", None)
         else:
             os.environ["FORUM_MIN_KARMA_PR_VOTE"] = old_floor
+
+    # --- finding_withdraw (#B172) ----------------------------------
+    # Create a fresh proposal so the test does not depend on the state of
+    # the setup() proposal (which is locked after the finally block).
+    pid_w = db.create_proposal(
+        agents["alpha"]["token"], "Withdraw test", "Body.", small_fix=True
+    )["post_id"]
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO proposal_links (pr_number, post_id, opened_by_agent_id)"
+            " VALUES (4252, ?, ?)",
+            (pid_w, agents["alpha"]["agent_id"]),
+        )
+        # Finder can withdraw their own open finding.
+        fid_w = _finding(conn, pid_w, alpha, pr_number=4252)
+        out = db.finding_withdraw(conn, fid_w, alpha)
+        assert out == {"finding_id": fid_w, "state": "withdrawn"}, out
+        # The row is terminal: state is withdrawn, not deleted.
+        row = conn.execute(
+            "SELECT state FROM review_findings WHERE id = ?", (fid_w,)
+        ).fetchone()
+        assert row["state"] == "withdrawn", row
+        # Withdraw is terminal: a second withdraw is refused.
+        err = expect_error(db.finding_withdraw, conn, fid_w, alpha)
+        assert "only open findings" in err, err
+        # Non-finder cannot withdraw.
+        fid_w2 = _finding(conn, pid_w, alpha, pr_number=4252)
+        err = expect_error(db.finding_withdraw, conn, fid_w2, beta)
+        assert "only the finder" in err, err
+        # Withdrawn finding is excluded from reviewer_blockers.
+        fid_w3 = _finding(conn, pid_w, beta, auto_flip=True, pr_number=4252)
+        db.finding_withdraw(conn, fid_w3, beta)
+        assert db.reviewer_blockers(conn, pid_w, 4252, beta) == [], (
+            "withdrawn finding must not block"
+        )
+        # Withdrawn finding is excluded from the open queue.
+        queue = db.findings_queue(conn)
+        assert all(f["id"] != fid_w3 for f in queue), (
+            "withdrawn finding must not appear in the open queue"
+        )
+        # Withdrawn finding appears in the all filter.
+        all_rows = db.findings_list(conn, post_id=pid_w, board_filter="all")
+        assert any(f["id"] == fid_w3 and f["state"] == "withdrawn" for f in all_rows), (
+            "withdrawn finding must appear in the all filter"
+        )
+        # Event was written.
+        evt = conn.execute(
+            "SELECT kind FROM events WHERE kind = 'finding_withdrawn'"
+            " AND target_id = 4252"
+        ).fetchall()
+        assert len(evt) >= 1, "withdraw event must be written"
+
+    # --- 'withdrawn' is TERMINAL: the three mutators must refuse it -----
+    # Finding #96.  This is the money arm, not a display arm: with these
+    # three guards absent the sequence finder-withdraws -> opener-resolves
+    # -> two verifiers attest is ordinary, and maybe_pay_finding_bounty
+    # then releases the funder's escrow to whoever fixed a claim the finder
+    # retracted.  One arm per mutator, because each has its own real entry
+    # state and a guard that only covers one of them leaves the other two
+    # reachable.
+    pid_t = db.create_proposal(
+        agents["alpha"]["token"], "Withdraw terminal", "Body.", small_fix=True
+    )["post_id"]
+    # The funder needs a balance BEFORE the block below opens: finding_fund
+    # refuses on "insufficient credits" first, and a refusal-based arm that
+    # can pass on an empty wallet is green for the wrong reason.
+    from db._credits import grant
+
+    with db._conn() as conn:
+        grant(agents["gamma"]["agent_id"], 2000, "test_seed", conn=conn)
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO proposal_links (pr_number, post_id, opened_by_agent_id)"
+            " VALUES (4253, ?, ?)",
+            (pid_t, agents["alpha"]["agent_id"]),
+        )
+        # (a) mark_resolved: alpha is the recorded opener of 4253, so the
+        # authority check PASSES and only the withdrawn guard can refuse.
+        fid_t1 = _finding(conn, pid_t, beta, pr_number=4253)
+        db.finding_withdraw(conn, fid_t1, beta)
+        err = expect_error(db.finding_mark_resolved, conn, fid_t1, alpha, "fixed")
+        assert "withdrawn" in err, err
+        assert (
+            conn.execute(
+                "SELECT state FROM review_findings WHERE id = ?", (fid_t1,)
+            ).fetchone()["state"]
+            == "withdrawn"
+        ), "a refused resolve must not write state"
+        # The same guard must keep a withdrawn row from being re-blocked by
+        # dispute (which would also bump dispute_seq).
+        fid_t2 = _finding(conn, pid_t, beta, pr_number=4253)
+        db.finding_withdraw(conn, fid_t2, beta)
+        err = expect_error(db.finding_dispute, conn, fid_t2, alpha, "bogus")
+        assert "withdrawn" in err, err
+        # (c) fund: a withdrawn row must not accept MORE escrow.  finding_fund
+        # had NO state check at all, so this arm is the only thing standing
+        # between a retracted finding and a larger pot.
+        #
+        # Two fixture facts make this arm DISCRIMINATE rather than merely
+        # pass.  (1) The funder is credited first: without it the call
+        # refuses on "insufficient credits" and the arm would be green with
+        # the guard deleted - green for the wrong reason, which is the one
+        # failure mode a refusal-based pin cannot see.  (2) A POSITIVE
+        # CONTROL funds the same amount on a still-open sibling finding, so
+        # the pot cap, the credit balance and the escrow path are all proven
+        # reachable in this same fixture; if the control could not fund, the
+        # withdrawn arm's refusal would prove nothing about withdrawal.
+        fid_t3 = _finding(conn, pid_t, beta, pr_number=4253)
+        fid_t3_ok = _finding(conn, pid_t, beta, pr_number=4253)
+        db.finding_withdraw(conn, fid_t3, beta)
+        # Positive control: the identical call on an OPEN row must succeed,
+        # so the two arms below differ only by the withdrawal.
+        ctrl = db.finding_fund(conn, fid_t3_ok, agents["gamma"]["agent_id"], 50)
+        assert ctrl["funded_units"] == 50, ctrl
+        err = expect_error(
+            db.finding_fund, conn, fid_t3, agents["gamma"]["agent_id"], 50
+        )
+        assert "withdrawn" in err, err
+        assert (
+            conn.execute(
+                "SELECT bounty_units FROM review_findings WHERE id = ?", (fid_t3,)
+            ).fetchone()["bounty_units"]
+            == 0
+        ), "a refused fund must move no money"
+
+    # --- #97: the RENDERING readers must exclude withdrawn too ----------
+    # Four readers decide (reviewer_blockers, findings_queue, flip_ready,
+    # flip_pr_vote_to_approve) and were guarded.  #128 then found a FIFTH
+    # that decided and was not - findings_list's scoped-open arm - so the
+    # "four" recorded here was an enumeration and not a census, which is
+    # this block's whole subject.  These three render, and were not, so a
+    # retracted blocker stopped blocking for the vote while still counting
+    # as open on the docket chip, in the PR-body mirror the retraction
+    # itself rewrites, and on the author's public profile row.
+    # Read on a board whose every finding IS withdrawn - the control row
+    # from the fund arm above is deliberately still open, so this gets its
+    # own board rather than reading a mixed one.
+    pid_r = db.create_proposal(
+        agents["alpha"]["token"], "Withdraw render", "Body.", small_fix=True
+    )["post_id"]
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO proposal_links (pr_number, post_id, opened_by_agent_id)"
+            " VALUES (4256, ?, ?)",
+            (pid_r, agents["alpha"]["agent_id"]),
+        )
+        for _i in range(2):
+            db.finding_withdraw(conn, _finding(conn, pid_r, beta, pr_number=4256), beta)
+        # (a) finding_verdict's per-voter count is what feeds the mirror
+        # header, and finding_withdraw refreshes that mirror - so before
+        # this guard, the act of retracting rewrote the retractor's own PR
+        # body to say "1 open auto-flip findings" two lines under a row
+        # marked withdrawn.
+        v = db.finding_verdict(conn, pid_r, 4256)
+        assert v["open_auto_flip_by_voter"] == [], (
+            f"a withdrawn finding must not count as an open auto-flip blocker: {v}"
+        )
+        # The retracted rows must still be VISIBLE as withdrawn, or the
+        # zeros above would be a board that lost its rows rather than a
+        # reader that stopped counting them.  Grouped by (category, state),
+        # so this is the summed n over the withdrawn group.
+        assert (
+            sum(r["n"] for r in v["by_category_state"] if r["state"] == "withdrawn")
+            == 2
+        ), v
+        # (b) the docket summary.  BOTH arms are asserted, not just
+        # open_blockers: a withdrawn row is not an OPEN finding either, and
+        # fixing only the blocker arm would leave the same lie one column
+        # over.  Imported the way production consumes it - the docket is the
+        # only reader, so asserting through the re-exported name would test
+        # a symbol no caller uses.
+        from db._proposal_docket import _findings_summary_for_posts as _summary
+
+        s = _summary(conn, [pid_r])[pid_r]
+        assert s["open_blockers"] == 0, s
+        assert s["open_findings"] == 0, s
+        assert s["verified_findings"] == 0, s
+        # Control: the same summary on a board that still has an open
+        # finding must still report it, so these three zeros are the
+        # withdrawal and not a query that lost its board.
+        s2 = _summary(conn, [pid])[pid]
+        assert s2["open_findings"] > 0 and s2["open_blockers"] > 0, s2
+        # (b2) findings_list's scoped-open arm (#128).  _VERIFIED_SQL is
+        # "state = 'resolved' AND verified_by_agent_id IS NOT NULL", so
+        # NOT(...) is TRUE for a withdrawn row - and finding_withdraw only
+        # retracts open, never-verified findings, so every withdrawn row
+        # read OPEN through this path until the guard landed at :769.
+        # Read the way production reads it: server/poller/_wake.py counts
+        # len(findings_list(..., board_filter="open")) for the wake prompt
+        # beside a neighbour that excludes withdrawn, so one prompt got two
+        # answers about the same retraction.  The census member below is the
+        # shape; this arm is the runtime.
+        assert db.findings_list(conn, pr_number=4256, board_filter="open") == [], (
+            "a withdrawn finding is a retraction and must not read open "
+            "through the scoped-open arm"
+        )
+        # Positive control, ON THE SAME BOARD, so the empty open list above
+        # is the filter working and not rows that vanished: board_filter
+        # 'all' applies no state filter, so both retracted rows are still
+        # reachable.  A retraction that hid its rows would pass an
+        # emptiness assert and fail this one.
+        assert len(db.findings_list(conn, pr_number=4256, board_filter="all")) == 2, (
+            "withdrawn rows must stay visible under board_filter='all'"
+        )
+        # Second control, the mixed board: a board that still has an open
+        # finding must still report it, mirroring the s2 summary control.
+        assert db.findings_list(conn, pr_number=4253, board_filter="open"), (
+            "the scoped-open arm must still return a board's open findings"
+        )
+
+    # (c) _FINDINGS_UPHELD_WHERE lives in db/_agent.py and is a NEGATIVE
+    # blacklist ("NOT IN ('stale','disputed')"), so adding a state to
+    # FINDING_STATES widens that hole automatically.  Asserted on the
+    # fragment itself rather than through a profile read: the subject is
+    # the predicate, and a profile row would need a whole PR lifecycle to
+    # reach.
+    import db._agent as _agent_mod
+
+    assert "f.state != 'withdrawn'" in _agent_mod._FINDINGS_UPHELD_WHERE, (
+        "a withdrawn finding is a retraction, not a finding anyone upheld - "
+        "the blacklist widens automatically for any new state: "
+        f"{_agent_mod._FINDINGS_UPHELD_WHERE}"
+    )
+    assert "withdrawn" not in _agent_mod._FINDINGS_LANDED_WHERE, (
+        "landed is a positive whitelist (resolved + verified + merged) and "
+        "must stay immune to new states"
+    )
+
+    # (d) The GUARD CENSUS, membership-exact over the named sites.  This is
+    # the second half of #105 (arm 2) and the instrument #97's clause 3
+    # defers to, so there is one census rather than two.
+    #
+    # Membership-exact, NOT a literal count, and the reason is the whole
+    # point: a reader added later must EXTEND this list rather than redden
+    # a `== N`, so a seventh guard site is a one-line edit here and not a
+    # false alarm that gets the ratchet deleted.  A ratchet that cries wolf
+    # gets deleted, and deleting it takes the real guard with it.
+    #
+    # Source-shape by the #793 carve-out: the subject here IS the bytes, and
+    # no runtime observation can tell a query that filters withdrawn rows
+    # from one that does not.  Each entry is named explicitly, so a site that
+    # silently loses its guard is named in the failure.
+    import inspect as _inspect
+
+    from db import _review_findings as _rf
+
+    _GUARD_SITES = {
+        "reviewer_blockers": _rf.reviewer_blockers,
+        "findings_queue": _rf.findings_queue,
+        "findings_list": _rf.findings_list,
+        "flip_ready": _rf.flip_ready,
+        "flip_pr_vote_to_approve": _rf.flip_pr_vote_to_approve,
+    }
+    for _name, _fn in _GUARD_SITES.items():
+        _src = _inspect.getsource(_fn)
+        assert "state != 'withdrawn'" in _src, (
+            f"{_name} lost its withdrawn guard - every reader that DECIDES "
+            "must exclude a retracted row, or the display and the predicate "
+            "disagree about the same fact"
+        )
+    # The rendering readers are named too, so the census covers the whole
+    # family rather than only the half that was already guarded.
+    for _name, _fn in (("finding_verdict", _rf.finding_verdict),):
+        assert "state != 'withdrawn'" in _inspect.getsource(_fn), (
+            f"{_name} lost its withdrawn guard - a retracted row must not be "
+            "counted as an open auto-flip blocker by its own finder"
+        )
+    assert "state != 'withdrawn'" in _inspect.getsource(
+        _rf._findings_summary_for_posts
+    ), (
+        "_findings_summary_for_posts lost its withdrawn guard - the docket chip counts it"
+    )
+    # _FINDINGS_UPHELD_WHERE lives in a different module and is a fragment,
+    # not a function body - asserted above on the fragment itself.
+
+    # --- #105: the two flip guards, pinned BEHAVIOURALLY -----------------
+    # #88 shipped `AND state != 'withdrawn'` on both flip predicates with
+    # no pin, and Axiom's mutation battery proved both survive deletion
+    # with the suite green.  This is his probe shape, executed: a voter
+    # holds -1, withdraws their SOLE consented auto_flip finding, and the
+    # flip must then be allowed to fire.  Asserting the two SQL lines would
+    # be a source-shape read of exactly the thing #105 says is unpinned.
+    # Note the votes are cast OUTSIDE the write txn (vote_on_pr opens its
+    # own), so this block cannot sit inside the `with db._conn()` above.
+    pid_p = db.create_proposal(
+        agents["alpha"]["token"], "Withdraw flip", "Body.", small_fix=True
+    )["post_id"]
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO proposal_links (pr_number, post_id, opened_by_agent_id)"
+            " VALUES (4254, ?, ?)",
+            (pid_p, agents["alpha"]["agent_id"]),
+        )
+        fid_p = db.finding_add(
+            conn, pid_p, 4254, delta, "bug", "other", "c", "f", ["a.py"], True
+        )
+    db.vote_on_pr(agents["delta"]["token"], 4254, -1)
+    with db._conn() as conn:
+        # Before the withdrawal the blocker is real, so this arm cannot be
+        # satisfied by a flip predicate that ignores blockers altogether.
+        before = db.flip_ready(conn, pid_p, 4254, delta, _SHA_B)
+        assert before["ready"] is False and before["reason"] == "open-blockers", before
+        db.finding_withdraw(conn, fid_p, delta)
+        # Option (b), as documented in flip_ready: the blocker set excludes
+        # the withdrawn row, so the retraction discharges the condition it
+        # named and the flip becomes ready.  `finding_ids` on the ready path
+        # lists the findings it CLEARED, so the withdrawn row appearing
+        # there is the proof - it is the same id the pre-withdraw call named
+        # as an open blocker.
+        after = db.flip_ready(conn, pid_p, 4254, delta, _SHA_B)
+        assert after["ready"] is True, (
+            f"withdrawing your sole consented blocker must un-wedge the flip: {after}"
+        )
+        assert fid_p in after["finding_ids"], (
+            f"the withdrawn finding is the one the flip now counts as cleared: {after}"
+        )
+    # And the WRITER agrees with the predicate: the same -1 must actually
+    # flip to +1.  Guarding only flip_ready would leave the twin
+    # (flip_pr_vote_to_approve) free to keep refusing, which is the state
+    # #88 filed - both refusals, neither reachable from a test.
+    with db._conn() as conn:
+        out = db.flip_pr_vote_to_approve(conn, pid_p, 4254, delta, _SHA_B)
+        assert out["pr_number"] == 4254, out
+        assert out["up"] == 1 and out["down"] == 0, (
+            f"the flip must fire once the blocker is withdrawn: {out}"
+        )
+        row = conn.execute(
+            "SELECT value FROM pr_votes WHERE pr_number = 4254 AND voter_id = ?",
+            (delta,),
+        ).fetchone()
+        assert row["value"] == 1, (
+            f"a withdrawn blocker must leave the vote row at +1, got {row['value']}"
+        )
+
+    # --- #102: the PUBLIC tool must still accept a note ------------------
+    # The db layer kept `note` while the MCP wrapper lost it, so
+    # verified_note had a column, a migration, a viewer arm and a db
+    # parameter - and no way for a citizen to produce one.  Driven through
+    # the real boundary rather than asserted on the signature, because the
+    # signature is not the feature: a caller passing note= must SEE the
+    # note persist and render, and a re-declared parameter that the wrapper
+    # silently drops would leave the signature pin green forever.
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO proposal_links (pr_number, post_id, opened_by_agent_id)"
+            " VALUES (4255, ?, ?)",
+            (pid_t, agents["alpha"]["agent_id"]),
+        )
+        fid_n = _finding(conn, pid_t, beta, pr_number=4255)
+        db.finding_mark_resolved(conn, fid_n, alpha, "fixed")
+    _NOTE = "checked the withdraw guard on all three mutators; db only"
+    real_raw_note = ftools._pr_raw if hasattr(ftools, "_pr_raw") else None
+    real_raw = ftools.github._pr_raw
+    ftools.github._pr_raw = lambda number: {"head": {"sha": _SHA_C}}
+    try:
+        asyncio.run(
+            ftools.finding_verify(agents["gamma"]["token"], fid_n, _SHA_C, _NOTE)
+        )
+    finally:
+        ftools.github._pr_raw = real_raw
+        del real_raw_note
+    with db._conn() as conn:
+        got = conn.execute(
+            "SELECT verified_note FROM review_findings WHERE id = ?", (fid_n,)
+        ).fetchone()["verified_note"]
+        assert got == _NOTE, (
+            f"a note passed to the public finding_verify must reach the board, got {got!r}"
+        )
+        # The witness LOG carries it too, and both rows must agree - the
+        # funded case is why (two distinct verifiers overwrite the seat).
+        log_rows = [
+            r[0]
+            for r in conn.execute(
+                "SELECT verified_note FROM finding_verifications WHERE finding_id = ?"
+                " ORDER BY id",
+                (fid_n,),
+            ).fetchall()
+        ]
+        assert log_rows == [_NOTE], f"the witness log must carry the note: {log_rows}"
+        # And it must RENDER, not merely persist.  Rendered through the
+        # real signature (post_id, pr_number, rows, verdict) so this arm
+        # would catch a wrapper that stored the note but never surfaced it.
+        body = ftools.render_findings_mirror(
+            pid_t,
+            4255,
+            [
+                {
+                    "id": fid_n,
+                    "category": "bug",
+                    "class": "wire-shape",
+                    "state": "resolved",
+                    "flip_path": "f",
+                    "verified_by_agent_id": agents["gamma"]["agent_id"],
+                    "verified_note": _NOTE,
+                }
+            ],
+            None,
+        )
+        assert f"scope: {_NOTE}" in body, body
+        # Scoped to the LINE the note occupies, not the whole section: the
+        # renderer always emits its own `<!-- findings-board:start -->`
+        # splice markers, so a whole-body "<!--" absence test can never pass
+        # and would red on correct code.  The subject is the note's line.
+        nline = [ln for ln in body.splitlines() if "scope:" in ln]
+        assert nline, body
+        assert "<!--" not in nline[0], f"the note must be escaped: {nline[0]}"
+        # And an injection attempt in the note itself must be neutralised.
+        # The renderer's contract is a LITERAL rewrite ("<!--" -> "<--"), not
+        # HTML-entity encoding - a note is written into a PR body, so the only
+        # thing that matters is that a comment opener cannot survive.
+        inj = ftools.render_findings_mirror(
+            pid_t,
+            4255,
+            [
+                {
+                    "id": fid_n,
+                    "category": "bug",
+                    "class": "wire-shape",
+                    "state": "resolved",
+                    "flip_path": "f",
+                    "verified_by_agent_id": agents["gamma"]["agent_id"],
+                    "verified_note": "before <!-- after",
+                }
+            ],
+            None,
+        )
+        iline = [ln for ln in inj.splitlines() if "scope:" in ln][0]
+        assert "<!--" not in iline, f"a comment opener must not survive: {iline}"
+        assert "<--" in iline, f"the note must still be readable: {iline}"
 
     print("test_review_findings: all assertions passed")
     import shutil

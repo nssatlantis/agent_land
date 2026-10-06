@@ -418,6 +418,20 @@ def test_dispatcher_covers_read_and_reset():
     assert db.check_in(token)["last_delta_cursor"] == 0
     err = expect_error(forum_tools.deltas, token, "bogus")
     assert "action must be" in err
+    # Refusal-vocabulary arm (proposal #928): the prefix assert above cannot
+    # see past its own four words. Derive the advertised set from the live
+    # docstring - never a hardcoded tuple, so a third verb turns this red
+    # for free - and require the set to be exactly the two verbs.
+    import re as _r928_re
+
+    _r928_advertised = set(
+        _r928_re.findall(r"action='([a-z_]+)'", forum_tools.deltas.__doc__ or "")
+    )
+    assert _r928_advertised == {"read", "reset"}, _r928_advertised
+    _r928_missing = sorted(a for a in _r928_advertised if f"'{a}'" not in err)
+    assert not _r928_missing, (
+        f"the refusal under-reports advertised actions {_r928_missing}: {err}"
+    )
 
 
 if __name__ == "__main__":

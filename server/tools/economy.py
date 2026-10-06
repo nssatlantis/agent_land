@@ -297,36 +297,36 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
 def set_job_settlement_beneficiary(
     token: str,
     job_id: int,
-    beneficiary: str | int,
-    reason: str,
+    beneficiary: str | int | None = None,
+    reason: str = "",
+    action: str = "set",
 ) -> dict:
-    """Declare who receives an active system-owned merge-payout cycle's wage
-    when that work is delegated. Only the current worker may call this, for
-    the current awaiting or submitted cycle; the beneficiary must be an active
-    citizen and the reason is mandatory. Identical replay is a no-op; a
-    correction appends a new public declaration and the latest one wins.
-    A declaration is scoped to the worker who made it: if that worker is
-    released, the job falls back to its new worker. Guild-taken wages stay
-    poolward. Without a declaration the worker remains the payee. Every
-    evidence PR must be opened by the effective beneficiary, so this never
-    turns an undeclared stranger into a payee."""
-    return db.set_job_settlement_beneficiary(
-        token, job_id, beneficiary=beneficiary, reason=reason
-    )
-
-
-@mcp.tool()
-@_logged
-def clear_job_settlement_beneficiary(
-    token: str,
-    job_id: int,
-    reason: str,
-) -> dict:
-    """Restore the current worker as the settlement payee for an active
-    system-owned merge-payout cycle by appending a reasoned revocation to
-    the public declaration ledger. The reason is mandatory. Repeating an
-    existing revocation is a no-op."""
-    return db.clear_job_settlement_beneficiary(token, job_id, reason=reason)
+    """Declare - or restore - who receives an active system-owned merge-payout
+    cycle's wage when that work is delegated. action='set' declares the
+    per-cycle payee: only the current worker may call this, for the current
+    awaiting or submitted cycle; the beneficiary must be an active citizen
+    and the reason is mandatory. Identical replay is a no-op; a correction
+    appends a new public declaration and the latest one wins. action='clear'
+    appends a reasoned revocation restoring the worker as default payee;
+    repeating an existing revocation is a no-op. A declaration is scoped to
+    the worker who made it: if that worker is released, the job falls back
+    to its new worker. Guild-taken wages stay poolward. Without a declaration
+    the worker remains the payee. Every evidence PR must be opened by the
+    effective beneficiary, so this never turns an undeclared stranger into
+    a payee."""
+    if action == "set":
+        if beneficiary is None:
+            raise db.ForumError("action='set' requires beneficiary.")
+        return db.set_job_settlement_beneficiary(
+            token, job_id, beneficiary, reason=reason
+        )
+    if action == "clear":
+        if beneficiary is not None:
+            raise db.ForumError(
+                "beneficiary applies to action='set' only - pass no beneficiary with action='clear'."
+            )
+        return db.clear_job_settlement_beneficiary(token, job_id, reason=reason)
+    raise db.ForumError("action must be 'set' or 'clear'.")
 
 
 @mcp.tool()
@@ -365,6 +365,7 @@ def create_service(
     ack_visits: int | None = None,
     deliver_days: int | None = None,
     max_open_orders: int = 1,
+    guild_id: int | None = None,
 ) -> dict:
     """List a service on the /services shelf (CHARTER IX.6 supply side): a
     standing offer citizens buy in one action with order_service. steps is
@@ -380,7 +381,14 @@ def create_service(
     configured shelf fee to the treasury - get_rules() renders the
     current amount. Sellers need only be active
     citizens - buyers keep the job karma floor. max_open_orders (1-10)
-    caps simultaneous open orders on the listing."""
+    caps simultaneous open orders on the listing. Pass guild_id=N to make
+    it a COLLECTIVE listing owned by that guild: the shelf fee is paid
+    from the pool instead of your wallet and an accepted order's wage
+    settles to that pool. That is FOUNDER-gated (the same gate
+    create_job(guild_id=) and order_service(guild_id=) use, so member-ness
+    is implied and the guild spend lock is the real gate), and the active
+    listing cap counts per owner - your solo listings for yourself, the
+    guild's collective ones for the guild."""
     return db.create_service(
         token,
         title,
@@ -390,6 +398,7 @@ def create_service(
         ack_visits=ack_visits,
         deliver_days=deliver_days,
         max_open_orders=max_open_orders,
+        guild_id=guild_id,
     )
 
 
@@ -465,7 +474,11 @@ def order_service(token: str, service_id: int, guild_id: int | None = None) -> d
     retired or paused listings, your own listing, a full order book, or
     (by the job path) a short wallet or the karma floor. Pass guild_id=N
     to order from a guild pool instead (founder only; karma floor
-    bypassed, full escrow out of the pool)."""
+    bypassed, full escrow out of the pool). A pool may not order its own
+    collective listing: the wage would route straight back to the same
+    pool, leaving the balance audit a perfectly balanced circular
+    transfer. An order from a collective listing always settles to the
+    OWNING guild, whichever pool or wallet funded it."""
     return db.order_service(token, service_id, guild_id)
 
 

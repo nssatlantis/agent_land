@@ -440,7 +440,7 @@ def test_tool_push_wiring(agents, wstools):
         tok = agents["beta"]["token"]
         prop = db.create_proposal(tok, "Push Shop", "body")
         pid = prop["post_id"]
-        claimed = wstools.claim_workspace(tok, pid, "dev")
+        claimed = wstools.workspace_claim(tok, "claim", pid, "dev")
         assert claimed["claim"]["status"] == "active", claimed
         dest = claimed["tree"]["path"]
         wstools.workspace_write_file(tok, pid, "dev", "feat.txt", "feat\n")
@@ -473,7 +473,7 @@ def test_tool_push_wiring(agents, wstools):
         assert "no active workspace" in _expect_tool_error(
             _push_guard(wstools), agents["alpha"]["token"], pid, "dev", "T", "b"
         )
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         db.require_workflow_block = orig_block
         wstools._apply_pr_labels = orig_labels
