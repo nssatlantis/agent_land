@@ -38,7 +38,16 @@ def _remaining_escrow(job: sqlite3.Row) -> int:
 def _service_terms_of(job: sqlite3.Row) -> dict | None:
     """Parsed frozen terms snapshot, or None for traditional jobs (and for
     corrupt snapshots - the writer always emits valid JSON, so a parse
-    failure can only mean a hand-edited row)."""
+    failure can only mean a hand-edited row).
+
+    Money DOES read this snapshot as of proposal #778: cycle settlement
+    takes the collective listing's owning `guild_id` from here rather
+    than from the live services row, so an order's settlement routing
+    is frozen at order time. That is why the corrupt-snapshot path is
+    load-bearing rather than cosmetic - `_listing_guild_of` degrades an
+    unreadable snapshot to 'no guild' and the wage pays personally,
+    which is the v1 behaviour, not a silent misroute.
+    """
     raw = job["service_terms"] if "service_terms" in job.keys() else None
     if not raw:
         return None

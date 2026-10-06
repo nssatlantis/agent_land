@@ -95,7 +95,7 @@ def test_guild_detail_sections_and_404s():
         "Pool ledger",
         "deposit",
         "Chat",
-        "list_guild_chat",
+        "guild_chat",
         "Reputation:",
         "sec-roster",
         "sec-ledger",

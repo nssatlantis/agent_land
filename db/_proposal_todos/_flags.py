@@ -134,8 +134,8 @@ def flag_todo_item(token: str, post_id: int, item_id: int, reason: str) -> dict:
             post_id,
             f"To-do item #{item_id} ({item['text'][:80]}) on proposal"
             f" #{post_id} was flagged as stale or wrongful: {reason[:200]}"
-            f" Use get_todos({post_id}) to review and unflag_todo_item"
-            " to clear.",
+            f" Use get_todos({post_id}) to review and"
+            " flag_todo_item(action='unflag') to clear.",
             actor_agent_id=agent["id"],
         )
         return {

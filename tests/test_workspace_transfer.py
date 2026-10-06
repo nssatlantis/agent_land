@@ -95,6 +95,30 @@ def _claim(agents, pid, name="xfer", who="alpha"):
     return info
 
 
+def _mint(tok, pid, name):
+    """Claim through the ONE workspace tool (proposal #919) and return its
+    claim-scoped read and write tickets. Claiming auto-mints both scopes,
+    so a test never asks for a capability its claim already confers.
+    Tickets pin NO path - the URL is composed per path with transfer_url,
+    and the only path authority is the engine guard at redeem."""
+    res = WT.workspace_claim(tok, "claim", pid, name)
+    return res["read"]["ticket"], res["write"]["ticket"]
+
+
+def _renew_write(tok, pid, name, expect_shas=None):
+    """Re-mint both tickets on a claim already held; the write arm is what
+    a burnt-path or expired-ticket caller reaches for. `expect_shas` pins
+    the files an upload will overwrite and is proved satisfiable against
+    the live tree at mint, so a moved file refuses the RENEW itself."""
+    res = WT.workspace_claim(tok, "renew", pid, name, expect_shas=expect_shas)
+    return res["write"]["ticket"]
+
+
+def _sha256_of(path):
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
 def _req(method, ticket, fpath, body=b"", headers=None):
     header_bytes = list(headers or [])
     scope = {
@@ -228,6 +252,10 @@ def test_mint_redeem_roundtrip(agents):
     assert "already used" in expect_error(
         db.redeem_transfer_ticket, w["ticket"], "write", "a.txt"
     )
+    # Fixture hygiene: the claim cap is PER AGENT, so a claim left active
+    # here is still held later in this same process, when the next test
+    # asks alpha for one. Release it; nothing below reads it again.
+    db.release_workspace(tok, pid, "round")
     print("  mint/redeem roundtrip + per-path burn: ok")
 
 
@@ -270,6 +298,7 @@ def test_mint_gates(agents):
     # Unknown ticket reads 404 without leaking existence.
     err = expect_error(db.redeem_transfer_ticket, "xfer_nope", "read", "README.md")
     assert "unknown transfer ticket" in err
+    db.release_workspace(tok, pid, "gated")  # per-agent cap hygiene
     print("  mint/redeem gates: ok")
 
 
@@ -296,25 +325,36 @@ def test_expiry_and_sweep(agents):
             (hashlib.sha256(m["ticket"].encode()).hexdigest(),),
         ).fetchone()["status"]
     assert status == "expired", status
+    db.release_workspace(tok, pid, "exp")  # per-agent cap hygiene
     print("  expiry marks + sweep: ok")
 
 
 def test_http_download(agents):
     pid = _prop(agents, "beta", title="Download Xfer")
     tok = agents["beta"]["token"]
-    _claim(agents, pid, "dl", who="beta")
+    res = WT.workspace_claim(tok, "claim", pid, "dl")
+    tree = res["tree"]
+    assert res["claim"]["name"] == "dl", res["claim"]
+    assert tree["name"] == "dl" and os.path.isdir(tree["path"]), tree
     WT.workspace_write_file(tok, pid, "dl", "note.txt", content="hello xfer\n")
-    t = TT.workspace_fetch_ticket(tok, pid, "dl", ["README.md", "note.txt"])
-    assert t["scope"] == "read" and t["ticket"].startswith("xfer_")
-    assert [f["path"] for f in t["files"]] == ["README.md", "note.txt"]
-    assert all(f["url"].startswith("/transfer/xfer_") for f in t["files"])
-    assert all(len(f["sha256"]) == 64 for f in t["files"])
-    assert "base" in t and "expires_at" in t
-    resp = _run(TR.transfer_download(_req("GET", t["ticket"], "note.txt")))
+    read, write = res["read"]["ticket"], res["write"]["ticket"]
+    assert read.startswith("xfer_") and write.startswith("xfer_")
+    assert read != write, "read and write are separate capabilities"
+    # A claim-scoped ticket pins no path and carries no mint manifest at
+    # all: the URL is composed per request and the sha comes back on the
+    # download, never from a mint-time listing.
+    assert "files" not in res
+    assert set(res["read"]) == {"ticket", "scope", "expires_at"}, sorted(res["read"])
+    assert res["read"]["scope"] == "read" and res["write"]["scope"] == "write"
+    assert TT.transfer_url(read, "note.txt") == f"/transfer/{read}/note.txt"
+    assert "base" in res and "expires_at" in res
+    resp = _run(TR.transfer_download(_req("GET", read, "note.txt")))
     assert resp.status_code == 200, resp.status_code
     assert resp.body == b"hello xfer\n", resp.body
-    assert resp.headers["x-content-sha256"] == t["files"][1]["sha256"]
-    assert resp.headers["etag"] == f'"{t["files"][1]["sha256"]}"'
+    sha = resp.headers["x-content-sha256"]
+    assert len(sha) == 64, sha
+    assert sha == hashlib.sha256(b"hello xfer\n").hexdigest(), sha
+    assert resp.headers["etag"] == f'"{sha}"'
     assert "attachment" in resp.headers["content-disposition"]
     assert resp.headers["cache-control"] == "private, no-store"
     # Revalidation hits 304.
@@ -322,9 +362,9 @@ def test_http_download(agents):
         TR.transfer_download(
             _req(
                 "GET",
-                t["ticket"],
+                read,
                 "note.txt",
-                headers=[(b"if-none-match", f'"{t["files"][1]["sha256"]}"'.encode())],
+                headers=[(b"if-none-match", f'"{sha}"'.encode())],
             )
         )
     )
@@ -333,32 +373,36 @@ def test_http_download(agents):
     resp404 = _run(TR.transfer_download(_req("GET", "xfer_nope123", "note.txt")))
     assert resp404.status_code == 404, resp404.status_code
     # A write ticket cannot download.
-    w = TT.workspace_upload_ticket(tok, pid, "dl", ["note.txt"])
-    resp400 = _run(TR.transfer_download(_req("GET", w["ticket"], "note.txt")))
+    resp400 = _run(TR.transfer_download(_req("GET", write, "note.txt")))
     assert resp400.status_code == 400, resp400.status_code
-    # A path outside the ticket is refused.
-    resp_out = _run(TR.transfer_download(_req("GET", t["ticket"], "app.py")))
-    assert resp_out.status_code == 400, resp_out.status_code
+    # Tree-wide reach REPLACED the per-path ticket list: app.py used to be
+    # refused for being outside the mint, and is now served, because the
+    # claim-scoped ticket admits any engine-guarded path. The guard, not
+    # ticket membership, is the boundary - .github/ is refused right here.
+    reach = _run(TR.transfer_download(_req("GET", read, "app.py")))
+    assert reach.status_code == 200, (reach.status_code, reach.body)
+    assert reach.body == b"X = 1\n", reach.body
+    guarded = _run(TR.transfer_download(_req("GET", read, ".github/workflows/ci.yml")))
+    assert guarded.status_code == 400, (guarded.status_code, guarded.body)
+    assert "protected" in guarded.body.decode(), guarded.body
     print("  HTTP download bytes/headers/304/refusals: ok")
 
 
 def test_http_upload_apply(agents):
     pid = _prop(agents, "gamma", title="Upload Xfer")
     tok = agents["gamma"]["token"]
-    _claim(agents, pid, "up", who="gamma")
+    WT.workspace_claim(tok, "claim", pid, "up")
     WT.workspace_write_file(tok, pid, "up", "app.py", content="X = 1\n")
-    read = WT.workspace_read_file(tok, pid, "up", "app.py")
-    base_sha = read["content_sha256"]
-    w = TT.workspace_upload_ticket(
-        tok, pid, "up", ["app.py", "brand.py"], {"app.py": base_sha}
-    )
-    assert w["scope"] == "write"
+    base_sha = WT.workspace_read_file(tok, pid, "up", "app.py")["content_sha256"]
+    # The pin rides the RENEW, not the claim (a fresh tree has nothing to
+    # overwrite), and the mint proves it against the live file first.
+    w = _renew_write(tok, pid, "up", {"app.py": base_sha})
     body = b"X = 2\nY = 3\n"
     resp = _run(
         TR.transfer_upload(
             _req(
                 "POST",
-                w["ticket"],
+                w,
                 "app.py",
                 body=body,
                 headers=[(b"content-length", str(len(body)).encode())],
@@ -378,28 +422,31 @@ def test_http_upload_apply(agents):
     diff = WT.workspace_inspect(tok, pid, "up", "diff", path="app.py")
     assert "Y = 3" in diff["diff"], diff
     # Same path cannot POST twice on one ticket.
-    resp2 = _run(TR.transfer_upload(_req("POST", w["ticket"], "app.py", body=body)))
+    resp2 = _run(TR.transfer_upload(_req("POST", w, "app.py", body=body)))
     assert resp2.status_code == 409, (resp2.status_code, resp2.body)
     # Identical bytes on a FRESH ticket are a quiet no-op.
-    w2 = TT.workspace_upload_ticket(tok, pid, "up", ["app.py"])
-    resp3 = _run(TR.transfer_upload(_req("POST", w2["ticket"], "app.py", body=body)))
+    w2 = _renew_write(tok, pid, "up")
+    resp3 = _run(TR.transfer_upload(_req("POST", w2, "app.py", body=body)))
     assert resp3.status_code == 200, (resp3.status_code, resp3.body)
     assert _json.loads(resp3.body.decode())["changed"] is False
-    # Stale pin refuses before any byte moves.
-    w3 = TT.workspace_upload_ticket(tok, pid, "up", ["app.py"], {"app.py": "0" * 64})
-    resp4 = _run(
-        TR.transfer_upload(_req("POST", w3["ticket"], "app.py", body=b"Z = 9\n"))
+    # A stale pin now refuses the MINT, which is strictly earlier than the
+    # old per-ticket apply-time 409: no ticket exists at all, so a moved
+    # file can never produce one that looks pinned but is not.
+    assert "tree moved since you read it" in expect_error(
+        WT.workspace_claim, tok, "renew", pid, "up", {"app.py": "0" * 64}
     )
-    assert resp4.status_code == 409, (resp4.status_code, resp4.body)
+    # A pin naming a file the tree does not have refuses too - otherwise it
+    # would be a pin that can never fire, which is worse than no pin.
+    assert "not a file in this workspace" in expect_error(
+        WT.workspace_claim, tok, "renew", pid, "up", {"typo.py": "0" * 64}
+    )
     assert WT.workspace_read_file(tok, pid, "up", "app.py")["content"] == "X = 2\nY = 3"
     # Non-UTF8 and empty uploads refuse.
-    w4 = TT.workspace_upload_ticket(tok, pid, "up", ["bin.dat"])
-    resp5 = _run(
-        TR.transfer_upload(_req("POST", w4["ticket"], "bin.dat", body=b"\xff\xfe\n"))
-    )
+    w4 = _renew_write(tok, pid, "up")
+    resp5 = _run(TR.transfer_upload(_req("POST", w4, "bin.dat", body=b"\xff\xfe\n")))
     assert resp5.status_code == 400, (resp5.status_code, resp5.body)
-    w5 = TT.workspace_upload_ticket(tok, pid, "up", ["empty.txt"])
-    resp6 = _run(TR.transfer_upload(_req("POST", w5["ticket"], "empty.txt", body=b"")))
+    w5 = _renew_write(tok, pid, "up")
+    resp6 = _run(TR.transfer_upload(_req("POST", w5, "empty.txt", body=b"")))
     assert resp6.status_code == 400, (resp6.status_code, resp6.body)
     print("  HTTP upload apply/receipt/pins/no-op/refusals: ok")
 
@@ -407,12 +454,10 @@ def test_http_upload_apply(agents):
 def test_http_upload_lock_wait_keeps_event_loop_live(agents):
     pid = _prop(agents, "beta", title="Async Upload Xfer")
     tok = agents["beta"]["token"]
-    _claim(agents, pid, "asyncup", who="beta")
+    WT.workspace_claim(tok, "claim", pid, "asyncup")
     WT.workspace_write_file(tok, pid, "asyncup", "held.txt", content="base\n")
     pin = WT.workspace_read_file(tok, pid, "asyncup", "held.txt")["content_sha256"]
-    ticket = TT.workspace_upload_ticket(
-        tok, pid, "asyncup", ["held.txt"], {"held.txt": pin}
-    )
+    ticket = _renew_write(tok, pid, "asyncup", {"held.txt": pin})
     dest = ws._claim_dir(agents["beta"]["agent_id"], pid, "asyncup")
     lock_entered = threading.Event()
     apply_entered = threading.Event()
@@ -436,9 +481,7 @@ def test_http_upload_lock_wait_keeps_event_loop_live(agents):
 
         async def run_upload():
             upload = asyncio.create_task(
-                TR.transfer_upload(
-                    _req("POST", ticket["ticket"], "held.txt", body=b"next\n")
-                )
+                TR.transfer_upload(_req("POST", ticket, "held.txt", body=b"next\n"))
             )
             while not apply_entered.is_set():
                 await asyncio.sleep(0)
@@ -467,9 +510,9 @@ def test_http_upload_lock_wait_keeps_event_loop_live(agents):
 def test_http_download_lock_wait_keeps_event_loop_live(agents):
     pid = _prop(agents, "beta", title="Async Download Xfer")
     tok = agents["beta"]["token"]
-    _claim(agents, pid, "asyncdl", who="beta")
+    WT.workspace_claim(tok, "claim", pid, "asyncdl")
     WT.workspace_write_file(tok, pid, "asyncdl", "held.txt", content="base\n")
-    ticket = TT.workspace_fetch_ticket(tok, pid, "asyncdl", ["held.txt"])
+    ticket = WT.workspace_claim(tok, "renew", pid, "asyncdl")["read"]["ticket"]
     dest = ws._claim_dir(agents["beta"]["agent_id"], pid, "asyncdl")
     lock_entered = threading.Event()
     read_entered = threading.Event()
@@ -493,7 +536,7 @@ def test_http_download_lock_wait_keeps_event_loop_live(agents):
 
         async def run_download():
             download = asyncio.create_task(
-                TR.transfer_download(_req("GET", ticket["ticket"], "held.txt"))
+                TR.transfer_download(_req("GET", ticket, "held.txt"))
             )
             while not read_entered.is_set():
                 await asyncio.sleep(0)
@@ -522,15 +565,15 @@ def test_http_download_lock_wait_keeps_event_loop_live(agents):
 def test_http_upload_caps(agents):
     pid = _prop(agents, "delta", title="Cap Xfer")
     tok = agents["delta"]["token"]
-    _claim(agents, pid, "cap", who="delta")
+    res = WT.workspace_claim(tok, "claim", pid, "cap")
     big = b"z" * ((1 << 20) + 8)
-    w = TT.workspace_upload_ticket(tok, pid, "cap", ["big.txt"])
+    w = res["write"]["ticket"]
     # Declared length over cap refuses before reading.
     resp = _run(
         TR.transfer_upload(
             _req(
                 "POST",
-                w["ticket"],
+                w,
                 "big.txt",
                 body=b"tiny",
                 headers=[(b"content-length", str(len(big)).encode())],
@@ -538,11 +581,11 @@ def test_http_upload_caps(agents):
         )
     )
     assert resp.status_code == 413, (resp.status_code, resp.body)
-    # Chunked without a length trips the bounded read instead.
-    w2 = TT.workspace_upload_ticket(tok, pid, "cap", ["big2.txt"])
+    # Chunked without a length trips the bounded read instead. The ticket
+    # is the same tree-wide capability either way - no re-mint needed.
     resp2 = _run(
         TR.transfer_upload(
-            _req_chunked("POST", w2["ticket"], "big2.txt", [big[:700000], big[700000:]])
+            _req_chunked("POST", w, "big2.txt", [big[:700000], big[700000:]])
         )
     )
     assert resp2.status_code == 413, (resp2.status_code, resp2.body)
@@ -559,22 +602,21 @@ def test_http_upload_caps(agents):
 def test_release_kills_ticket(agents):
     pid = _prop(agents, "epsilon", title="Released Xfer")
     tok = agents["epsilon"]["token"]
-    _claim(agents, pid, "rel", who="epsilon")
-    t = TT.workspace_fetch_ticket(tok, pid, "rel", ["README.md"])
+    t = WT.workspace_claim(tok, "claim", pid, "rel")["read"]["ticket"]
     db.release_workspace(tok, pid, "rel")
-    resp = _run(TR.transfer_download(_req("GET", t["ticket"], "README.md")))
+    resp = _run(TR.transfer_download(_req("GET", t, "README.md")))
     assert resp.status_code == 404, (resp.status_code, resp.body)
     time.sleep(0.001)
     _claim(agents, pid, "rel", who="epsilon")
-    resp = _run(TR.transfer_download(_req("GET", t["ticket"], "README.md")))
+    resp = _run(TR.transfer_download(_req("GET", t, "README.md")))
     assert resp.status_code == 404, (resp.status_code, resp.body)
     assert "gone" in resp.body.decode()
     with db._conn() as conn:
         conn.execute(
             "UPDATE transfer_tickets SET claim_id = NULL WHERE ticket_hash = ?",
-            (hashlib.sha256(t["ticket"].encode()).hexdigest(),),
+            (hashlib.sha256(t.encode()).hexdigest(),),
         )
-    legacy = _run(TR.transfer_download(_req("GET", t["ticket"], "README.md")))
+    legacy = _run(TR.transfer_download(_req("GET", t, "README.md")))
     assert legacy.status_code == 404, (legacy.status_code, legacy.body)
     assert "gone" in legacy.body.decode()
     db.release_workspace(tok, pid, "rel")
@@ -584,24 +626,38 @@ def test_release_kills_ticket(agents):
 def test_reclaim_blocks_old_upload(agents):
     pid = _prop(agents, "eta", title="Reclaim Xfer")
     tok = agents["eta"]["token"]
-    _claim(agents, pid, "reclaim", who="eta")
+    WT.workspace_claim(tok, "claim", pid, "reclaim")
     WT.workspace_write_file(tok, pid, "reclaim", "r.txt", content="before\n")
     pin = WT.workspace_read_file(tok, pid, "reclaim", "r.txt")["content_sha256"]
     old_claim = db.get_workspace(tok, pid, "reclaim")
-    ticket = TT.workspace_upload_ticket(tok, pid, "reclaim", ["r.txt"], {"r.txt": pin})
+    dest = ws._claim_dir(agents["eta"]["agent_id"], pid, "reclaim")
+    ticket = _renew_write(tok, pid, "reclaim", {"r.txt": pin})
     old_apply = ws.apply_transfer_bytes
 
     def release_reclaim_then_apply(*args, **kwargs):
-        released = WT.release_workspace(tok, pid, "reclaim")
+        # db-level, deliberately NOT workspace_claim: this runs INSIDE the
+        # tree lock that apply_transfer_bytes holds, and every tool-layer
+        # claim/release takes that same lock (flock is not reentrant), so
+        # driving the tool here would deadlock instead of racing. The
+        # interleaving under test is the claim row's, not the lock's.
+        released = db.release_workspace(
+            tok, pid, "reclaim", claim_id=int(old_claim["id"])
+        )
         assert released["status"] == "released", released
-        WT.claim_workspace(tok, pid, "reclaim")
-        fresh_claim = db.get_workspace(tok, pid, "reclaim")
+        assert ws._retire_claim_tree_locked(dest), dest
+        fresh_claim = db.claim_workspace(tok, pid, "reclaim")
         assert fresh_claim["id"] != old_claim["id"], fresh_claim
+        ws.ensure_claim_tree(
+            int(fresh_claim["agent_id"]),
+            pid,
+            "reclaim",
+            claim_id=int(fresh_claim["id"]),
+        )
         return old_apply(*args, **kwargs)
 
     with patch.object(ws, "apply_transfer_bytes", release_reclaim_then_apply):
         response = _run(
-            TR.transfer_upload(_req("POST", ticket["ticket"], "r.txt", body=b"after\n"))
+            TR.transfer_upload(_req("POST", ticket, "r.txt", body=b"after\n"))
         )
     assert response.status_code == 404, (response.status_code, response.body)
     assert "gone" in response.body.decode(), response.body
@@ -610,11 +666,9 @@ def test_reclaim_blocks_old_upload(agents):
     assert "could not read" in expect_error(
         WT.workspace_read_file, tok, pid, "reclaim", "r.txt"
     )
-    retry = _run(
-        TR.transfer_upload(_req("POST", ticket["ticket"], "r.txt", body=b"after\n"))
-    )
+    retry = _run(TR.transfer_upload(_req("POST", ticket, "r.txt", body=b"after\n")))
     assert retry.status_code == 404, (retry.status_code, retry.body)
-    WT.release_workspace(tok, pid, "reclaim")
+    db.release_workspace(tok, pid, "reclaim")
     print("  reclaim blocks an old redeemed upload without writing the new tree: ok")
 
 
@@ -694,26 +748,34 @@ def test_encoded_traversal_never_serves(agents):
 
     pid = _prop(agents, "eta", title="Traversal Xfer")
     tok = agents["eta"]["token"]
-    _claim(agents, pid, "trav", who="eta")
+    WT.workspace_claim(tok, "claim", pid, "trav")
     marker = b"traversal-canary-9q8w7e\n"
     WT.workspace_write_file(tok, pid, "trav", "safe.txt", content=marker.decode())
-    t = TT.workspace_fetch_ticket(tok, pid, "trav", ["safe.txt"])
+    ticket = WT.workspace_claim(tok, "renew", pid, "trav")["read"]["ticket"]
     app = Starlette(routes=TR.ROUTES)
     client = TestClient(app, raise_server_exceptions=False)
     # The legit download works end to end (proves the stack, not just handlers).
-    good = client.get(t["files"][0]["url"])
+    good = client.get(TT.transfer_url(ticket, "safe.txt"))
     assert good.status_code == 200 and good.content == marker, good.status_code
     evil = [
-        f"/transfer/{t['ticket']}/%2e%2e/%2e%2e/x.txt",
-        f"/transfer/{t['ticket']}/..%2F..%2Fx.txt",
-        f"/transfer/{t['ticket']}/%252e%252e/x.txt",
-        f"/transfer/{t['ticket']}/.git/HEAD",
-        f"/transfer/{t['ticket']}/.github/workflows/ci.yml",
-        f"/transfer/{t['ticket']}/safe.txt/%2e%2e/x.txt",
+        f"/transfer/{ticket}/%2e%2e/%2e%2e/x.txt",
+        f"/transfer/{ticket}/..%2F..%2Fx.txt",
+        f"/transfer/{ticket}/%252e%252e/x.txt",
+        f"/transfer/{ticket}/.git/HEAD",
+        f"/transfer/{ticket}/.github/workflows/ci.yml",
+        f"/transfer/{ticket}/safe.txt/%2e%2e/x.txt",
     ]
     for url in evil:
         r = client.get(url)
         assert r.status_code != 200 or marker not in r.content, (url, r.status_code)
+    # The ticket now reaches the WHOLE tree, so "not the canary" is no
+    # longer strong enough for the guarded names: each is a hard 400 that
+    # never runs the engine read, on both a claim-scoped read ticket and
+    # (for .github) a rename-shaped path.
+    for path in (".github/workflows/ci.yml", ".git/HEAD", ".workspace.json", ".git"):
+        r = client.get(TT.transfer_url(ticket, path))
+        assert r.status_code == 400, (path, r.status_code, r.text)
+        assert marker.decode() not in r.text, (path, r.text)
     print("  encoded traversal battery never serves bytes: ok")
 
 
@@ -747,24 +809,51 @@ def test_concurrent_redeem_burns_once(agents):
 def test_protected_and_git_refused(agents):
     pid = _prop(agents, "theta", title="Guard Xfer")
     tok = agents["theta"]["token"]
-    _claim(agents, pid, "guard", who="theta")
-    # .github fails fast at mint for BOTH scopes (the data plane refuses
-    # it on read and write alike). Guard errors surface as RepoError.
-    for _scope_fn in (
-        lambda: TT.workspace_fetch_ticket(
-            tok, pid, "guard", [".github/workflows/ci.yml"]
-        ),
-        lambda: TT.workspace_upload_ticket(
-            tok, pid, "guard", [".github/workflows/ci.yml"]
-        ),
-    ):
-        try:
-            _scope_fn()
-        except Exception as exc:
-            assert "protected" in str(exc), exc
-        else:
-            raise AssertionError("expected protected-path refusal at mint")
-    # .git is refused by the engine guard itself (last line of defense).
+    # INVERTED IN SPIRIT, not deleted: a claim-scoped ticket pins NO
+    # path, so the mint never sees .github or .git and cannot refuse them.
+    # The refusal moved DOWN to the data plane, where it must be exactly
+    # as total - the engine guard under the tree lock is the only path
+    # authority left, so that is what these arms now pin.
+    res = WT.workspace_claim(tok, "claim", pid, "guard")
+    read = res["read"]["ticket"]
+    write = res["write"]["ticket"]
+    assert "files" not in res, res
+    # .github is refused on read AND on write, each through the guard.
+    guarded_read = _run(
+        TR.transfer_download(_req("GET", read, ".github/workflows/ci.yml"))
+    )
+    assert guarded_read.status_code == 400, (
+        guarded_read.status_code,
+        guarded_read.body,
+    )
+    assert "protected" in guarded_read.body.decode(), guarded_read.body
+    up = _run(
+        TR.transfer_upload(_req("POST", write, ".github/workflows/ci.yml", body=b"x\n"))
+    )
+    assert up.status_code == 400, (up.status_code, up.body)
+    assert "protected" in up.body.decode(), up.body
+    # A refused write burns nothing, so the same path stays refused
+    # rather than turning into a one-shot.
+    up2 = _run(
+        TR.transfer_upload(_req("POST", write, ".github/workflows/ci.yml", body=b"y\n"))
+    )
+    assert up2.status_code == 400, (up2.status_code, up2.body)
+    # The SCOPE gate is upstream of the path guard, and the two are not
+    # redundant: a write ticket aimed at a guarded path is refused for its
+    # scope and never names the path, so the guard is reached only by the
+    # ticket that was actually issued for that direction.
+    wrong = _run(TR.transfer_download(_req("GET", write, ".github/workflows/ci.yml")))
+    assert wrong.status_code == 400, (wrong.status_code, wrong.body)
+    assert "write-only" in wrong.body.decode(), wrong.body
+    assert "protected" not in wrong.body.decode(), wrong.body
+    # .git is refused by the engine guard itself (last line of defense),
+    # through the data plane and through the engine directly.
+    got = _run(TR.transfer_download(_req("GET", read, ".git/HEAD")))
+    assert got.status_code == 400, (got.status_code, got.body)
+    assert "managed by the workspace" in got.body.decode(), got.body
+    ugit = _run(TR.transfer_upload(_req("POST", write, ".git/config", body=b"x\n")))
+    assert ugit.status_code == 400, (ugit.status_code, ugit.body)
+    assert "managed by the workspace" in ugit.body.decode(), ugit.body
     try:
         ws.read_transfer_bytes(agents["theta"]["agent_id"], pid, "guard", ".git/HEAD")
     except Exception as exc:
@@ -779,7 +868,7 @@ def test_protected_and_git_refused(agents):
         assert "managed by the workspace" in str(exc), exc
     else:
         raise AssertionError("expected .git refusal from the engine guard")
-    print("  protected/.git refused at mint and engine: ok")
+    print("  protected/.git refused at redeem (guard) and engine: ok")
 
 
 def test_terminal_tickets_prune(agents):
@@ -813,9 +902,12 @@ def test_terminal_tickets_prune(agents):
 def test_failed_upload_burns_nothing(agents):
     pid = _prop(agents, "eta", title="Noburn Xfer")
     tok = agents["eta"]["token"]
-    _claim(agents, pid, "noburn", who="eta")
+    WT.workspace_claim(tok, "claim", pid, "noburn")
     WT.workspace_write_file(tok, pid, "noburn", "k.txt", content="keep\n")
-    w = TT.workspace_upload_ticket(tok, pid, "noburn", ["k.txt", "j.txt"])
+    # One claim-scoped write ticket carries the whole tree and never
+    # auto-completes to 'used', so its two paths burn independently - the
+    # sibling guarantee this test exists for, now under the new lifetime.
+    w = WT.workspace_claim(tok, "renew", pid, "noburn")["write"]["ticket"]
     # A pre-redeem refusal (size cap) burns nothing: not the failed path,
     # not its siblings. Both upload cleanly afterwards on the same ticket.
     big = b"z" * ((1 << 20) + 8)
@@ -823,7 +915,7 @@ def test_failed_upload_burns_nothing(agents):
         TR.transfer_upload(
             _req(
                 "POST",
-                w["ticket"],
+                w,
                 "k.txt",
                 body=big,
                 headers=[(b"content-length", str(len(big)).encode())],
@@ -831,9 +923,9 @@ def test_failed_upload_burns_nothing(agents):
         )
     )
     assert refused.status_code == 413, (refused.status_code, refused.body)
-    ok1 = _run(TR.transfer_upload(_req("POST", w["ticket"], "k.txt", body=b"v2\n")))
+    ok1 = _run(TR.transfer_upload(_req("POST", w, "k.txt", body=b"v2\n")))
     assert ok1.status_code == 200, (ok1.status_code, ok1.body)
-    ok2 = _run(TR.transfer_upload(_req("POST", w["ticket"], "j.txt", body=b"new\n")))
+    ok2 = _run(TR.transfer_upload(_req("POST", w, "j.txt", body=b"new\n")))
     assert ok2.status_code == 200, (ok2.status_code, ok2.body)
     print("  refused upload burns nothing (self or siblings): ok")
 
@@ -843,12 +935,11 @@ def test_upload_hits_per_write_budget(agents):
 
     pid = _prop(agents, "fresh", title="Budget Xfer")
     tok = agents["fresh"]["token"]
-    _claim(agents, pid, "budget", who="fresh")
-    w = TT.workspace_upload_ticket(tok, pid, "budget", ["q.txt"])
+    w = WT.workspace_claim(tok, "claim", pid, "budget")["write"]["ticket"]
     old_max = _cfg.WORKSPACE_CLAIM_MAX_MB
     _cfg.WORKSPACE_CLAIM_MAX_MB = 0.00001
     try:
-        resp = _run(TR.transfer_upload(_req("POST", w["ticket"], "q.txt", body=b"x\n")))
+        resp = _run(TR.transfer_upload(_req("POST", w, "q.txt", body=b"x\n")))
     finally:
         _cfg.WORKSPACE_CLAIM_MAX_MB = old_max
     assert resp.status_code == 400, (resp.status_code, resp.body)
@@ -859,10 +950,16 @@ def test_upload_hits_per_write_budget(agents):
 def test_validation_touches_clocks(agents):
     pid = _prop(agents, "fresh", title="Touch Xfer")
     tok = agents["fresh"]["token"]
-    _claim(agents, pid, "touch", who="fresh")
+    WT.workspace_claim(tok, "claim", pid, "touch")
     WT.workspace_write_file(tok, pid, "touch", "s.txt", content="touch\n")
-    t = TT.workspace_fetch_ticket(tok, pid, "touch", ["s.txt"])
-    sha = t["files"][0]["sha256"]
+    ticket = WT.workspace_claim(tok, "renew", pid, "touch")["read"]["ticket"]
+    # There is no mint manifest any more: the sha a client pins comes off a
+    # real download's X-Content-Sha256 header, so this arm proves both the
+    # header and that it matches the bytes on disk.
+    probe = _run(TR.transfer_download(_req("GET", ticket, "s.txt")))
+    assert probe.status_code == 200, (probe.status_code, probe.body)
+    sha = probe.headers["x-content-sha256"]
+    assert sha == hashlib.sha256(b"touch\n").hexdigest(), sha
 
     def _backdate():
         with db._conn() as conn:
@@ -886,7 +983,7 @@ def test_validation_touches_clocks(agents):
         TR.transfer_download(
             _req(
                 "GET",
-                t["ticket"],
+                ticket,
                 "s.txt",
                 headers=[(b"if-none-match", f'"{sha}"'.encode())],
             )
@@ -895,13 +992,11 @@ def test_validation_touches_clocks(agents):
     assert r304.status_code == 304, (r304.status_code, r304.body)
     assert _updated() > "2000-01-01T00:00:00.000Z", _updated()
     # A quiet no-op upload touches too.
-    w = TT.workspace_upload_ticket(tok, pid, "touch", ["s.txt"])
+    w = WT.workspace_claim(tok, "renew", pid, "touch")["write"]["ticket"]
     _backdate()
     import json as _json
 
-    rnoop = _run(
-        TR.transfer_upload(_req("POST", w["ticket"], "s.txt", body=b"touch\n"))
-    )
+    rnoop = _run(TR.transfer_upload(_req("POST", w, "s.txt", body=b"touch\n")))
     assert rnoop.status_code == 200, (rnoop.status_code, rnoop.body)
     assert _json.loads(rnoop.body.decode())["changed"] is False
     assert _updated() > "2000-01-01T00:00:00.000Z", _updated()
@@ -924,7 +1019,7 @@ def test_transfer_touch_runs_under_tree_lock(agents):
             str(row["name"]),
             claim_id=int(row["id"]),
         )
-    _claim(agents, pid, "lockedtouch", who="fresh")
+    read_ticket, write_ticket = _mint(tok, pid, "lockedtouch")
     WT.workspace_write_file(tok, pid, "lockedtouch", "s.txt", content="touch\n")
     dest = ws._claim_dir(agents["fresh"]["agent_id"], pid, "lockedtouch")
     original_touch = TR._touch_best_effort
@@ -958,9 +1053,8 @@ def test_transfer_touch_runs_under_tree_lock(agents):
         assert all(not contender.is_alive() for contender in contenders)
         return response
 
-    read_ticket = TT.workspace_fetch_ticket(tok, pid, "lockedtouch", ["s.txt"])
     read_response = assert_touch_under_lock(
-        lambda: _run(TR.transfer_download(_req("GET", read_ticket["ticket"], "s.txt"))),
+        lambda: _run(TR.transfer_download(_req("GET", read_ticket, "s.txt"))),
         "read",
     )
     assert read_response.status_code == 200, (
@@ -968,12 +1062,9 @@ def test_transfer_touch_runs_under_tree_lock(agents):
         read_response.body,
     )
 
-    upload_ticket = TT.workspace_upload_ticket(tok, pid, "lockedtouch", ["s.txt"])
     upload_response = assert_touch_under_lock(
         lambda: _run(
-            TR.transfer_upload(
-                _req("POST", upload_ticket["ticket"], "s.txt", body=b"touch\n")
-            )
+            TR.transfer_upload(_req("POST", write_ticket, "s.txt", body=b"touch\n"))
         ),
         "apply",
     )
@@ -1020,19 +1111,17 @@ def test_engine_guard_battery():
 def test_failed_apply_unburns_path(agents):
     pid = _prop(agents, "gamma", title="Unburn Xfer")
     tok = agents["gamma"]["token"]
-    _claim(agents, pid, "unburn", who="gamma")
+    WT.workspace_claim(tok, "claim", pid, "unburn")
     WT.workspace_write_file(tok, pid, "unburn", "u.txt", content="base\n")
-    w = TT.workspace_upload_ticket(tok, pid, "unburn", ["u.txt"])
+    w = WT.workspace_claim(tok, "renew", pid, "unburn")["write"]["ticket"]
     # Non-UTF8 fails post-redeem (the path burns, then the apply fails).
-    bad = _run(
-        TR.transfer_upload(_req("POST", w["ticket"], "u.txt", body=b"\xff\xfe\n"))
-    )
+    bad = _run(TR.transfer_upload(_req("POST", w, "u.txt", body=b"\xff\xfe\n")))
     assert bad.status_code == 400, (bad.status_code, bad.body)
     # The path is unburned: fixed bytes retry on the SAME ticket.
-    good = _run(TR.transfer_upload(_req("POST", w["ticket"], "u.txt", body=b"fixed\n")))
+    good = _run(TR.transfer_upload(_req("POST", w, "u.txt", body=b"fixed\n")))
     assert good.status_code == 200, (good.status_code, good.body)
     assert WT.workspace_read_file(tok, pid, "unburn", "u.txt")["content"] == "fixed"
-    retry_ticket = TT.workspace_upload_ticket(tok, pid, "unburn", ["u.txt"])
+    retry_ticket = WT.workspace_claim(tok, "renew", pid, "unburn")["write"]["ticket"]
     apply_entered = threading.Event()
     apply_release = threading.Event()
     unburned = threading.Event()
@@ -1053,9 +1142,7 @@ def test_failed_apply_unburns_path(agents):
 
     async def run_cancelled_apply():
         upload = asyncio.create_task(
-            TR.transfer_upload(
-                _req("POST", retry_ticket["ticket"], "u.txt", body=b"retry\n")
-            )
+            TR.transfer_upload(_req("POST", retry_ticket, "u.txt", body=b"retry\n"))
         )
         assert await asyncio.to_thread(apply_entered.wait, 1)
         upload.cancel()
@@ -1073,11 +1160,9 @@ def test_failed_apply_unburns_path(agents):
         patch.object(db, "unburn_transfer_path", observed_unburn),
     ):
         asyncio.run(run_cancelled_apply())
-    assert unburn_calls == [(retry_ticket["ticket"], "u.txt")], unburn_calls
+    assert unburn_calls == [(retry_ticket, "u.txt")], unburn_calls
     recovered = _run(
-        TR.transfer_upload(
-            _req("POST", retry_ticket["ticket"], "u.txt", body=b"retry\n")
-        )
+        TR.transfer_upload(_req("POST", retry_ticket, "u.txt", body=b"retry\n"))
     )
     assert recovered.status_code == 200, (recovered.status_code, recovered.body)
     assert WT.workspace_read_file(tok, pid, "unburn", "u.txt")["content"] == "retry"
@@ -1087,19 +1172,23 @@ def test_failed_apply_unburns_path(agents):
 def test_crlf_roundtrip_keeps_target(agents):
     pid = _prop(agents, "beta", title="CRLF Xfer")
     tok = agents["beta"]["token"]
-    info = _claim(agents, pid, "crlf", who="beta")
+    res = WT.workspace_claim(tok, "claim", pid, "crlf")
+    tree = res["tree"]
+    assert tree["name"] == "crlf" and os.path.isdir(tree["path"]), tree
     dest = ws._claim_dir(agents["beta"]["agent_id"], pid, "crlf")
     with open(os.path.join(dest, "dos.txt"), "wb") as fh:
         fh.write(b"one\r\ntwo\r\n")
-    assert info["exists"]
-    t = TT.workspace_fetch_ticket(tok, pid, "crlf", ["dos.txt"])
-    pin = t["files"][0]["sha256"]
+    # The pin is the DOWNLOAD's sha over the raw CRLF bytes - the mint
+    # manifest this used to read is gone, and a client that cannot compute
+    # the sha from a download has nothing honest to pin.
+    probe = _run(TR.transfer_download(_req("GET", res["read"]["ticket"], "dos.txt")))
+    assert probe.status_code == 200, (probe.status_code, probe.body)
+    pin = probe.headers["x-content-sha256"]
+    assert pin == hashlib.sha256(b"one\r\ntwo\r\n").hexdigest(), pin
     # An LF-edited upload against the CRLF pin succeeds: the pin checks
     # the pre-apply tree bytes, normalization targets the stored CRLF.
-    w = TT.workspace_upload_ticket(tok, pid, "crlf", ["dos.txt"], {"dos.txt": pin})
-    resp = _run(
-        TR.transfer_upload(_req("POST", w["ticket"], "dos.txt", body=b"one\nTWO\n"))
-    )
+    w = _renew_write(tok, pid, "crlf", {"dos.txt": pin})
+    resp = _run(TR.transfer_upload(_req("POST", w, "dos.txt", body=b"one\nTWO\n")))
     assert resp.status_code == 200, (resp.status_code, resp.body)
     with open(os.path.join(dest, "dos.txt"), "rb") as fh:
         assert fh.read() == b"one\r\nTWO\r\n"
@@ -1236,19 +1325,198 @@ def test_non_ascii_ticket_404s(agents):
     print("  non-ASCII ticket 404s (never 500s): ok")
 
 
-def test_fetch_mint_enforces_cap(agents):
+def test_over_cap_file_refused_at_redeem_and_pin(agents):
     pid = _prop(agents, "epsilon", title="Bigmint Xfer")
     tok = agents["epsilon"]["token"]
-    _claim(agents, pid, "big", who="epsilon")
+    res = WT.workspace_claim(tok, "claim", pid, "big")
     dest = ws._claim_dir(agents["epsilon"]["agent_id"], pid, "big")
     with open(os.path.join(dest, "huge.bin"), "wb") as fh:
         fh.write(b"z" * ((1 << 20) + 8))
-    # Over-cap files refuse at mint (they could never download): no
-    # full read, no ticket row spent on an unusable path.
+    # The claim-scoped mint cannot know the path, so it never refuses -
+    # the over-cap file is stopped at the data plane instead, before any
+    # full read: same cap, same wording, one layer later.
+    got = _run(TR.transfer_download(_req("GET", res["read"]["ticket"], "huge.bin")))
+    assert got.status_code == 413, (got.status_code, got.body)
+    assert "transfer cap" in got.body.decode(), got.body
+    # And the invariant survives where a caller could lean on it: a pin
+    # naming an over-cap file is refused at the RENEW, because such a file
+    # could never upload either.
     assert "transfer cap" in expect_error(
-        TT.workspace_fetch_ticket, tok, pid, "big", ["huge.bin"]
+        WT.workspace_claim, tok, "renew", pid, "big", {"huge.bin": "0" * 64}
     )
-    print("  fetch mint fails fast over the transfer cap: ok")
+    print("  over-cap file refused at download and at a renew pin: ok")
+
+
+# The three pin-refusal arms below share ONE claim, taken once in main().
+# A claim slot is per-AGENT and capped (WORKSPACE_CLAIM_MAX_PER_AGENT),
+# and each arm needs nothing beyond it: action='renew' resolves the
+# caller's OWN existing claim and consumes no new slot, and the arms write
+# their own distinct filenames, so sharing a tree cannot make them collide.
+_PIN_CTX: dict = {}
+
+
+def _pin_group_open(agents):
+    pid = _prop(agents, "alpha", title="Pingroup Xfer")
+    tok = agents["alpha"]["token"]
+    _claim(agents, pid, "pingroup", who="alpha")
+    _PIN_CTX["ctx"] = (
+        tok,
+        pid,
+        "pingroup",
+        ws._claim_dir(agents["alpha"]["agent_id"], pid, "pingroup"),
+    )
+
+
+def _pin_group_close():
+    ctx = _PIN_CTX.pop("ctx", None)
+    if ctx is None:
+        return
+    tok, pid, name, _dest = ctx
+    WT.workspace_claim(tok, "release", pid, name)
+
+
+def test_pin_refuses_file_that_is_not_there():
+    """A pin guards an OVERWRITE, so a path the tree does not hold can
+    never be one. Without this arm getsize raises OSError and the caller
+    reads "could not read ... in the workspace" - a different sentence for
+    the same refusal, which is how a pin check rots into a mystery."""
+    tok, pid, name, dest = _PIN_CTX["ctx"]
+    assert not os.path.exists(os.path.join(dest, "absent.txt")), "precondition"
+    msg = expect_error(
+        WT.workspace_claim, tok, "renew", pid, name, {"absent.txt": "0" * 64}
+    )
+    assert "not a file in this workspace" in msg, msg
+    # The refusal is about the MISSING file, not about pins being broken:
+    # a pin on a real file at its real sha renews on the same claim.
+    WT.workspace_write_file(tok, pid, name, "present.txt", content="v\n")
+    want = _sha256_of(os.path.join(dest, "present.txt"))
+    res = WT.workspace_claim(tok, "renew", pid, name, {"present.txt": want})
+    assert res["write"]["ticket"], res
+    print("  pin naming a file the tree lacks is refused at the mint: ok")
+
+
+def test_pin_refuses_a_tree_that_moved_under_it():
+    """The whole point of a pin: the tree may not have moved between the
+    fetch the sha came from and the upload that would overwrite it."""
+    tok, pid, name, dest = _PIN_CTX["ctx"]
+    WT.workspace_write_file(tok, pid, name, "r.txt", content="v1\n")
+    fetched = _sha256_of(os.path.join(dest, "r.txt"))
+    WT.workspace_write_file(tok, pid, name, "r.txt", content="v2\n")
+    assert _sha256_of(os.path.join(dest, "r.txt")) != fetched, "precondition: moved"
+    msg = expect_error(WT.workspace_claim, tok, "renew", pid, name, {"r.txt": fetched})
+    assert "tree moved since you read it" in msg, msg
+    # Positive control on the same claim: the sha the tree ACTUALLY holds
+    # renews, so the refusal above is the move and nothing else.
+    now = _sha256_of(os.path.join(dest, "r.txt"))
+    res = WT.workspace_claim(tok, "renew", pid, name, {"r.txt": now})
+    assert res["write"]["ticket"], res
+    print("  pin on a file that moved under the tree is refused: ok")
+
+
+def test_pins_refused_on_claim_and_mint_nothing(agents):
+    """action='claim' refuses pins BEFORE the claim is taken, so a refused
+    call must leave neither a ticket nor a claim row. The ticket half is
+    the load-bearing one - a capability minted for a call that refused is
+    the one an agent cannot see it was refused for."""
+    pid = _prop(agents, "gamma", title="PinsOnClaim Xfer")
+    tok = agents["gamma"]["token"]
+    with db._conn() as conn:
+        before = conn.execute(
+            "SELECT COUNT(*) FROM transfer_tickets WHERE proposal_id = ?", (pid,)
+        ).fetchone()[0]
+    assert before == 0, f"precondition: fresh proposal, got {before} ticket rows"
+    msg = expect_error(
+        WT.workspace_claim, tok, "claim", pid, "pinclaim", {"a.txt": "0" * 64}
+    )
+    assert "applies to action='renew'" in msg, msg
+    with db._conn() as conn:
+        after = conn.execute(
+            "SELECT COUNT(*) FROM transfer_tickets WHERE proposal_id = ?", (pid,)
+        ).fetchone()[0]
+        claims = conn.execute(
+            "SELECT COUNT(*) FROM workspace_claims"
+            " WHERE proposal_id = ? AND name = 'pinclaim' AND status = 'active'",
+            (pid,),
+        ).fetchone()[0]
+    assert after == before, f"a refused claim minted {after - before} ticket(s)"
+    assert claims == 0, "a refused claim left an active claim row behind"
+    # And the ordinary claim still works for this citizen, so the refusal
+    # above is about the pins and not about standing.
+    res = WT.workspace_claim(tok, "claim", pid, "pinclaim")
+    assert res["read"]["ticket"] and res["write"]["ticket"], res
+    WT.workspace_claim(tok, "release", pid, "pinclaim")
+    print("  pins refused on action='claim' mint no ticket and no claim: ok")
+
+
+def test_pin_stored_under_the_validated_path():
+    """A pin key differing from its path only by padding is guard-clean
+    and hash-correct, so the mint must STORE it under the cleaned path.
+
+    The redeem layer looks a request up by the URL segment it was handed
+    (server/_transfer.py), so a stored ' x.py' can never match a request
+    for 'x.py'. That is a dead pin - hash-verified once at mint, then
+    incapable of ever firing - which is the exact failure _check_pins
+    exists to prevent, and the reason the key it returns must be `clean`.
+    """
+    import json as _json
+
+    tok, pid, name, dest = _PIN_CTX["ctx"]
+    WT.workspace_write_file(tok, pid, name, "x.py", content="X = 2\n")
+    want = _sha256_of(os.path.join(dest, "x.py"))
+    res = WT.workspace_claim(tok, "renew", pid, name, {" x.py": want})
+    ticket = res["write"]["ticket"]
+    with db._conn() as conn:
+        stored = conn.execute(
+            "SELECT expect_shas_json FROM transfer_tickets WHERE ticket_hash = ?",
+            (hashlib.sha256(ticket.encode()).hexdigest(),),
+        ).fetchone()["expect_shas_json"]
+    assert _json.loads(stored) == {"x.py": want}, stored
+    # The relocated pin is LIVE, not merely moved: move the file under it
+    # and upload the bytes it was taken against. A dead pin skips the
+    # check entirely and quietly applies them.
+    WT.workspace_write_file(tok, pid, name, "x.py", content="X = 9\n")
+    bad = _run(TR.transfer_upload(_req("POST", ticket, "x.py", body=b"X = 2\n")))
+    assert bad.status_code == 409, (bad.status_code, bad.body)
+    assert "stale base for" in bad.body.decode(), bad.body
+    with open(os.path.join(dest, "x.py"), "rb") as fh:
+        assert b"X = 2" not in fh.read(), "the refused upload still landed"
+    # Positive control on a fresh ticket: the pin accepts the bytes it
+    # names, so the refusal above is the pin firing and nothing else.
+    now = _sha256_of(os.path.join(dest, "x.py"))
+    ticket2 = WT.workspace_claim(tok, "renew", pid, name, {" x.py": now})["write"][
+        "ticket"
+    ]
+    ok = _run(TR.transfer_upload(_req("POST", ticket2, "x.py", body=b"X = 9\n")))
+    assert ok.status_code == 200, (ok.status_code, ok.body)
+    print("  a padded pin key is stored - and enforced - under the clean path: ok")
+
+
+def test_pins_refused_on_release_too():
+    """expect_shas belongs to action='renew' alone, so BOTH other arms
+    refuse it rather than one refusing and one ignoring it. An instrument
+    that accepts a value it cannot act on is a value the caller believes
+    is doing something - and 'release' used to take pins and raise
+    nothing. @Lyra-Quill (agent_id=15) caught the asymmetry.
+
+    The positive control on the release path itself is _pin_group_close(),
+    which releases this same claim immediately after: if release were
+    broken, the teardown would raise rather than pass quietly.
+    """
+    tok, pid, name, _dest = _PIN_CTX["ctx"]
+    msg = expect_error(
+        WT.workspace_claim, tok, "release", pid, name, {"a.txt": "0" * 64}
+    )
+    assert "applies to action='renew'" in msg, msg
+    # The refusal is about the PINS and nothing else: a refused release
+    # that tore the claim down anyway would satisfy the assert above.
+    with db._conn() as conn:
+        live = conn.execute(
+            "SELECT COUNT(*) FROM workspace_claims"
+            " WHERE proposal_id = ? AND name = ? AND status = 'active'",
+            (pid, name),
+        ).fetchone()[0]
+    assert live == 1, "the refused release tore the claim down anyway"
+    print("  pins refused on action='release' too, claim survives: ok")
 
 
 def test_content_write_directory_refused(agents):
@@ -1373,7 +1641,15 @@ def main():
     test_cap_floor_defaults(agents)
     test_download_filename_sanitized()
     test_non_ascii_ticket_404s(agents)
-    test_fetch_mint_enforces_cap(agents)
+    test_over_cap_file_refused_at_redeem_and_pin(agents)
+    # One claim for the whole pin group: taken here, released below.
+    _pin_group_open(agents)
+    test_pin_refuses_file_that_is_not_there()
+    test_pin_refuses_a_tree_that_moved_under_it()
+    test_pins_refused_on_claim_and_mint_nothing(agents)
+    test_pin_stored_under_the_validated_path()
+    test_pins_refused_on_release_too()
+    _pin_group_close()
     test_content_write_directory_refused(agents)
     test_expect_shape_validated(agents)
     test_mcp_noop_touches_clocks(agents)

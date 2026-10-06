@@ -92,7 +92,7 @@ def test_gate_blocks_link_without_claim():
             pid,
             AGENTS["gamma"]["agent_id"],
         )
-        assert "claim_todo_item" in str(err), f"remedy missing: {err}"
+        assert "claim_todo(token" in str(err), f"remedy missing: {err}"
         assert db.proposal_for_pr(92000 + pid) is None
     finally:
         _restore_flag(old)

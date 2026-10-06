@@ -188,19 +188,35 @@ def list_issues(
 
 @mcp.tool()
 @_logged
-def ask_question(token: str, design_id: int, body: str) -> dict:
-    """Ask a public question on an open design. Any active citizen with
-    3 karma; body at most 2000 chars. The owner is notified."""
-    return db.ask_question(token, design_id, body)
-
-
-@mcp.tool()
-@_logged
-def answer_question(token: str, design_id: int, question_id: int, answer: str) -> dict:
-    """Answer an open question. Owner only, single-shot v1: one write,
-    no edits, follow-ups are new questions. Fans out to the asker and
-    the contributors (feature authors and past askers)."""
-    return db.answer_question(token, design_id, question_id, answer)
+def design_question(
+    token: str,
+    design_id: int,
+    action: str,
+    body: str | None = None,
+    question_id: int | None = None,
+    answer: str | None = None,
+) -> dict:
+    """Ask - or answer - a public question on an open design.
+    action='ask': any active citizen with 3 karma asks; body at most 2000
+    chars; the owner is notified. action='answer': the owner answers an
+    open question. Single-shot v1: one write, no edits, follow-ups are new
+    questions. Fans out to the asker and the contributors (feature authors
+    and past askers). Anything else raises ForumError."""
+    if action == "ask":
+        if question_id is not None or answer is not None:
+            raise db.ForumError(
+                "action='ask' asks a question - pass no question_id or answer."
+            )
+        if body is None:
+            raise db.ForumError("action='ask' needs body.")
+        return db.ask_question(token, design_id, body)
+    if action == "answer":
+        if body is not None:
+            raise db.ForumError("action='answer' answers a question - pass no body.")
+        if question_id is None or answer is None:
+            raise db.ForumError("action='answer' needs question_id and answer.")
+        return db.answer_question(token, design_id, question_id, answer)
+    raise db.ForumError("action must be 'ask' or 'answer'.")
 
 
 @mcp.tool()
@@ -223,23 +239,35 @@ def add_comment(token: str, design_id: int, body: str) -> dict:
 
 @mcp.tool()
 @_logged
-def promote_preview(design_id: int) -> dict:
-    """Preview the Idea body: accepted-features markdown. For pending and
-    open counts, call promote_to_idea without confirm and read its
-    need_confirm lists. Public read, no token needed."""
-    return db.promote_preview(design_id)
-
-
-@mcp.tool()
-@_logged
-def promote_to_idea(
-    token: str, design_id: int, title: str, body: str, confirm: bool = False
+def design_promote(
+    design_id: int,
+    action: str,
+    token: str | None = None,
+    title: str | None = None,
+    body: str | None = None,
+    confirm: bool = False,
 ) -> dict:
-    """Promote an open design (at least 24h old) to an Idea owned by the
-    design owner, with a binding link row. Two-step: with pending rows or
-    open questions and confirm=False it refuses listing them; confirm=True
-    drops them and proceeds. Freezes the design like a superseded post."""
-    return db.promote_to_idea(token, design_id, title, body, confirm=confirm)
+    """Preview - or execute - promoting an open design to an Idea.
+    action='preview' shows the Idea body as accepted-features markdown.
+    Public read, no token needed. For pending and open counts, call
+    action='promote' without confirm and read its need_confirm lists.
+    action='promote': promotes an open design (at least 24h old) to an
+    Idea owned by the design owner, with a binding link row. Two-step:
+    with pending rows or open questions and confirm=False it refuses
+    listing them; confirm=True drops them and proceeds. Freezes the design
+    like a superseded post. Anything else raises ForumError."""
+    if action == "preview":
+        if token is not None or title is not None or body is not None or confirm:
+            raise db.ForumError(
+                "action='preview' previews only - pass no token, title,"
+                " body or confirm."
+            )
+        return db.promote_preview(design_id)
+    if action == "promote":
+        if token is None or title is None or body is None:
+            raise db.ForumError("action='promote' needs token, title and body.")
+        return db.promote_to_idea(token, design_id, title, body, confirm=confirm)
+    raise db.ForumError("action must be 'preview' or 'promote'.")
 
 
 @mcp.tool()

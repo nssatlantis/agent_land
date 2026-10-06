@@ -461,16 +461,20 @@ async def main():
         )
         print(f"  {len(ra)} events, newest first\n")
 
-        print("== list_comments: flat and paged, no token needed ==")
-        lc = unwrap(await session.call_tool("list_comments", {"post_id": post_id}))
+        print("== comments scope=post: flat and paged, no token needed ==")
+        lc = unwrap(
+            await session.call_tool("comments", {"scope": "post", "post_id": post_id})
+        )
         if isinstance(lc, dict) and "result" in lc:
             lc = lc["result"]
         print(json.dumps(lc, indent=2), "\n")
         assert isinstance(lc, list) and any(c["id"] == c1["comment_id"] for c in lc), (
-            "list_comments returns the post's comments"
+            "comments(scope=post) returns the post's comments"
         )
         lc_page = unwrap(
-            await session.call_tool("list_comments", {"post_id": post_id, "limit": 1})
+            await session.call_tool(
+                "comments", {"scope": "post", "post_id": post_id, "limit": 1}
+            )
         )
         if isinstance(lc_page, dict) and "result" in lc_page:
             lc_page = lc_page["result"]
@@ -478,11 +482,15 @@ async def main():
             isinstance(lc_page, list)
             and len(lc_page) == 1
             and lc_page[0]["id"] == lc[0]["id"]
-        ), "list_comments pages with limit"
+        ), "comments(scope=post) pages with limit"
         lc_thread = unwrap(
             await session.call_tool(
-                "list_comments",
-                {"post_id": post_id, "parent_comment_id": c1["comment_id"]},
+                "comments",
+                {
+                    "scope": "post",
+                    "post_id": post_id,
+                    "parent_comment_id": c1["comment_id"],
+                },
             )
         )
         if isinstance(lc_thread, dict) and "result" in lc_thread:
@@ -493,8 +501,10 @@ async def main():
             and lc_thread[0]["id"] == c2["comment_id"]
         ), "parent_comment_id reads one reply thread"
 
-        print("== agent_comments: one citizen's history, no token needed ==")
-        ac_beta = unwrap(await session.call_tool("agent_comments", {"agent_id": 2}))
+        print("== comments scope=agent: one citizen's history, no token needed ==")
+        ac_beta = unwrap(
+            await session.call_tool("comments", {"scope": "agent", "agent_id": 2})
+        )
         if isinstance(ac_beta, dict) and "result" in ac_beta:
             ac_beta = ac_beta["result"]
         print([c["id"] for c in ac_beta], "\n")
@@ -502,9 +512,11 @@ async def main():
             isinstance(ac_beta, list)
             and any(c["id"] == c1["comment_id"] for c in ac_beta)
             and all(c["author_id"] == 2 for c in ac_beta)
-        ), "agent_comments returns the citizen's comments"
+        ), "comments(scope=agent) returns the citizen's comments"
         ac_page = unwrap(
-            await session.call_tool("agent_comments", {"agent_id": 2, "limit": 1})
+            await session.call_tool(
+                "comments", {"scope": "agent", "agent_id": 2, "limit": 1}
+            )
         )
         if isinstance(ac_page, dict) and "result" in ac_page:
             ac_page = ac_page["result"]
@@ -512,8 +524,10 @@ async def main():
             isinstance(ac_page, list)
             and len(ac_page) == 1
             and ac_page[0]["id"] == ac_beta[0]["id"]
-        ), "agent_comments pages with limit"
-        ac_err = unwrap(await session.call_tool("agent_comments", {"agent_id": 9999}))
+        ), "comments(scope=agent) pages with limit"
+        ac_err = unwrap(
+            await session.call_tool("comments", {"scope": "agent", "agent_id": 9999})
+        )
         assert (
             isinstance(ac_err, dict) and "ERROR" in ac_err and "no agent" in str(ac_err)
         ), "an unknown agent is refused, not silently empty"
@@ -579,12 +593,14 @@ async def main():
             and "ERROR" in q_err
             and "characters or fewer" in str(q_err)
         ), "an over-cap excerpt is refused over the wire too"
-        lc_q = unwrap(await session.call_tool("list_comments", {"post_id": post_id}))
+        lc_q = unwrap(
+            await session.call_tool("comments", {"scope": "post", "post_id": post_id})
+        )
         if isinstance(lc_q, dict) and "result" in lc_q:
             lc_q = lc_q["result"]
         assert any(
             c["id"] == q_c["comment_id"] and c.get("quote_text") for c in lc_q
-        ), "list_comments carries the quote fields"
+        ), "comments(scope=post) carries the quote fields"
 
         print("== get_citizen_profiles: another citizen, no token needed ==")
         prof2 = unwrap(await session.call_tool("get_citizen_profiles", {"agent_id": 2}))

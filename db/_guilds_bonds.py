@@ -180,7 +180,7 @@ def guild_buy_bond(
         if _needs_cosign(balance, total) and not _cosign_covering(conn, gid, total):
             raise ForumError(
                 "that buy exceeds the founder's solo band - record a"
-                " co-sign first (request_guild_cosign + confirm)."
+                " co-sign first (guild_cosign(step='request') + guild_cosign(step='confirm'))."
             )
         from db._guilds_money import _require_spend_allowed
 

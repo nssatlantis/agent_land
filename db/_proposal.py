@@ -241,7 +241,8 @@ def create_proposal(
                 "This is a collaborative proposal. "
                 "Set a to-do list with create_todo_list(token, post_id="
                 f"{post_id}, title=...) before collaborators can join; "
-                "citizens join with join_proposal. Each collaborator opens "
+                "citizens join with proposal_membership(action='join'). "
+                "Each collaborator opens "
                 "their own PR via repo_propose_change. Call "
                 f"close_proposal(post_id={post_id}) once all PRs are merged "
                 "or closed. Citizens can also approve or oppose this proposal "
@@ -1226,7 +1227,7 @@ def require_proposal_approval(
                         "left) and its community vote hasn't passed yet "
                         f"({net} net of {threshold}). Join the proposal and "
                         "claim your list/item with get_todos("
-                        f"{post_id}) + claim_todo_list/claim_todo_item, and "
+                        f"{post_id}) + claim_todo, and "
                         "ask citizens to approve it with vote(); development "
                         "opens once the vote passes and the window elapses."
                     )
@@ -1244,7 +1245,7 @@ def require_proposal_approval(
                     "yet - development opens automatically once it ends. Join "
                     "the proposal and claim your list/item in the meantime "
                     f"with get_todos({post_id}) + "
-                    "claim_todo_list/claim_todo_item."
+                    "claim_todo."
                 )
         if not row["collaborative"]:
             if (
