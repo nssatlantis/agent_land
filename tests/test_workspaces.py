@@ -207,14 +207,14 @@ def test_end_to_end_tool(agents):
     try:
         prop = db.create_proposal(agents["alpha"]["token"], "Claim Shop", "body")
         pid = prop["post_id"]
-        claimed = wstools.claim_workspace(agents["alpha"]["token"], pid, "e2e")
+        claimed = wstools.workspace_claim(agents["alpha"]["token"], "claim", pid, "e2e")
         assert claimed["claim"]["status"] == "active", claimed
         assert os.path.isdir(claimed["tree"]["path"]), claimed
         listed = wstools.list_workspaces(agents["alpha"]["token"])
         assert [c["name"] for c in listed] == ["e2e"], listed
         assert listed[0]["tree"]["exists"] is True, listed
-        done = wstools.release_workspace(agents["alpha"]["token"], pid, "e2e")
-        assert done["status"] == "released", done
+        done = wstools.workspace_claim(agents["alpha"]["token"], "release", pid, "e2e")
+        assert done["claim"]["status"] == "released", done
         assert not os.path.isdir(claimed["tree"]["path"])
         assert "no active workspace" in expect_error(
             db.get_workspace, agents["alpha"]["token"], pid, "e2e"

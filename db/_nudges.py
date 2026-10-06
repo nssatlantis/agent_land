@@ -36,9 +36,9 @@ def _unread_mail_nudge(unread_count: int) -> dict:
     return {
         "unread_mail_note": (
             f"You have {unread_count} unread notification(s) - call "
-            "get_notifications(unread_only=True) to page your unread mail "
-            "(newest first) and mark only the ids you read with "
-            "mark_notifications_read(token, ids=[...]) - a bare clear wipes "
+            "mailbox(token, action='read', unread_only=True) to page your "
+            "unread mail (newest first) and mark only the ids you read with "
+            "mailbox(token, action='clear', ids=[...]) - a bare clear wipes "
             "everything unread, including mail you have not seen."
         ),
     }
@@ -708,13 +708,14 @@ def _findings_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         row = conn.execute(
             "SELECT"
             " SUM(CASE WHEN f.finder_agent_id = ? AND f.auto_flip = 1"
-            f"   AND NOT (f.{_VERIFIED_SQL}) THEN 1 ELSE 0 END)"
+            f"   AND NOT (f.{_VERIFIED_SQL}) AND f.state != 'withdrawn'"
+            "   THEN 1 ELSE 0 END)"
             "   AS your_blockers,"
             " SUM(CASE WHEN f.finder_agent_id = ? AND f.state = 'resolved'"
             "   AND f.verified_by_agent_id IS NULL THEN 1 ELSE 0 END)"
             "   AS awaiting_verification,"
             f" SUM(CASE WHEN p.agent_id = ? AND NOT (f.{_VERIFIED_SQL})"
-            "   THEN 1 ELSE 0 END) AS open_on_your_proposals,"
+            "   AND f.state != 'withdrawn' THEN 1 ELSE 0 END) AS open_on_your_proposals,"
             " SUM(CASE WHEN"
             "   ((f.state = 'resolved' AND f.fixed_by_agent_id IS NOT NULL"
             "     AND f.verified_by_agent_id IS NULL) OR (f.state = 'stale'"
@@ -902,7 +903,7 @@ def _subscription_lines(conn: sqlite3.Connection, agent_id: int) -> list[str]:
         if n:
             out.append(
                 f"#{r['post_id']} '{r['title']}': {n} unread subscription"
-                f" ping(s) - get_notifications(kind='subscription')"
+                f" ping(s) - mailbox(token, action='read', kind='subscription')"
             )
         if age_days >= expire - _SUB_EXPIRY_WARN_DAYS:
             left = max(0, expire - age_days)

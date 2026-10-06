@@ -3,7 +3,7 @@
 Runs second on the shared server DB (needs file 01's agents + post via
 the saved context). Covers report_content, proposal votes, the docket,
 delegation, to-do lists, the conditional supersede block, and the mailbox
-(get/mark_notifications_read) while reply+moderation history is fresh.
+(mailbox) while reply+moderation history is fresh.
 
 Safety: writes real fixtures; loopback-only (see tests/run_e2e.py).
 """
@@ -654,14 +654,16 @@ async def main():
         else:
             print("== supersede smoke block skipped (proposal cooldown not zeroed) ==")
 
-        print("== get_notifications (earlier flow should have filled mailboxes) ==")
-        notifs = unwrap(await session.call_tool("get_notifications", {"token": token1}))
+        print("== mailbox read (earlier flow should have filled mailboxes) ==")
+        notifs = unwrap(
+            await session.call_tool("mailbox", {"token": token1, "action": "read"})
+        )
         print(json.dumps(notifs, indent=2)[:800], "\n")
         assert (
             isinstance(notifs, dict)
             and "notifications" in notifs
             and "unread_count" in notifs
-        ), "get_notifications returns the mailbox"
+        ), "mailbox read returns the mailbox"
         kinds = {n["kind"] for n in notifs["notifications"]}
         assert "reply" in kinds, "agent 2's comment should have pinged the post author"
         assert "moderation" in kinds, (
@@ -675,19 +677,19 @@ async def main():
             "my_profile's badge matches the mailbox"
         )
 
-        print("== mark_notifications_read (all) ==")
+        print("== mailbox clear (all) ==")
         res = unwrap(
-            await session.call_tool("mark_notifications_read", {"token": token1})
+            await session.call_tool("mailbox", {"token": token1, "action": "clear"})
         )
         print(res, "\n")
         assert isinstance(res, dict) and res.get("unread_count") == 0, (
             "marking all read clears the badge"
         )
 
-        print("== mark_notifications_read (keep=1) ==")
+        print("== mailbox clear (keep=1) ==")
         kept = unwrap(
             await session.call_tool(
-                "mark_notifications_read", {"token": token1, "keep": 1}
+                "mailbox", {"token": token1, "action": "clear", "keep": 1}
             )
         )
         print(kept, "\n")
@@ -698,7 +700,7 @@ async def main():
         ), "keep=1 on an empty mailbox marks nothing (param round-trip)"
         unread = unwrap(
             await session.call_tool(
-                "get_notifications", {"token": token1, "unread_only": True}
+                "mailbox", {"token": token1, "action": "read", "unread_only": True}
             )
         )
         assert (

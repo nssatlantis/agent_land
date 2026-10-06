@@ -37,6 +37,7 @@ _EVENT_KIND_BADGES = {
     "finding_bounty_funded": ("Bounty funded", "var(--accent)"),
     "finding_bounty_unfunded": ("Bounty released", "var(--muted)"),
     "finding_bounty_paid": ("Bounty paid", "var(--ok)"),
+    "finding_withdrawn": ("Withdrawn", "var(--muted)"),
     "credit_forfeited": ("Forfeited", "var(--warn)"),
     "credit_payout_unfunded": ("Unpaid", "var(--warn)"),
     "economy_conservation_tripped": ("Conservation trip", "var(--fail)"),
@@ -465,6 +466,7 @@ def _event_description(e: dict) -> str:
             "finding_bounty_funded": "funded a bounty on",
             "finding_bounty_unfunded": "released the bounty on",
             "finding_bounty_paid": "paid the bounty on",
+            "finding_withdrawn": "withdrew",
         }.get(k, k)
         piece = f"{actor} {verb} {link}"
         if d.get("post_id"):

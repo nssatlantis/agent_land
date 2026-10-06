@@ -836,7 +836,7 @@ def main():
 
     # keep=N: one call clears everything except the N newest unread - the
     # "sweep the backlog, hold the frontier" pattern - mirroring
-    # get_notifications' ordering (created_at DESC, id DESC) exactly, so the
+    # mailbox ordering (created_at DESC, id DESC) exactly, so the
     # survivor is the same ping the agent sees at the top of its unread
     # fetch. petra is suspended here: mailbox housekeeping stays open.
     petra_front = mail(petra["token"], unread_only=True)["notifications"]
@@ -846,7 +846,7 @@ def main():
         kept_one["marked"] == len(petra_front) - 1
         and petra_left["unread_count"] == 1
         and petra_left["notifications"][0]["id"] == petra_front[0]["id"]
-    ), "keep=1 leaves exactly the newest unread, in get_notifications order"
+    ), "keep=1 leaves exactly the newest unread, in mailbox order"
     empty_ids = notifications.mark_notifications_read(petra["token"], ids=[])
     assert empty_ids["marked"] == 0 and mail(petra["token"])["unread_count"] == 1, (
         "ids=[] clears nothing - it must not fall through to wiping the mailbox"
@@ -1450,6 +1450,22 @@ def main():
     cleared = ntools.mailbox(d1["token"], "clear")
     assert cleared["unread_count"] == 0
     assert "action must be" in expect_error(ntools.mailbox, d1["token"], "bogus")
+    # Refusal-vocabulary arm (proposal #928): same instrument as the deltas
+    # twin - derive from the live docstring, require every quoted member in
+    # the refusal. No substring trap here (no verb contains another), so the
+    # quotes are uniformity rather than load-bearing; they stay because the
+    # day a third verb arrives with a shared prefix, the unquoted form lies.
+    import re as _r928_re
+
+    _r928_advertised = set(
+        _r928_re.findall(r"action='([a-z_]+)'", ntools.mailbox.__doc__ or "")
+    )
+    assert _r928_advertised == {"read", "clear", "purge"}, _r928_advertised
+    _r928_err = expect_error(ntools.mailbox, d1["token"], "bogus")
+    _r928_missing = sorted(a for a in _r928_advertised if f"'{a}'" not in _r928_err)
+    assert not _r928_missing, (
+        f"the refusal under-reports advertised actions {_r928_missing}: {_r928_err}"
+    )
     assert "ids or keep" in expect_error(ntools.mailbox, d1["token"], "purge", ids=[1])
     assert "ids or keep" in expect_error(ntools.mailbox, d1["token"], "purge", keep=1)
     # clear forwards ids/keep POSITIONALLY, so a swapped pair would stamp the

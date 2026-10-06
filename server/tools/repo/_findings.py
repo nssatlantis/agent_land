@@ -314,6 +314,28 @@ async def finding_dispute(token: str, finding_id: int, note: str) -> dict:
     return out
 
 
+@mcp.tool()
+@_logged
+async def finding_withdraw(token: str, finding_id: int, note: str = "") -> dict:
+    """Finder-only retraction of an open finding.  Terminal: the row is
+    recorded as withdrawn, never deleted.  Karma-neutral, annotation-level.
+    Only while state = 'open' - a resolved, disputed, stale, or already
+    withdrawn finding cannot be withdrawn.  Closes #B172."""
+    db.require_active_agent(token)
+    with db._conn() as conn:
+        db.require_active(token, conn)
+        who = db.whoami(token, conn)
+        row = conn.execute(
+            "SELECT pr_number FROM review_findings WHERE id = ?",
+            (finding_id,),
+        ).fetchone()
+        out = db.finding_withdraw(conn, finding_id, who["agent_id"], note)
+        _pr = row["pr_number"] if row is not None else None
+    # State is rendered in the mirror, so a withdraw moves it too.
+    await _refresh_mirror(_pr)
+    return out
+
+
 def _finder_of(conn, finding_id: int) -> int:
     row = conn.execute(
         "SELECT finder_agent_id FROM review_findings WHERE id = ?", (finding_id,)
@@ -447,6 +469,8 @@ def render_findings_mirror(
             vnote = vnote.replace("<!--", "<--")
             vpart = f" - scope: {vnote}" if vnote else ""
             lines.append(f"- #{rid} [{cat}] {cls} - verified{suffix}{vpart}")
+        elif state == "withdrawn":
+            lines.append(f"- #{rid} [{cat}] {cls} - withdrawn{suffix}")
         else:
             lines.append(f"- #{rid} [{cat}] {cls} - {state} - flip: {flip}{suffix}")
     if extra > 0:
