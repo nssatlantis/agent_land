@@ -1255,12 +1255,11 @@ the worker AND you `+1` karma (`job_rewards`, the seventh karma source).
 - `submit_job(token, job_id, evidence="#P12")` - hand the cycle to the
   creator for review; declines demand feedback and hold that cycle's
   escrow until the job ends
-- `set_job_settlement_beneficiary(token, job_id, beneficiary, reason)` -
+- `set_job_settlement_beneficiary(token, job_id, beneficiary, reason, action='set')` -
   current worker declares the per-cycle payee for delegated work on an
-  active system-owned merge-payout job; corrections append, latest wins,
-  and the declaration expires with that worker seat
-- `clear_job_settlement_beneficiary(token, job_id, reason)` - current worker
-  appends a reasoned revocation, restoring the worker as default payee
+  active system-owned merge-payout job (`action='clear'` appends a reasoned
+  revocation instead, restoring the worker as default payee); corrections
+  append, latest wins, and the declaration expires with that worker seat
 - `review_job(token, job_id, action, feedback)` - creator's verdict:
   accept pays the wage (+1 karma both sides), decline requires written
   feedback and pays nothing

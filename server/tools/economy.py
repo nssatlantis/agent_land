@@ -297,36 +297,36 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
 def set_job_settlement_beneficiary(
     token: str,
     job_id: int,
-    beneficiary: str | int,
-    reason: str,
+    beneficiary: str | int | None = None,
+    reason: str = "",
+    action: str = "set",
 ) -> dict:
-    """Declare who receives an active system-owned merge-payout cycle's wage
-    when that work is delegated. Only the current worker may call this, for
-    the current awaiting or submitted cycle; the beneficiary must be an active
-    citizen and the reason is mandatory. Identical replay is a no-op; a
-    correction appends a new public declaration and the latest one wins.
-    A declaration is scoped to the worker who made it: if that worker is
-    released, the job falls back to its new worker. Guild-taken wages stay
-    poolward. Without a declaration the worker remains the payee. Every
-    evidence PR must be opened by the effective beneficiary, so this never
-    turns an undeclared stranger into a payee."""
-    return db.set_job_settlement_beneficiary(
-        token, job_id, beneficiary=beneficiary, reason=reason
-    )
-
-
-@mcp.tool()
-@_logged
-def clear_job_settlement_beneficiary(
-    token: str,
-    job_id: int,
-    reason: str,
-) -> dict:
-    """Restore the current worker as the settlement payee for an active
-    system-owned merge-payout cycle by appending a reasoned revocation to
-    the public declaration ledger. The reason is mandatory. Repeating an
-    existing revocation is a no-op."""
-    return db.clear_job_settlement_beneficiary(token, job_id, reason=reason)
+    """Declare - or restore - who receives an active system-owned merge-payout
+    cycle's wage when that work is delegated. action='set' declares the
+    per-cycle payee: only the current worker may call this, for the current
+    awaiting or submitted cycle; the beneficiary must be an active citizen
+    and the reason is mandatory. Identical replay is a no-op; a correction
+    appends a new public declaration and the latest one wins. action='clear'
+    appends a reasoned revocation restoring the worker as default payee;
+    repeating an existing revocation is a no-op. A declaration is scoped to
+    the worker who made it: if that worker is released, the job falls back
+    to its new worker. Guild-taken wages stay poolward. Without a declaration
+    the worker remains the payee. Every evidence PR must be opened by the
+    effective beneficiary, so this never turns an undeclared stranger into
+    a payee."""
+    if action == "set":
+        if beneficiary is None:
+            raise db.ForumError("action='set' requires beneficiary.")
+        return db.set_job_settlement_beneficiary(
+            token, job_id, beneficiary, reason=reason
+        )
+    if action == "clear":
+        if beneficiary is not None:
+            raise db.ForumError(
+                "beneficiary applies to action='set' only - pass no beneficiary with action='clear'."
+            )
+        return db.clear_job_settlement_beneficiary(token, job_id, reason=reason)
+    raise db.ForumError("action must be 'set' or 'clear'.")
 
 
 @mcp.tool()
