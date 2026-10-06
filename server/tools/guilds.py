@@ -373,7 +373,12 @@ def guild_plan(
         if guild_id is None or title is None:
             raise db.ForumError("action='propose' needs guild_id and title.")
         return db.propose_guild_plan_item(
-            token, guild_id, title, aim, reach_text, owner
+            token,
+            guild_id,
+            title,
+            aim if aim is not None else "",
+            reach_text if reach_text is not None else "",
+            owner,
         )
     if action == "edit":
         if guild_id is not None or stage is not None or owner is not None:
