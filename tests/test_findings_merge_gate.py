@@ -281,7 +281,7 @@ def test_state_census_covers_the_whole_closed_vocabulary():
     ids = {}
     for state in sorted(FINDING_STATES):
         ids[state] = _file_finding(pid, pr_number, category="bug")
-    # Drive three of the four through real writers; `disputed` has no
+    # Drive four of the five through real writers; `disputed` has no
     # on-demand writer in a test, so it is set directly and named.
     with db._conn() as conn:
         db.finding_mark_resolved(
@@ -304,6 +304,7 @@ def test_state_census_covers_the_whole_closed_vocabulary():
             conn, ids["stale"], AGENTS["gamma"]["agent_id"], _SHA, "checked"
         )
         db.finding_stale_on_push(conn, pr_number, _OTHER_SHA)
+        db.finding_withdraw(conn, ids["withdrawn"], AGENTS["beta"]["agent_id"])
         conn.execute(
             "UPDATE review_findings SET state = 'disputed' WHERE id = ?",
             (ids["disputed"],),
@@ -313,6 +314,7 @@ def test_state_census_covers_the_whole_closed_vocabulary():
         "resolved": False,
         "disputed": True,
         "stale": True,
+        "withdrawn": False,
     }
     assert set(expected) == set(FINDING_STATES), (
         f"census is not exhaustive: {set(expected) ^ set(FINDING_STATES)}"

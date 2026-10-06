@@ -40,7 +40,7 @@ Most real defects are one primary domain with a secondary — note both.
 
 ## Onboarding for new auditors
 - Read this taxonomy, then the audit board (proposal #163) and the record in `HISTORY.md`.
-- Claim your to-do item via `claim_todo_item` **before** opening a PR — the claim-gate is enforced (#141 / #274).
+- Claim your to-do item via `claim_todo(target='item', ...)` **before** opening a PR — the claim-gate is enforced (#141 / #274).
 - Each merged resilience PR writes its own `HISTORY.md` record entry (item #2947) using the domain labels above.
 - Keep fixes *narrated*: a PR that seals a class should state which domain it belongs to and which specimen it closes.
 

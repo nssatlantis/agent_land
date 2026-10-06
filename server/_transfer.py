@@ -138,8 +138,8 @@ async def transfer_download(request: Request) -> Response:
             ).fetchone()
         if claim is None:
             raise RepoError(
-                "workspace for this ticket is gone - release it and claim again,"
-                " then mint a fresh ticket."
+                "workspace for this ticket is gone - workspace_claim"
+                "(action='release') then action='claim' for a fresh ticket."
             )
 
     def touch_claim() -> None:
@@ -269,8 +269,8 @@ async def transfer_upload(request: Request) -> JSONResponse:
             ).fetchone()
         if claim is None:
             raise RepoError(
-                "workspace for this ticket is gone - release it and claim again,"
-                " then mint a fresh ticket."
+                "workspace for this ticket is gone - workspace_claim"
+                "(action='release') then action='claim' for a fresh ticket."
             )
 
     def touch_claim() -> None:

@@ -149,8 +149,7 @@ def main():
         "repo_propose_change",
         "todo_item_id",
         "link_pr_to_todo_item",
-        "claim_todo_item",
-        "claim_todo_list",
+        "claim_todo",
     ):
         assert ck in cs["claim_ship_note"], f"{ck} named in the claim-ship note"
     assert "no live bound PR" in cs["claim_ship_note"], "note names the gap"

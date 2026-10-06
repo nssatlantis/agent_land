@@ -92,7 +92,7 @@ def _claim(agents, wstools, key, title):
     tok = agents[key]["token"]
     prop = db.create_proposal(tok, title, "body")
     pid = prop["post_id"]
-    claimed = wstools.claim_workspace(tok, pid, "dev")
+    claimed = wstools.workspace_claim(tok, "claim", pid, "dev")
     assert claimed["claim"]["status"] == "active", claimed
     return pid, tok
 
@@ -150,7 +150,7 @@ def test_write_read_roundtrip(agents, wstools):
         assert "read cap" in _expect_tool_error(
             wstools.workspace_read_file, tok, pid, "dev", "big.txt"
         )
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
     print("  write/read roundtrip + ranges: ok")
@@ -184,7 +184,7 @@ def test_list_status_diff(agents, wstools):
         paths = [r["path"] for r in listed]
         assert "work.txt" in paths and "README.md" in paths, paths
         assert not [p for p in paths if p == ".git" or p.startswith(".git/")]
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
     print("  list/status/diff pins: ok")
@@ -249,7 +249,7 @@ def test_read_tools_wait_for_tree_lock(agents, wstools):
         assert snapshot_entered.is_set()
         assert len(errors) == 1, errors
         assert "snapshot is empty" in str(errors[0]), errors
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
     print("  read/status/diff/rehearse wait for the tree lock: ok")
@@ -276,7 +276,7 @@ def test_path_guards(agents, wstools):
             w, tok, pid, "dev", ".github/workflows/x.yml", "x"
         )
         assert "could not read" in _expect_tool_error(r, tok, pid, "dev", "missing.txt")
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
     print("  path guards: ok")
@@ -299,7 +299,7 @@ def test_delete_semantics(agents, wstools):
         assert "directory" in _expect_tool_error(
             wstools.workspace_delete_file, tok, pid, "dev", "sub"
         )
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
     print("  delete semantics: ok")
@@ -336,7 +336,7 @@ def test_sync_and_clocks_and_budget(agents, wstools):
             assert "MAX_MB" in err, err
         finally:
             config.WORKSPACE_CLAIM_MAX_MB = old_cap
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
     print("  sync + both clocks + budget: ok")
@@ -454,7 +454,7 @@ def test_read_at_ref(agents, wstools):
         after_manifest = ws.claim_tree_info(aid, pid, "dev")["manifest"]
         assert after_record >= before_record, (before_record, after_record)
         assert after_manifest["updated_at"] > before_manifest["updated_at"]
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
     print("  ref reads (committed vs dirty): ok")
@@ -900,7 +900,7 @@ def test_workspace_reset(agents, wstools):
         after_manifest = ws.claim_tree_info(aid, pid, "dev")["manifest"]
         assert after_record >= before_record, (before_record, after_record)
         assert after_manifest["updated_at"] > before_manifest["updated_at"]
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
     print("  workspace reset mode: ok")
@@ -945,7 +945,7 @@ def test_owner_isolation(agents, wstools):
         assert "no active workspace" in _expect_tool_error(
             wstools.workspace_delete_file, beta, pid, "dev", "README.md"
         )
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
     print("  owner isolation: ok")
@@ -1162,7 +1162,7 @@ def test_workspace_edits(agents, wstools):
             assert "MAX_MB" in err, err
         finally:
             config.WORKSPACE_CLAIM_MAX_MB = old_cap
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
     print("  workspace edits mode: ok")
@@ -1208,7 +1208,7 @@ def test_workspace_serialized_async(agents, wstools):
             assert max_active == 1
 
         asyncio.run(run_hold_release())
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
     print("  workspace async enter/hold/release serialization: ok")
@@ -1317,7 +1317,7 @@ def test_workspace_serialized_cancellation(agents, wstools):
             assert await serialized(tok, pid, "dev", 2) == 2
 
         asyncio.run(run_cancellation())
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
     print("  workspace async cancellation: ok")
@@ -1358,7 +1358,7 @@ def test_workspace_serialized_cancelled_worker_keeps_lock(agents, wstools):
             assert await asyncio.wait_for(second, 2) == 2
 
         asyncio.run(run_cancelled_worker())
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
     finally:
         sb.close()
     print("  workspace cancellation holds lock through worker: ok")
@@ -1374,20 +1374,20 @@ def test_release_author_and_missing_tree(agents, wstools):
         )["post_id"]
         db.create_todo_list(alpha["token"], pid, "Work", [])
         db.join_proposal(beta["token"], pid)
-        claimed = wstools.claim_workspace(beta["token"], pid, "dev")
+        claimed = wstools.workspace_claim(beta["token"], "claim", pid, "dev")
         dest = str(claimed["tree"]["path"])
-        released = wstools.release_workspace(alpha["token"], pid, "dev")
-        assert released["status"] == "released", released
+        released = wstools.workspace_claim(alpha["token"], "release", pid, "dev")
+        assert released["claim"]["status"] == "released", released
         assert not os.path.isdir(dest), dest
 
         pid2 = db.create_proposal(alpha["token"], "Missing Tree Shop", "body")[
             "post_id"
         ]
-        claimed2 = wstools.claim_workspace(alpha["token"], pid2, "dev")
+        claimed2 = wstools.workspace_claim(alpha["token"], "claim", pid2, "dev")
         dest2 = str(claimed2["tree"]["path"])
         shutil.rmtree(dest2)
-        released2 = wstools.release_workspace(alpha["token"], pid2, "dev")
-        assert released2["status"] == "released", released2
+        released2 = wstools.workspace_claim(alpha["token"], "release", pid2, "dev")
+        assert released2["claim"]["status"] == "released", released2
     finally:
         sb.close()
     print("  author release + missing-tree release: ok")
@@ -1401,15 +1401,15 @@ def test_lock_sibling_survives_release(agents, wstools):
         lock_path = dest + ".workspace.lock"
         assert os.path.isfile(lock_path), lock_path
         before = os.stat(lock_path)
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
         assert not os.path.isdir(dest), dest
         assert os.path.isfile(lock_path), lock_path
         # A reclaim reuses the identical rendezvous path and inode: no
         # unlink may ever split a live holder from future contenders.
-        wstools.claim_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "claim", pid, "dev")
         assert os.path.isfile(lock_path), lock_path
         assert os.stat(lock_path).st_ino == before.st_ino, lock_path
-        wstools.release_workspace(tok, pid, "dev")
+        wstools.workspace_claim(tok, "release", pid, "dev")
         assert os.path.isfile(lock_path), lock_path
     finally:
         sb.close()
@@ -1428,21 +1428,23 @@ def test_release_same_name_two_agents(agents, wstools):
         db.create_todo_list(gamma["token"], pid, "Work", [])
         db.join_proposal(alpha["token"], pid)
         db.join_proposal(beta["token"], pid)
-        wstools.claim_workspace(alpha["token"], pid, "dev")
-        wstools.claim_workspace(beta["token"], pid, "dev")
+        wstools.workspace_claim(alpha["token"], "claim", pid, "dev")
+        wstools.workspace_claim(beta["token"], "claim", pid, "dev")
         dest_alpha = ws._claim_dir(alpha["agent_id"], pid, "dev")
         dest_beta = ws._claim_dir(beta["agent_id"], pid, "dev")
         # The author holds no row: two same-name rows refuse as ambiguous
         # instead of retiring an arbitrary tree.
-        err = _expect_tool_error(wstools.release_workspace, gamma["token"], pid, "dev")
+        err = _expect_tool_error(
+            wstools.workspace_claim, gamma["token"], "release", pid, "dev"
+        )
         assert "multiple active workspaces" in err, err
         assert os.path.isdir(dest_alpha) and os.path.isdir(dest_beta)
         # Owner-first: alpha's release retires only her own tree.
-        wstools.release_workspace(alpha["token"], pid, "dev")
+        wstools.workspace_claim(alpha["token"], "release", pid, "dev")
         assert not os.path.isdir(dest_alpha), dest_alpha
         assert os.path.isdir(dest_beta), dest_beta
         # Beta's claim survived: she releases it herself.
-        wstools.release_workspace(beta["token"], pid, "dev")
+        wstools.workspace_claim(beta["token"], "release", pid, "dev")
         assert not os.path.isdir(dest_beta), dest_beta
     finally:
         sb.close()
