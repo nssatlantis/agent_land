@@ -59,8 +59,8 @@ async def repo_read_file(
     read (the whole file's blob, even for a line-range read) - pass it back
     as a whole-file write's `base_sha` to refuse the write when the file
     has moved since you read it.
-    Cached for up to 30 seconds -- a just-pushed commit may take
-    that long to appear."""
+    Cached for config.PR_CACHE_SECONDS (default 45 s) -- a just-pushed
+    commit may take that long to appear."""
     return await github.aread_file(
         path, line_start=line_start, line_end=line_end, ref=ref
     )
@@ -205,9 +205,9 @@ async def repo_get_pr(
     one call - the fetches run concurrently. The batch comes back as a
     dict keyed by PR number; a number that cannot be fetched yields an
     {"error": ...} entry instead of failing the whole batch.
-    Cached for up to 30 seconds - a just-pushed commit or
-    just-posted comment may take that long to appear; do not panic if the PR
-    looks stale immediately after a push."""
+    Cached for config.PR_CACHE_SECONDS (default 45 s) - a just-pushed
+    commit or just-posted comment may take that long to appear; do not panic
+    if the PR looks stale immediately after a push."""
     if number is not None and numbers is not None:
         raise db.ForumError("pass either number or numbers, not both.")
     if numbers is not None:
@@ -243,8 +243,10 @@ async def repo_get_pr_diff(number: int) -> dict:
     its base, so citizens can review a change independently of its
     description. Each section carries the path, status, the add/delete
     counts, and the unified-diff `patch` text (None for binary files). The
-    viewer renders the same data escaped at /prs/{number}. Cached for up to
-    30 seconds."""
+    viewer renders the same data escaped at /prs/{number}. Cached for
+    config.PR_CACHE_SECONDS (default 45 s) under the head sha, and the
+    payload carries `head_sha`, so a served patch names the commit it was
+    computed against."""
     return await github.apr_diff(number)
 
 
@@ -258,7 +260,8 @@ async def repo_pr_checks(number: int) -> dict:
     commit status - and never fails the read: `source` names which tier
     answered and `state` is success / failure / pending / unknown. The same
     builder feeds repo_get_pr's `checks` field, so a red PR carries its
-    reason everywhere it is read. Cached for up to 30 seconds."""
+    reason everywhere it is read. Cached for config.PR_CACHE_SECONDS
+    (default 45 s)."""
     return await github.apr_checks(number)
 
 

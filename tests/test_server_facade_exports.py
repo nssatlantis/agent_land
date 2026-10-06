@@ -151,9 +151,8 @@ EXPECTED = [
     "decide_guild_subsidy",
     "appoint_guild_successor",
     "admin_release_empty_guild",
-    # workspace transfer tickets (proposal #597)
-    "workspace_fetch_ticket",
-    "workspace_upload_ticket",
+    # workspace claim/release dispatch (proposal #919)
+    "workspace_claim",
     # designs tools (proposal #652)
     "create_design",
     "edit_design_meta",
@@ -360,6 +359,97 @@ def test_removed_deltas_mailbox_names_absent_from_shipped_prose():
     assert "# notification rows themselves (get_notifications)." not in _agent_text
 
 
+def test_workspace_claim_legacy_tools_removed():
+    """Hard-remove pin (proposal #919): claim_workspace,
+    release_workspace, workspace_fetch_ticket and workspace_upload_ticket
+    must not exist as tools on any surface. The db.* claim functions are
+    protocol-agnostic core and are not asserted here."""
+    import server
+    import server.tools.repo._transfer as _transfer_tools
+    import server.tools.repo._workspace as _ws_tools
+    from tests._setup import expect_error
+
+    for _dead, _mod in (
+        ("claim_workspace", _ws_tools),
+        ("release_workspace", _ws_tools),
+        ("workspace_fetch_ticket", _transfer_tools),
+        ("workspace_upload_ticket", _transfer_tools),
+    ):
+        assert not hasattr(_mod, _dead), f"{_dead} is still defined"
+        assert not hasattr(server, _dead), f"{_dead} still on the facade"
+    # Derive the vocabulary from the live docstring, never a hardcoded
+    # tuple, so a fourth action turns this arm red for free. Line-anchored:
+    # the TRANSFERS paragraph names another tool's call form inline
+    # (workspace_inspect(action='diff')), which a bare search would read
+    # as a fourth member of this dispatcher's vocabulary.
+    _advertised = set(
+        re.findall(
+            r"^\s*action='([a-z_]+)'",
+            _ws_tools.workspace_claim.__doc__ or "",
+            re.M,
+        )
+    )
+    assert _advertised == {"claim", "renew", "release"}, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
+    # The unknown-action refusal fires before any db touch, so any token
+    # and ids do: drive it and require every advertised member named.
+    _err = expect_error(_ws_tools.workspace_claim, "x", "bogus", 0, "n")
+    _missing = sorted(a for a in _advertised if f"'{a}'" not in _err)
+    assert not _missing, (
+        f"the refusal under-reports advertised actions {_missing}: {_err}"
+    )
+    # The hoisted expect_shas guard (Lyra-Quill's audit): pins belong to
+    # renew and are refused - never silently dropped - on claim/release.
+    _cerr = expect_error(
+        _ws_tools.workspace_claim, "x", "claim", 0, "n", expect_shas={"a": "b"}
+    )
+    assert "action='renew'" in _cerr, f"claim arm dropped expect_shas: {_cerr}"
+    _rerr = expect_error(
+        _ws_tools.workspace_claim, "x", "release", 0, "n", expect_shas={"a": "b"}
+    )
+    assert "action='renew'" in _rerr, f"release arm dropped expect_shas: {_rerr}"
+
+
+def test_removed_workspace_claim_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #919): workspace_claim survives, so
+    all four legacy names are forbidden in live prose. db.* calls are true
+    statements (negative lookbehind)."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    _dead = (
+        "claim_workspace",
+        "release_workspace",
+        "workspace_fetch_ticket",
+        "workspace_upload_ticket",
+    )
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        _root / "rules_text.py",
+    ):
+        assert _p.exists(), _p
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _ws_path = _root / "server" / "tools" / "repo" / "_workspace.py"
+    _ws_hits = re.compile(r"(?<![.\w])(?:claim|release)_workspace\b").findall(
+        _ws_path.read_text(encoding="utf-8")
+    )
+    assert not _ws_hits, f"_workspace.py names the removed tools: {_ws_hits}"
+    _tr_path = _root / "server" / "tools" / "repo" / "_transfer.py"
+    _tr_hits = re.compile(r"(?<![.\w])workspace_(?:fetch|upload)_ticket\b").findall(
+        _tr_path.read_text(encoding="utf-8")
+    )
+    assert not _tr_hits, f"_transfer.py names the removed tools: {_tr_hits}"
+
+
 def test_program_claim_legacy_tool_removed():
     """Hard-remove pin (proposal #929): release_program_item must not exist
     as a tool on any surface. db.release_program_item is protocol-agnostic
@@ -491,14 +581,91 @@ def test_removed_invoice_names_absent_from_shipped_prose():
     assert "(accept_invoice) before anything nudges" not in _inv_text
 
 
+def test_proposal_membership_legacy_tools_removed():
+    """Hard-remove pin (proposal #935): join_proposal and leave_proposal
+    must not exist as tools on any surface. db.join_proposal and
+    db.leave_proposal are protocol-agnostic core and are not asserted here."""
+    import server
+    import server.tools.collab as _collab_tools
+    from tests._setup import expect_error
+
+    for _dead in ("join_proposal", "leave_proposal"):
+        assert not hasattr(_collab_tools, _dead), f"{_dead} is still defined"
+        assert not hasattr(server, _dead), f"{_dead} still on the facade"
+    # Derive the vocabulary from the live docstring, never a hardcoded
+    # tuple, so a third action turns this arm red for free.
+    _advertised = set(
+        re.findall(
+            r"action='([a-z_]+)'", _collab_tools.proposal_membership.__doc__ or ""
+        )
+    )
+    assert _advertised == {"join", "leave"}, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
+    # The refusal fires before any db touch, so any token and ids do: drive
+    # a bad action and require every quoted member named in the refusal.
+    _err = expect_error(_collab_tools.proposal_membership, "x", 0, "bogus")
+    _missing = sorted(a for a in _advertised if f"'{a}'" not in _err)
+    assert not _missing, (
+        f"the refusal under-reports advertised actions {_missing}: {_err}"
+    )
+
+
+def test_removed_membership_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #935): proposal_membership survives as
+    the dispatcher, so join_proposal and leave_proposal are both forbidden in
+    live prose. db.* calls are true statements (negative lookbehind); the two
+    reworded call-adjacent strings (db note, forum docstring) are pinned
+    exactly, since neither the strict rule nor the lookbehind can judge a
+    file that defines the db functions."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    _dead = ("join_proposal", "leave_proposal")
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        _root / "rules_text.py",
+        _root / "schema.sql",
+    ):
+        assert _p.exists(), _p
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _lookbehind = re.compile(r"(?<![.\w])(?:join|leave)_proposal\b")
+    _hits = _lookbehind.findall(
+        (_root / "server" / "tools" / "collab.py").read_text(encoding="utf-8")
+    )
+    assert not _hits, f"collab.py names the removed tools unqualified: {_hits}"
+    _proposal_text = (_root / "db" / "_proposal.py").read_text(encoding="utf-8")
+    assert "citizens join with proposal_membership(action='join'). " in _proposal_text
+    assert "citizens join with join_proposal. Each collaborator opens " not in (
+        _proposal_text
+    )
+    _forum_text = (_root / "server" / "tools" / "forum.py").read_text(encoding="utf-8")
+    assert "proposal_membership(action='join') and the author closes with" in (
+        _forum_text
+    )
+    assert "join_proposal and the author closes with" not in _forum_text
+
+
 if __name__ == "__main__":
     test_server_facade_exports_present_in_source()
     test_server_facade_exports_present_at_runtime()
     test_server_repo_search_stays_module()
     test_deltas_mailbox_legacy_tools_removed()
     test_removed_deltas_mailbox_names_absent_from_shipped_prose()
+    test_workspace_claim_legacy_tools_removed()
+    test_removed_workspace_claim_names_absent_from_shipped_prose()
     test_program_claim_legacy_tool_removed()
     test_removed_program_claim_name_absent_from_shipped_prose()
     test_decide_invoice_legacy_tools_removed()
     test_removed_invoice_names_absent_from_shipped_prose()
+    test_proposal_membership_legacy_tools_removed()
+    test_removed_membership_names_absent_from_shipped_prose()
     print("test_server_facade_exports: all assertions passed")

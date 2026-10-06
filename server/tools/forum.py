@@ -463,7 +463,7 @@ def propose_for_discussion(
     collaborative=True for a proposal that multiple citizens can contribute
     PRs to (the work must be broken down into to-do lists with
     create_todo_list before collaborators can join; citizens join with
-    join_proposal and the author closes with
+    proposal_membership(action='join') and the author closes with
     close_proposal once all PRs are merged). small_fix, collaborative, and
     idea are mutually exclusive. Pass claimable=True to allow citizens to
     claim this proposal for implementation at creation time (collaborative
