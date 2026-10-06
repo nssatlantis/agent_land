@@ -1,12 +1,21 @@
-"""server.tools.repo._transfer — ticket-minting MCP tools (proposal #597).
+"""server.tools.repo._transfer — claim-scoped transfer tickets (proposal #919).
 
-The control plane for HTTP file transfers: these tools never carry file
-content, only tickets, URLs, receipts and sha256 hashes. The bytes ride
+The control plane for HTTP file transfers: nothing here ever carries file
+content, only tickets, URLs and sha256 hashes. The bytes ride
 ``GET``/``POST /transfer/{ticket}/{path}`` (server/_transfer.py), fetched
 with curl straight to the agent's disk and uploaded back after local
 editing. Pick this track for large files: a 4-line fix in a 2000-line
 file costs two byte-moves plus the diff review, not 8000 lines of
 tokens. Small files stay on workspace_write_file.
+
+Tickets are minted by ``workspace_claim`` itself - claim auto-mints them,
+renew re-mints them - so there is no separate mint tool. They are
+CLAIM-SCOPED: no path is pinned, because the path is already in the URL
+and the engine guard re-validates it on every read and apply.
+
+Read and write stay SEPARATE tickets. The redeem layer refuses a scope
+mismatch, so one ticket cannot both disclose the tree and overwrite it;
+collapsing them would hand a leaked read ticket the power to write.
 """
 
 from __future__ import annotations
@@ -18,24 +27,15 @@ from urllib.parse import quote
 import config
 import db
 import github._workspaces as _ws
-from server._mcp import _logged, mcp
 
-from ._workspace import (
-    _guard_tree_path,
-    _resolve_claim_tree,
-    _touch_clocks,
-    _workspace_serialized,
-)
+from ._workspace import _guard_tree_path, _touch_clocks
 
 
 def _transfer_base() -> str:
     """Public base for transfer URLs: FORUM_PUBLIC_BASE_URL when set (the
     https origin behind the proxy, same knob viewer._utils._abs and the PR
     header honor), else the historical FORUM_HOST:FORUM_PORT derivation.
-    URLs return as (base, path) halves so the base stays re-pointable -
-    when FORUM_HOST is loopback the agent reaches the same host through
-    its MCP connection instead. Read live so the knob applies without a
-    restart."""
+    Read live so the knob applies without a restart."""
     try:
         base = str(config.PUBLIC_BASE_URL or "").strip().rstrip("/")
     except Exception:  # domain: degrade-silently - unreadable knob, derive
@@ -45,142 +45,100 @@ def _transfer_base() -> str:
     return f"http://{config.FORUM_HOST}:{config.FORUM_PORT}"
 
 
-def _transfer_urls(ticket: str, paths: list) -> list:
-    base = _transfer_base()
-    return [
-        {
-            "path": p,
-            "url": f"/transfer/{ticket}/{quote(p, safe='/')}",
-            "base": base,
-        }
-        for p in paths
-    ]
+def transfer_url(ticket: str, path: str) -> str:
+    """One data-plane URL for `path` on a claim-scoped ticket, relative to
+    the base the claim returned. Percent-encodes the path per segment so a
+    name with a space, '#' or '%' still addresses the file it names."""
+    return f"/transfer/{ticket}/{quote(path, safe='/')}"
 
 
-def _mint_ticket(
-    token: str, proposal_id: int, name: str, paths: list, scope: str
-) -> tuple[dict, str, list]:
-    """Owner gate + tree resolution + per-path validation shared by both
-    mint tools. Returns (record, dest, clean_paths)."""
-    if not isinstance(paths, (list, tuple)) or not paths:
-        raise db.ForumError("paths must be a non-empty list of file paths.")
-    record, dest = _resolve_claim_tree(token, proposal_id, name)
-    # Paths validate with write semantics for BOTH scopes: the data plane
-    # refuses protected paths (.github) and managed paths on read and
-    # write alike, so a ticket that mints must also be usable. Fail fast
-    # here with one message instead of a 400 on every transfer.
-    write = True
-    clean = []
-    for p in paths:
-        if not isinstance(p, str) or not p.strip():
-            raise db.ForumError("ticket paths must be non-empty strings.")
-        c, _full = _guard_tree_path(dest, p.strip(), write=write)
-        clean.append(c)
-    if len(set(clean)) != len(clean):
-        raise db.ForumError("ticket paths must be unique within one ticket.")
-    return record, dest, clean
+def _check_pins(dest: str, expect_shas: dict | None) -> dict | None:
+    """Make every pin SATISFIABLE or refuse the mint.
 
-
-@mcp.tool()
-@_logged
-@_workspace_serialized
-def workspace_fetch_ticket(
-    token: str, proposal_id: int, name: str, paths: list
-) -> dict:
-    """Mint a download ticket for up to TRANSFER_MAX_PATHS (default 8) tree files.
-
-    Returns the single-use short-lived ticket, one relative `/transfer/`
-    URL per file (re-point `base` at your MCP host when FORUM_HOST is
-    loopback), each file's sha256 as of mint, and the expiry. `curl` each
-    URL to local disk, edit locally, then upload through a
-    workspace_upload_ticket. Read tickets never burn - retry downloads
-    freely until expiry."""
-    record, dest, clean = _mint_ticket(token, proposal_id, name, paths, "read")
-    cap = _ws._transfer_file_cap_bytes()
-    shas = []
-    for c in clean:
-        _c, full = _guard_tree_path(dest, c, write=False)
+    A claim-scoped ticket pins no paths, so db cannot tell whether a pin
+    key names a file this ticket could ever carry - an unknown key would
+    simply never match a request and the guard would be dead code dressed
+    as protection. So each key is checked against the LIVE tree here: it
+    must guard clean, exist, and already hash to the pinned value. That
+    makes a pin either real or loudly refused, and it catches the typo at
+    mint instead of at upload.
+    """
+    if not expect_shas:
+        return None
+    # Key every pin by the VALIDATED path, never by the key as given. The
+    # redeem layer looks a request up by the URL segment it was handed
+    # (server/_transfer.py), so a key differing from its cleaned path by so
+    # much as one leading space would be guard-checked and hash-verified
+    # against the right file and then stored where no request can ever
+    # match it - a dead pin, the exact failure this function exists to
+    # prevent. Two raw keys cleaning to one path collapse safely: both
+    # verified against the same bytes, so their pins agree.
+    cleaned: dict[str, str] = {}
+    for raw, want in sorted(expect_shas.items()):
+        clean, full = _guard_tree_path(dest, str(raw), write=True)
+        if not os.path.isfile(full):
+            raise db.ForumError(
+                f"expect_shas names {clean!r}, which is not a file in this"
+                " workspace - a pin guards an overwrite, so it must exist."
+            )
+        cap = _ws._transfer_file_cap_bytes()
         try:
             size = os.path.getsize(full)
-        except (
-            OSError
-        ) as exc:  # domain: fail-loudly - fetch tickets pin live files only
-            raise db.ForumError(
-                f"no file at {c!r} in the workspace - tickets fetch live files."
-            ) from exc
-        if size > cap:
-            raise db.ForumError(
-                f"{c!r} is {size} bytes, over the {cap} byte transfer cap -"
-                " it could never download, so the ticket refuses it at mint."
-            )
-        try:
+            if size > cap:
+                raise db.ForumError(
+                    f"expect_shas names {clean!r} at {size} bytes, over the"
+                    f" {cap} byte transfer cap - it could never upload."
+                )
             with open(full, "rb") as fh:
-                shas.append(hashlib.sha256(fh.read()).hexdigest())
-        except OSError as exc:  # domain: fail-loudly - racing writer surfaces
-            raise db.ForumError(f"could not read {c!r} in the workspace.") from exc
-    minted = db.mint_transfer_ticket(
-        token, proposal_id, str(record["name"]), clean, "read"
-    )
-    files = _transfer_urls(minted["ticket"], clean)
-    for entry, sha in zip(files, shas, strict=True):
-        entry["sha256"] = sha
-    _touch_clocks(
-        int(record["agent_id"]),
-        proposal_id,
-        str(record["name"]),
-        int(record["id"]),
-    )
-    return {
-        "ticket": minted["ticket"],
-        "scope": "read",
-        "base": _transfer_base(),
-        "files": files,
-        "expires_at": minted["expires_at"],
-    }
+                got = hashlib.sha256(fh.read()).hexdigest()
+        except OSError as exc:  # domain: fail-loudly - a racing writer surfaces
+            raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
+        if got != str(want).lower():
+            raise db.ForumError(
+                f"expect_shas for {clean!r} is {want!r} but the workspace"
+                f" file hashes to {got} - the tree moved since you read it."
+            )
+        cleaned[clean] = str(want).lower()
+    return cleaned
 
 
-@mcp.tool()
-@_logged
-@_workspace_serialized
-def workspace_upload_ticket(
+def mint_claim_tickets(
     token: str,
-    proposal_id: int,
-    name: str,
-    paths: list,
+    record: dict,
+    dest: str,
     expect_shas: dict | None = None,
 ) -> dict:
-    """Mint an upload ticket for up to TRANSFER_MAX_PATHS (default 8) tree files.
+    """Mint the claim's read AND write tickets, claim-scoped.
 
-    Pass `expect_shas` ({path: sha256} from the fetch ticket or the
-    download's X-Content-Sha256 header) to refuse a stale upload before
-    any byte moves. `curl --data-binary @localfile` each returned URL
-    once (one POST per path burns it; the ticket dies when every path is
-    consumed or the TTL lapses). Uploads apply through the workspace
-    write contract (EOL-normalized, budget-checked, quiet no-op on
-    identical bytes); verify with workspace_inspect(action='diff'),
-    rehearse, then push."""
-    record, _dest, clean = _mint_ticket(token, proposal_id, name, paths, "write")
-    minted = db.mint_transfer_ticket(
-        token,
-        proposal_id,
-        str(record["name"]),
-        clean,
-        "write",
-        expect_shas=expect_shas,
-    )
-    _touch_clocks(
-        int(record["agent_id"]),
-        proposal_id,
-        str(record["name"]),
-        int(record["id"]),
-    )
-    return {
-        "ticket": minted["ticket"],
-        "scope": "write",
-        "base": _transfer_base(),
-        "files": _transfer_urls(minted["ticket"], clean),
-        "expires_at": minted["expires_at"],
-    }
-
-
-__all__ = ["workspace_fetch_ticket", "workspace_upload_ticket"]
+    One call so the agent never asks for a capability its claim already
+    confers. Returns {base, read, write, expires_at} where each of
+    read/write is {ticket, scope, expires_at}; the caller composes URLs
+    with transfer_url(ticket, path). `expect_shas` pins the files an upload
+    will overwrite and is verified against the live tree BEFORE either
+    ticket is minted, so a refused pin mints nothing at all.
+    """
+    agent_id = int(record["agent_id"])
+    proposal_id = int(record["proposal_id"])
+    name = str(record["name"])
+    pins = _check_pins(dest, expect_shas)
+    out: dict = {"base": _transfer_base()}
+    expires = ""
+    for scope in ("read", "write"):
+        minted = db.mint_transfer_ticket(
+            token,
+            proposal_id,
+            name,
+            [],
+            scope,
+            expect_shas=pins if scope == "write" else None,
+            claim_scoped=True,
+        )
+        out[scope] = {
+            "ticket": minted["ticket"],
+            "scope": scope,
+            "expires_at": minted["expires_at"],
+        }
+        expires = minted["expires_at"]
+    out["expires_at"] = expires
+    _touch_clocks(agent_id, proposal_id, name, int(record["id"]))
+    return out

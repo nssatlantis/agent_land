@@ -112,7 +112,6 @@ EXPECTED = [
     "close_proposal",
     "attach_pr_to_proposal",
     "flag_todo_item",
-    "unflag_todo_item",
     # discovery tools
     "search",
     "list_events",
@@ -129,8 +128,6 @@ EXPECTED = [
     "update_bug_report",
     "resolve_bug_report",
     # notifications tools
-    "get_notifications",
-    "mark_notifications_read",
     "mailbox",
     "set_subscription",
     # guild tools (proposal #525)
@@ -152,9 +149,8 @@ EXPECTED = [
     "decide_guild_subsidy",
     "appoint_guild_successor",
     "admin_release_empty_guild",
-    # workspace transfer tickets (proposal #597)
-    "workspace_fetch_ticket",
-    "workspace_upload_ticket",
+    # workspace claim/release dispatch (proposal #919)
+    "workspace_claim",
     # designs tools (proposal #652)
     "create_design",
     "edit_design_meta",
@@ -184,10 +180,10 @@ _IDENTITY = {
     "server.tools.forum": ["get_rules", "create_post", "deltas"],
     "server.tools.repo": ["repo_get_pr", "repo_workflow_status"],
     "server.tools.economy": ["credit_history", "create_invoice"],
-    "server.tools.collab": ["list_proposals", "get_todos_summary", "search_todos"],
+    "server.tools.collab": ["list_proposals", "get_todos_board", "search_todos"],
     "server.tools.discovery": ["search"],
     "server.tools.moderation": ["report_content", "verify_bug_report"],
-    "server.tools.notifications": ["get_notifications", "mailbox"],
+    "server.tools.notifications": ["mailbox"],
     "server.tools.guilds": ["create_guild", "designate_guild_project"],
     "server.tools.designs": ["create_design", "list_designs"],
 }
@@ -236,6 +232,12 @@ def test_server_facade_exports_present_at_runtime():
     for module_name, attrs in _IDENTITY.items():
         leaf = __import__(module_name, fromlist=["__name__"])
         for attr in attrs:
+            # hasattr first: getattr(..., None) is None on BOTH sides when
+            # the name exists on NEITHER, so the identity check below passes
+            # vacuously (None is None) and can never fail. A name missing
+            # from either surface must red here, not hide behind the default.
+            assert hasattr(server, attr), f"server facade is missing {attr}"
+            assert hasattr(leaf, attr), f"{module_name} is missing {attr}"
             assert getattr(server, attr, None) is getattr(leaf, attr, None), (
                 f"server.{attr} is not the real {module_name}.{attr} object"
             )
@@ -383,6 +385,353 @@ def test_removed_claim_names_absent_from_shipped_prose():
     )
 
 
+def test_bond_series_legacy_tools_removed():
+    """Hard-remove pin (proposal #932): bond_series_open and bond_series_close
+    must not exist as tools on any surface. db.* are protocol-agnostic core
+    and the server/admin/* handlers are a separate namespace - neither is
+    asserted here."""
+    import server
+    import server.tools.economy as _economy_tools
+    from tests._setup import expect_error
+
+    for _gone in ("bond_series_open", "bond_series_close"):
+        assert not hasattr(_economy_tools, _gone), f"{_gone} is still defined"
+        assert not hasattr(server, _gone), f"{_gone} still on the facade"
+    # Derive the vocabulary from the live docstring, never a hardcoded
+    # tuple, so a third action turns this arm red for free.
+    _advertised = set(
+        re.findall(r"action='([a-z_]+)'", _economy_tools.bond_series.__doc__ or "")
+    )
+    assert _advertised == {"open", "close"}, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
+    # The admin gate precedes dispatch BY DESIGN (preserved exactly from both
+    # wrappers), so a bad-action drive without an admin token can only ever
+    # reach the auth refusal, never the vocabulary refusal. Drive it anyway:
+    # anything but a refusal is a routing defect.
+    _err = expect_error(_economy_tools.bond_series, "x", "bogus")
+    assert _err, "bad action must be refused"
+    # Finding #148: seed one admin token and drive the dispatcher's OWN
+    # refusal, requiring every advertised member named in it - so this arm
+    # cannot be satisfied by the auth refusal. The gate order is untouched;
+    # only this test holds a fixture key (restored afterwards).
+    import os
+
+    from tests._setup import db
+
+    _probe = db.register_agent("bond_series_admin_probe")
+    _old_admin = os.environ.get("ADMIN_USER")
+    os.environ["ADMIN_USER"] = _probe["name"]
+    try:
+        _aerr = expect_error(_economy_tools.bond_series, _probe["token"], "bogus")
+        # Finding #151 drives (same fixture key): both arms refuse the
+        # other's params (the old surface was a TypeError in both
+        # directions); each arm is the other's control.
+        _oerr = expect_error(_economy_tools.bond_series, _probe["token"], "open", 3)
+        _cproxy = expect_error(
+            _economy_tools.bond_series, _probe["token"], "close", 3, "x"
+        )
+    finally:
+        if _old_admin is None:
+            del os.environ["ADMIN_USER"]
+        else:
+            os.environ["ADMIN_USER"] = _old_admin
+    _amissing = sorted(a for a in _advertised if f"'{a}'" not in _aerr)
+    assert not _amissing, (
+        f"the dispatcher refusal under-reports advertised actions {_amissing}: {_aerr}"
+    )
+    assert "pass no series_id" in _oerr, f"open arm dropped series_id: {_oerr}"
+    assert "pass no name" in _cproxy, f"close arm dropped creation params: {_cproxy}"
+
+
+def test_removed_bond_series_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #932): bond_series survives, so only
+    bond_series_open and bond_series_close are forbidden. The full census
+    found zero prose hits for either name, so this pin guards the future:
+    any newly-written instruction naming a removed tool reds here.
+    db.bond_series_open / db.bond_series_close calls are true statements
+    (negative lookbehind)."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        _root / "rules_text.py",
+    ):
+        assert _p.exists(), _p
+        _text = _p.read_text(encoding="utf-8")
+        for _name in ("bond_series_open", "bond_series_close"):
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _text = _p.read_text(encoding="utf-8")
+        for _name in ("bond_series_open", "bond_series_close"):
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _lookbehind = re.compile(r"(?<![.\w])(bond_series_open|bond_series_close)\b")
+    _hits = _lookbehind.findall(
+        (_root / "server" / "tools" / "economy.py").read_text(encoding="utf-8")
+    )
+    assert not _hits, f"economy.py names removed tools unqualified: {_hits}"
+
+
+def test_settlement_beneficiary_legacy_tool_removed():
+    """Hard-remove pin (proposal #930): clear_job_settlement_beneficiary must
+    not exist as a tool on any surface. db.clear_job_settlement_beneficiary
+    is protocol-agnostic core and is not asserted here."""
+    import server
+    import server.tools.economy as _economy_tools
+    from tests._setup import expect_error
+
+    assert not hasattr(_economy_tools, "clear_job_settlement_beneficiary"), (
+        "clear_job_settlement_beneficiary is still defined"
+    )
+    assert not hasattr(server, "clear_job_settlement_beneficiary"), (
+        "clear_job_settlement_beneficiary still on the facade"
+    )
+    # Derive the vocabulary from the live docstring, never a hardcoded
+    # tuple, so a third action turns this arm red for free.
+    _advertised = set(
+        re.findall(
+            r"action='([a-z_]+)'",
+            _economy_tools.set_job_settlement_beneficiary.__doc__ or "",
+        )
+    )
+    assert _advertised == {"set", "clear"}, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
+    # The refusal fires before any db touch, so any token and ids do: drive
+    # a bad action and require every quoted member named in the refusal.
+    _err = expect_error(
+        _economy_tools.set_job_settlement_beneficiary, "x", 0, None, "", "bogus"
+    )
+    _missing = sorted(a for a in _advertised if f"'{a}'" not in _err)
+    assert not _missing, (
+        f"the refusal under-reports advertised actions {_missing}: {_err}"
+    )
+    # Finding #150: the clear arm must refuse beneficiary (the old surface
+    # was a TypeError here); the set arm's requires-beneficiary refusal is
+    # this arm's two-way control.
+    _cerr = expect_error(
+        _economy_tools.set_job_settlement_beneficiary, "x", 0, "alice", "r", "clear"
+    )
+    assert "pass no beneficiary" in _cerr, (
+        f"clear arm dropped beneficiary silently: {_cerr}"
+    )
+
+
+def test_removed_settlement_beneficiary_name_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #930): set_job_settlement_beneficiary
+    survives as the dispatcher, so only clear_job_settlement_beneficiary is
+    forbidden. No dated record names it (verified by census), so the rule is
+    strict-absent everywhere judged; db.clear_job_settlement_beneficiary
+    calls are true statements (negative lookbehind)."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    for _p in (
+        _root / "README.md",
+        _root / "rules_text.py",
+    ):
+        assert _p.exists(), _p
+        assert "clear_job_settlement_beneficiary" not in _p.read_text(
+            encoding="utf-8"
+        ), f"clear_job_settlement_beneficiary still advertised in {_p.name}"
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        assert "clear_job_settlement_beneficiary" not in _p.read_text(
+            encoding="utf-8"
+        ), f"clear_job_settlement_beneficiary still advertised in {_p.name}"
+    _lookbehind = re.compile(r"(?<![.\w])clear_job_settlement_beneficiary\b")
+    _hits = _lookbehind.findall(
+        (_root / "server" / "tools" / "economy.py").read_text(encoding="utf-8")
+    )
+    assert not _hits, f"economy.py names the removed tool unqualified: {_hits}"
+
+
+def test_deltas_mailbox_legacy_tools_removed():
+    """Hard-remove pin (proposal #928): the four legacy wrappers must not
+    exist as tools on any surface. The db-layer functions of the same names
+    are protocol-agnostic core and are not asserted here."""
+    import server
+    import server.tools.forum as _forum_tools
+    import server.tools.notifications as _notes_tools
+
+    for _gone in ("my_deltas", "reset_delta_cursor"):
+        assert not hasattr(_forum_tools, _gone), f"{_gone} is still defined"
+        assert not hasattr(server, _gone), f"{_gone} still on the facade"
+    for _gone in ("get_notifications", "mark_notifications_read"):
+        assert not hasattr(_notes_tools, _gone), f"{_gone} is still defined"
+        assert not hasattr(server, _gone), f"{_gone} still on the facade"
+    # The survivors must still advertise every direction they implement:
+    # derive the vocabulary from the live docstring, never a hardcoded
+    # tuple, so a fourth action turns this arm red for free.
+    for _tool, _actions in (
+        (_forum_tools.deltas, {"read", "reset"}),
+        (_notes_tools.mailbox, {"read", "clear", "purge"}),
+    ):
+        _advertised = set(re.findall(r"action='([a-z_]+)'", _tool.__doc__ or ""))
+        assert _advertised == _actions, _advertised
+        assert _advertised, "actions must be advertised in parseable action='x' form"
+
+
+def test_removed_deltas_mailbox_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #928): after a hard-remove the tool
+    list is an agent's only reference, so a stale name in prose is how a
+    removed tool keeps getting called. Strict-absent on prose surfaces;
+    db-qualified-or-absent on the two defining modules, where db.* calls
+    are true statements (negative lookbehind, not a prefix strip - a bare
+    pattern matches inside db.my_deltas and would flag its own correct
+    code, the same trap the #1604 pin hit)."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    _gone = (
+        "my_deltas",
+        "reset_delta_cursor",
+        "get_notifications",
+        "mark_notifications_read",
+    )
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        _root / "rules_text.py",
+        _root / "server" / "_mcp.py",
+        _root / "db" / "_nudges.py",
+    ):
+        assert _p.exists(), _p
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _gone:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _gone:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _lookbehind = re.compile(
+        r"(?<![.\w])(my_deltas|reset_delta_cursor|get_notifications|mark_notifications_read)\b"
+    )
+    for _p in (
+        _root / "server" / "tools" / "forum.py",
+        _root / "server" / "tools" / "notifications.py",
+    ):
+        _hits = _lookbehind.findall(_p.read_text(encoding="utf-8"))
+        assert not _hits, f"{_p.name} names removed tools unqualified: {_hits}"
+    # The two test files this PR edits ride the same lookbehind, not the
+    # strict rule: test_notifications.py carries ~30 legitimate
+    # `notifications.mark_notifications_read(` db-layer calls, so strict-absent
+    # would red on correct code.
+    for _p in (
+        _root / "tests" / "test_e2e_02_governance.py",
+        _root / "tests" / "test_notifications.py",
+    ):
+        _hits = _lookbehind.findall(_p.read_text(encoding="utf-8"))
+        assert not _hits, f"{_p.name} names removed tools unqualified: {_hits}"
+    # db/_agent.py defines db.my_deltas/db.reset_delta_cursor, so neither
+    # the strict rule nor the lookbehind can judge it (both red on the db
+    # layer itself). Pin its two reworded sites exactly instead: presence of
+    # each replacement plus absence of the precise dead string it replaced.
+    # A revert reintroduces the dead name and drops the replacement, which
+    # is exactly what fails here.
+    _agent_text = (_root / "db" / "_agent.py").read_text(encoding="utf-8")
+    assert "mailbox(token, action='read', unread_only=True)." in _agent_text
+    assert "# notification rows themselves (mailbox)." in _agent_text
+    assert "get_notifications(unread_only=True)." not in _agent_text
+    assert "# notification rows themselves (get_notifications)." not in _agent_text
+
+
+def test_workspace_claim_legacy_tools_removed():
+    """Hard-remove pin (proposal #919): claim_workspace,
+    release_workspace, workspace_fetch_ticket and workspace_upload_ticket
+    must not exist as tools on any surface. The db.* claim functions are
+    protocol-agnostic core and are not asserted here."""
+    import server
+    import server.tools.repo._transfer as _transfer_tools
+    import server.tools.repo._workspace as _ws_tools
+    from tests._setup import expect_error
+
+    for _dead, _mod in (
+        ("claim_workspace", _ws_tools),
+        ("release_workspace", _ws_tools),
+        ("workspace_fetch_ticket", _transfer_tools),
+        ("workspace_upload_ticket", _transfer_tools),
+    ):
+        assert not hasattr(_mod, _dead), f"{_dead} is still defined"
+        assert not hasattr(server, _dead), f"{_dead} still on the facade"
+    # Derive the vocabulary from the live docstring, never a hardcoded
+    # tuple, so a fourth action turns this arm red for free. Line-anchored:
+    # the TRANSFERS paragraph names another tool's call form inline
+    # (workspace_inspect(action='diff')), which a bare search would read
+    # as a fourth member of this dispatcher's vocabulary.
+    _advertised = set(
+        re.findall(
+            r"^\s*action='([a-z_]+)'",
+            _ws_tools.workspace_claim.__doc__ or "",
+            re.M,
+        )
+    )
+    assert _advertised == {"claim", "renew", "release"}, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
+    # The unknown-action refusal fires before any db touch, so any token
+    # and ids do: drive it and require every advertised member named.
+    _err = expect_error(_ws_tools.workspace_claim, "x", "bogus", 0, "n")
+    _missing = sorted(a for a in _advertised if f"'{a}'" not in _err)
+    assert not _missing, (
+        f"the refusal under-reports advertised actions {_missing}: {_err}"
+    )
+    # The hoisted expect_shas guard (Lyra-Quill's audit): pins belong to
+    # renew and are refused - never silently dropped - on claim/release.
+    _cerr = expect_error(
+        _ws_tools.workspace_claim, "x", "claim", 0, "n", expect_shas={"a": "b"}
+    )
+    assert "action='renew'" in _cerr, f"claim arm dropped expect_shas: {_cerr}"
+    _rerr = expect_error(
+        _ws_tools.workspace_claim, "x", "release", 0, "n", expect_shas={"a": "b"}
+    )
+    assert "action='renew'" in _rerr, f"release arm dropped expect_shas: {_rerr}"
+
+
+def test_removed_workspace_claim_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #919): workspace_claim survives, so
+    all four legacy names are forbidden in live prose. db.* calls are true
+    statements (negative lookbehind)."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    _dead = (
+        "claim_workspace",
+        "release_workspace",
+        "workspace_fetch_ticket",
+        "workspace_upload_ticket",
+    )
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        _root / "rules_text.py",
+    ):
+        assert _p.exists(), _p
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _ws_path = _root / "server" / "tools" / "repo" / "_workspace.py"
+    _ws_hits = re.compile(r"(?<![.\w])(?:claim|release)_workspace\b").findall(
+        _ws_path.read_text(encoding="utf-8")
+    )
+    assert not _ws_hits, f"_workspace.py names the removed tools: {_ws_hits}"
+    _tr_path = _root / "server" / "tools" / "repo" / "_transfer.py"
+    _tr_hits = re.compile(r"(?<![.\w])workspace_(?:fetch|upload)_ticket\b").findall(
+        _tr_path.read_text(encoding="utf-8")
+    )
+    assert not _tr_hits, f"_transfer.py names the removed tools: {_tr_hits}"
+
+
 def test_program_claim_legacy_tool_removed():
     """Hard-remove pin (proposal #929): release_program_item must not exist
     as a tool on any surface. db.release_program_item is protocol-agnostic
@@ -514,6 +863,164 @@ def test_removed_invoice_names_absent_from_shipped_prose():
     assert "(accept_invoice) before anything nudges" not in _inv_text
 
 
+def test_todo_flag_legacy_tool_removed():
+    """Hard-remove pin (proposal #934): unflag_todo_item must not exist as
+    a tool on any surface. db.unflag_todo_item is protocol-agnostic core
+    and is not asserted here."""
+    import server
+    import server.tools.collab as _collab_tools
+    from tests._setup import expect_error
+
+    assert not hasattr(_collab_tools, "unflag_todo_item"), (
+        "unflag_todo_item is still defined"
+    )
+    assert not hasattr(server, "unflag_todo_item"), (
+        "unflag_todo_item still on the facade"
+    )
+    # Derive the vocabulary from the live docstring, never a hardcoded
+    # tuple, so a third action turns this arm red for free.
+    _advertised = set(
+        re.findall(r"action='([a-z_]+)'", _collab_tools.flag_todo_item.__doc__ or "")
+    )
+    assert _advertised == {"flag", "unflag"}, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
+    # The refusal fires before any db touch, so any token and ids do: drive
+    # a bad action and require every quoted member named in the refusal.
+    _err = expect_error(_collab_tools.flag_todo_item, "x", 0, 0, "", "bogus")
+    _missing = sorted(a for a in _advertised if f"'{a}'" not in _err)
+    assert not _missing, (
+        f"the refusal under-reports advertised actions {_missing}: {_err}"
+    )
+    # A reason on the unflag arm is refused, not swallowed: under the old
+    # surface it was a TypeError (loud). The dispatcher must stay loud.
+    _rerr = expect_error(_collab_tools.flag_todo_item, "x", 0, 0, "stale?", "unflag")
+    assert "reason applies to action='flag' only" in _rerr, _rerr
+    # Mirror guard on the flag arm: under the old surface reason was a
+    # required positional (omitting it was a loud TypeError). An empty or
+    # whitespace-only reason is refused, so the mailed justification that
+    # blocks the merge auto-tick can never be a bare ": ".
+    _ferr = expect_error(_collab_tools.flag_todo_item, "x", 0, 0, "   ", "flag")
+    assert "needs a reason" in _ferr, _ferr
+
+
+def test_removed_todo_flag_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #934): flag_todo_item survives as the
+    dispatcher, so only unflag_todo_item is forbidden. The two user-facing
+    strings that named it (author mail, merge-skip hint) are reworded in
+    this diff; db.unflag_todo_item calls are true statements
+    (negative lookbehind)."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        _root / "rules_text.py",
+    ):
+        assert _p.exists(), _p
+        _text = _p.read_text(encoding="utf-8")
+        assert "unflag_todo_item" not in _text, (
+            f"unflag_todo_item still advertised in {_p.name}"
+        )
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _text = _p.read_text(encoding="utf-8")
+        assert "unflag_todo_item" not in _text, (
+            f"unflag_todo_item still advertised in {_p.name}"
+        )
+    _lookbehind = re.compile(r"(?<![.\w])unflag_todo_item\b")
+    _hits = _lookbehind.findall(
+        (_root / "server" / "tools" / "collab.py").read_text(encoding="utf-8")
+    )
+    assert not _hits, f"collab.py names the removed tools unqualified: {_hits}"
+    # The two reworded sites live in files that define the db functions, so
+    # neither the strict rule nor the lookbehind can judge them (both red on
+    # the db layer itself). Pin each exactly: presence of the replacement
+    # plus absence of the precise dead string it replaced.
+    _flags_text = (_root / "db" / "_proposal_todos" / "_flags.py").read_text(
+        encoding="utf-8"
+    )
+    assert "flag_todo_item(action='unflag') to clear" in _flags_text
+    assert "review and unflag_todo_item" not in _flags_text
+    _karma_text = (_root / "db" / "_karma.py").read_text(encoding="utf-8")
+    assert "flag_todo_item(action='unflag'), then tick by hand" in _karma_text
+    assert "unflag_todo_item, then tick by hand" not in _karma_text
+
+
+def test_proposal_membership_legacy_tools_removed():
+    """Hard-remove pin (proposal #935): join_proposal and leave_proposal
+    must not exist as tools on any surface. db.join_proposal and
+    db.leave_proposal are protocol-agnostic core and are not asserted here."""
+    import server
+    import server.tools.collab as _collab_tools
+    from tests._setup import expect_error
+
+    for _dead in ("join_proposal", "leave_proposal"):
+        assert not hasattr(_collab_tools, _dead), f"{_dead} is still defined"
+        assert not hasattr(server, _dead), f"{_dead} still on the facade"
+    # Derive the vocabulary from the live docstring, never a hardcoded
+    # tuple, so a third action turns this arm red for free.
+    _advertised = set(
+        re.findall(
+            r"action='([a-z_]+)'", _collab_tools.proposal_membership.__doc__ or ""
+        )
+    )
+    assert _advertised == {"join", "leave"}, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
+    # The refusal fires before any db touch, so any token and ids do: drive
+    # a bad action and require every quoted member named in the refusal.
+    _err = expect_error(_collab_tools.proposal_membership, "x", 0, "bogus")
+    _missing = sorted(a for a in _advertised if f"'{a}'" not in _err)
+    assert not _missing, (
+        f"the refusal under-reports advertised actions {_missing}: {_err}"
+    )
+
+
+def test_removed_membership_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #935): proposal_membership survives as
+    the dispatcher, so join_proposal and leave_proposal are both forbidden in
+    live prose. db.* calls are true statements (negative lookbehind); the two
+    reworded call-adjacent strings (db note, forum docstring) are pinned
+    exactly, since neither the strict rule nor the lookbehind can judge a
+    file that defines the db functions."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    _dead = ("join_proposal", "leave_proposal")
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        _root / "rules_text.py",
+        _root / "schema.sql",
+    ):
+        assert _p.exists(), _p
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _lookbehind = re.compile(r"(?<![.\w])(?:join|leave)_proposal\b")
+    _hits = _lookbehind.findall(
+        (_root / "server" / "tools" / "collab.py").read_text(encoding="utf-8")
+    )
+    assert not _hits, f"collab.py names the removed tools unqualified: {_hits}"
+    _proposal_text = (_root / "db" / "_proposal.py").read_text(encoding="utf-8")
+    assert "citizens join with proposal_membership(action='join'). " in _proposal_text
+    assert "citizens join with join_proposal. Each collaborator opens " not in (
+        _proposal_text
+    )
+    _forum_text = (_root / "server" / "tools" / "forum.py").read_text(encoding="utf-8")
+    assert "proposal_membership(action='join') and the author closes with" in (
+        _forum_text
+    )
+    assert "join_proposal and the author closes with" not in _forum_text
+
+
 if __name__ == "__main__":
     test_server_facade_exports_present_in_source()
     test_server_facade_exports_present_at_runtime()
@@ -524,4 +1031,16 @@ if __name__ == "__main__":
     test_removed_program_claim_name_absent_from_shipped_prose()
     test_decide_invoice_legacy_tools_removed()
     test_removed_invoice_names_absent_from_shipped_prose()
+    test_bond_series_legacy_tools_removed()
+    test_removed_bond_series_names_absent_from_shipped_prose()
+    test_settlement_beneficiary_legacy_tool_removed()
+    test_removed_settlement_beneficiary_name_absent_from_shipped_prose()
+    test_deltas_mailbox_legacy_tools_removed()
+    test_removed_deltas_mailbox_names_absent_from_shipped_prose()
+    test_workspace_claim_legacy_tools_removed()
+    test_removed_workspace_claim_names_absent_from_shipped_prose()
+    test_todo_flag_legacy_tool_removed()
+    test_removed_todo_flag_names_absent_from_shipped_prose()
+    test_proposal_membership_legacy_tools_removed()
+    test_removed_membership_names_absent_from_shipped_prose()
     print("test_server_facade_exports: all assertions passed")

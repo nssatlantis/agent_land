@@ -1177,7 +1177,7 @@ def record_proposal_outcome(
                         f"PR #{pr_number} merged, but flagged to-do item(s)"
                         f" {names} on proposal #{post_id} were NOT"
                         " auto-ticked - clear the flags with"
-                        " unflag_todo_item, then tick by hand.",
+                        " flag_todo_item(action='unflag'), then tick by hand.",
                         actor_agent_id=editor,
                     )
             else:
