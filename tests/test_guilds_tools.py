@@ -43,7 +43,7 @@ def _new_agent(prefix: str) -> dict:
 def _closes_in_a_day() -> str:
     """A poll closes_at one day out, DERIVED from the clock.
 
-    This call is routed through create_guild_poll, which REFUSES a
+    This call is routed through guild_poll(action='create'), which REFUSES a
     closes_at that is not in the future, so an absolute literal here is a
     time bomb rather than a fixture: the pinned "2026-10-01" stopped being
     the future at midnight and turned every open PR's test job red, while
@@ -198,28 +198,58 @@ def test_stake_and_subsidy_wrappers():
     pid = prop["post_id"]
     for name in ("beta", "gamma", "delta"):
         db.vote_on_proposal(AGENTS[name]["token"], pid, 1)
-    cos = gtools.request_guild_cosign(founder["token"], gid, "stake", 5.0)
-    gtools.confirm_guild_cosign(founder["token"], cos["cosign_id"])
+    cos = gtools.guild_cosign(
+        founder["token"],
+        step="request",
+        guild_id=gid,
+        action="stake",
+        amount_credits=5.0,
+    )
+    gtools.guild_cosign(founder["token"], step="confirm", cosign_id=cos["cosign_id"])
     staked = gtools.guild_stake(founder["token"], pid, 2.5, 2)
     assert staked["guild_id"] == gid, staked
-    sub = gtools.request_guild_subsidy(founder["token"], gid, 1.0, False, "tools grant")
+    sub = gtools.guild_subsidy(
+        founder["token"],
+        action="request",
+        guild_id=gid,
+        amount_credits=1.0,
+        payback=False,
+        reason="tools grant",
+    )
     assert sub["status"] == "paid" and sub["amount_units"] == 20, sub
 
 
 def test_decide_subsidy_admin_gate():
     founder, guild, mate = _guild()
     gid = guild["id"]
-    out = gtools.request_guild_subsidy(founder["token"], gid, 5.0, True, "big ask")
+    out = gtools.guild_subsidy(
+        founder["token"],
+        action="request",
+        guild_id=gid,
+        amount_credits=5.0,
+        payback=True,
+        reason="big ask",
+    )
     assert out["status"] == "requested" and out["tier"] == "admin", out
     try:
-        gtools.decide_guild_subsidy(founder["token"], out["subsidy_id"], True)
+        gtools.guild_subsidy(
+            founder["token"],
+            action="decide",
+            subsidy_id=out["subsidy_id"],
+            approve=True,
+        )
         raise AssertionError("non-admin decided")
     except Exception as exc:
         assert "Admin privileges" in str(exc), exc
     old = os.environ.get("ADMIN_USER")
     os.environ["ADMIN_USER"] = founder["name"]
     try:
-        decided = gtools.decide_guild_subsidy(founder["token"], out["subsidy_id"], True)
+        decided = gtools.guild_subsidy(
+            founder["token"],
+            action="decide",
+            subsidy_id=out["subsidy_id"],
+            approve=True,
+        )
     finally:
         if old is None:
             os.environ.pop("ADMIN_USER", None)
@@ -254,25 +284,50 @@ def test_designate_and_match_wrappers():
 def test_chat_and_polls_wrappers():
     founder, guild, mate = _guild()
     gid = guild["id"]
-    posted = gtools.post_guild_chat(founder["token"], gid, "hello guild #P1")
+    posted = gtools.guild_chat(
+        founder["token"],
+        action="post",
+        guild_id=gid,
+        body="hello guild #P1",
+    )
     assert posted["message_id"] is not None, posted
-    rows = gtools.list_guild_chat(mate["token"], gid)
+    rows = gtools.guild_chat(mate["token"], action="list", guild_id=gid)
     assert len(rows) == 1 and rows[0]["body"] == "hello guild #P1", rows
     outsider = _new_agent("gt-chat-out")
     try:
-        gtools.list_guild_chat(outsider["token"], gid)
+        gtools.guild_chat(outsider["token"], action="list", guild_id=gid)
         raise AssertionError("outsider read chat")
     except Exception as exc:
         assert "member" in str(exc), exc
     try:
-        gtools.post_guild_chat(outsider["token"], gid, "sneak")
+        gtools.guild_chat(
+            outsider["token"],
+            action="post",
+            guild_id=gid,
+            body="sneak",
+        )
         raise AssertionError("outsider posted")
     except Exception as exc:
         assert "member" in str(exc), exc
-    gone = gtools.delete_guild_chat(founder["token"], posted["message_id"])
+    gone = gtools.guild_chat(
+        founder["token"],
+        action="delete",
+        message_id=posted["message_id"],
+    )
     assert gone["deleted"], gone
-    poll = gtools.create_guild_poll(mate["token"], gid, "ship it?", _closes_in_a_day())
-    ballot = gtools.vote_guild_poll(founder["token"], poll["poll_id"], "yes")
+    poll = gtools.guild_poll(
+        mate["token"],
+        action="create",
+        guild_id=gid,
+        question="ship it?",
+        closes_at=_closes_in_a_day(),
+    )
+    ballot = gtools.guild_poll(
+        founder["token"],
+        action="vote",
+        poll_id=poll["poll_id"],
+        choice="yes",
+    )
     assert ballot["choice"] == "yes", ballot
 
 
@@ -280,9 +335,19 @@ def test_cosign_wrappers():
     founder, guild, mate = _guild()
     gid = guild["id"]
     gtools.guild_deposit(founder["token"], gid, 25.0)
-    req = gtools.request_guild_cosign(founder["token"], gid, "ops", 5.0)
+    req = gtools.guild_cosign(
+        founder["token"],
+        step="request",
+        guild_id=gid,
+        action="ops",
+        amount_credits=5.0,
+    )
     assert req["cosign_id"] is not None, req
-    done = gtools.confirm_guild_cosign(founder["token"], req["cosign_id"])
+    done = gtools.guild_cosign(
+        founder["token"],
+        step="confirm",
+        cosign_id=req["cosign_id"],
+    )
     assert done["confirmed"], done
 
 

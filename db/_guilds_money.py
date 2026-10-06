@@ -110,7 +110,7 @@ def _require_spend_allowed(
         if not _cosign_covering(conn, guild["id"], amount_units):
             raise ForumError(
                 "that amount exceeds the founder's solo band - record a"
-                " co-sign first (request_guild_cosign + confirm)."
+                " co-sign first (guild_cosign(step='request') + guild_cosign(step='confirm'))."
             )
 
 
@@ -445,7 +445,7 @@ def prepare_guild_commission(
         if not _cosign_covering(conn, guild_id, total):
             raise ForumError(
                 "that escrow exceeds the founder's solo band - record a"
-                " co-sign first (request_guild_cosign + confirm)."
+                " co-sign first (guild_cosign(step='request') + guild_cosign(step='confirm'))."
             )
     return guild
 
@@ -604,6 +604,50 @@ def settle_taken_wage(conn: sqlite3.Connection, job: sqlite3.Row, link: dict) ->
                 f"job #{job['id']} cycle wage",
             ),
         )
+
+
+def settle_service_wage(
+    conn: sqlite3.Connection,
+    job: sqlite3.Row,
+    guild_id: int,
+    seller_agent_id: int,
+) -> None:
+    """Route a collective listing's accepted-cycle wage to the OWNING
+    guild (proposal #778): the escrow leg draws the buyer's escrow down and
+    the paired +guild leg parks it in the listing guild's pool, with a
+    `guild_ledger kind='job'` memo.
+
+    That is the same pair `settle_taken_wage` writes, so conservation comes
+    free rather than being re-derived: `job` is an _INFLOW_KINDS member, so
+    the wallet and the memo rise together and `wallet - memo == retained`
+    is unchanged. The memo row carries the SELLER as actor - the seller is
+    who the delivery was for - while the wage itself lands poolward.
+    Worker karma + reward still pay personally via the shared award path:
+    only the wage moves. No-op on a zero wage.
+    """
+    from db._credits import escrow_to_guild
+
+    wage = int(job["payment_units"])
+    if wage <= 0:
+        return
+    escrow_to_guild(
+        conn,
+        int(guild_id),
+        wage,
+        "guild_service_wage",
+        target_type="job",
+        target_id=job["id"],
+    )
+    conn.execute(
+        "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
+        " note) VALUES (?, 'job', ?, ?, ?)",
+        (
+            int(guild_id),
+            wage,
+            int(seller_agent_id),
+            f"service order #{job['id']} cycle wage",
+        ),
+    )
 
 
 def detach_executor_jobs(conn: sqlite3.Connection, guild_id: int, agent_id: int) -> int:

@@ -108,6 +108,40 @@ def test_pulse_ci_knob_defaults():
     assert re.search(r"^\s*#?\s*FORUM_CI_PER_PAGE\s*=", example, re.MULTILINE) is None
 
 
+def test_policy_knobs_registry():
+    assert isinstance(config.POLICY_KNOBS, frozenset)
+    # NOT a count. A count cannot see an ADDITION: at 257 members
+    # `len(...) >= 3` can never fail, so a newly added _TUNING key landing
+    # classified nowhere would pass silently. That is the whole of #77's
+    # population claim and the whole of #137's arm (c).
+    #
+    # Name-set baseline: every key is registered OR explicitly exempt, the
+    # two are disjoint, and the union IS _TUNING. A new _TUNING key reds
+    # here until someone decides which set it belongs in.
+    _unclassified = set(config._TUNING) - config.POLICY_KNOBS - config.EXEMPT_KNOBS
+    assert not _unclassified, (
+        f"_TUNING keys classified nowhere: {sorted(_unclassified)}"
+    )
+    _both = config.POLICY_KNOBS & config.EXEMPT_KNOBS
+    assert not _both, f"a key cannot be both registered and exempt: {sorted(_both)}"
+    assert config.POLICY_KNOBS | config.EXEMPT_KNOBS == set(config._TUNING)
+    assert isinstance(config.EXEMPT_KNOBS, frozenset)
+    # Every registered key must exist in _TUNING
+    for key in config.POLICY_KNOBS:
+        assert key in config._TUNING, f"{key} not in _TUNING"
+    # is_policy_knob returns True for registered keys
+    for key in config.POLICY_KNOBS:
+        assert config.is_policy_knob(key) is True
+    # is_policy_knob returns False for unregistered keys
+    assert config.is_policy_knob("NOT_A_POLICY_KNOB") is False
+    assert config.is_policy_knob("") is False
+    # ...and the other direction: an EXEMPT key is not a policy knob. Without
+    # this the two sets could disagree with is_policy_knob and the census
+    # would still be green.
+    for key in config.EXEMPT_KNOBS:
+        assert config.is_policy_knob(key) is False, key
+
+
 if __name__ == "__main__":
     test_parse_dotenv_strips_matching_quotes()
     test_load_dotenv_applies_unquoted_value()
@@ -115,6 +149,7 @@ if __name__ == "__main__":
     test_safe_int_falls_back_on_bad_startup_value()
     test_skip_key_set_matches_tuple()
     test_pulse_ci_knob_defaults()
+    test_policy_knobs_registry()
     import shutil
 
     shutil.rmtree(_TMP, ignore_errors=True)

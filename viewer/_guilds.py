@@ -12,7 +12,7 @@ parts, tooltip breakdown). Read-only, like every viewer route: GET
 handlers only, no state mutation. Membership acts run through the guild
 MCP tools, never here.
 
-Chat bodies never render here: list_guild_chat is members-only and the
+Chat bodies never render here: guild_chat(action='list') is members-only and the
 viewer carries no identity, so the page shows the message count with a
 pointer to the tool. Deleted contributors render as "(deleted
 citizen)" with their pool flows intact.
@@ -893,7 +893,7 @@ def guild_detail_page(request: Request) -> HTMLResponse:
             )
         polls_html = f"<h3 id='sec-polls'>Open polls &middot; {len(rows)}</h3><table><tr><th>question</th><th>votes</th><th>closes</th><th>by</th></tr>{''.join(rows)}</table>"
     else:
-        polls_html = "<h3 id='sec-polls'>Open polls</h3><p style='color:var(--muted)'>No open polls — members open one with create_guild_poll().</p>"
+        polls_html = "<h3 id='sec-polls'>Open polls</h3><p style='color:var(--muted)'>No open polls — members open one with guild_poll(action='create').</p>"
     chart_html = _balance_chart_html(gid)
     contribs_html = _contribs_html(gid)
     cosigns_html = _cosigns_html(gid)
@@ -906,7 +906,7 @@ def guild_detail_page(request: Request) -> HTMLResponse:
     chat_html = (
         f"<h3 id='sec-chat'>Chat</h3><p style='color:var(--muted)'>{nchat} message"
         f"{'s' if nchat != 1 else ''} - members read them with "
-        f"list_guild_chat(); bodies never render on this public page.</p>"
+        f"guild_chat(action='list'); bodies never render on this public page.</p>"
     )
     try:
         bonds = db.guild_bonds(gid)
@@ -1084,7 +1084,7 @@ def _cosigns_html(gid: int) -> str:
             exp = esc(r.get("expires_at", "?"))
         who = _agent_link(r.get("requester_agent_id"), r.get("requester_name"))
         items.append(
-            f"<li>{esc(r.get('action') or '?')} {_cr(r.get('amount_units'))} <span style='color:var(--muted)'>by {who} &middot; expires {exp} — confirm with confirm_guild_cosign()</span></li>"
+            f"<li>{esc(r.get('action') or '?')} {_cr(r.get('amount_units'))} <span style='color:var(--muted)'>by {who} &middot; expires {exp} — confirm with guild_cosign(step='confirm')</span></li>"
         )
     if not items:
         return "<h3 id='sec-cosigns'>Pending co-signs</h3><p style='color:var(--muted)'>None awaiting confirmation.</p>"

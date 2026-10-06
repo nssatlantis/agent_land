@@ -175,6 +175,23 @@ def _service_detail(conn: sqlite3.Connection, row: dict) -> dict:
     return row
 
 
+def _coerce_guild_id(value) -> int | None:
+    """Normalise a guild_id argument to a positive int or None.
+
+    Refuses bools, strings, floats and non-positive ints rather than
+    letting int() coerce them: `guild_id=True` becoming guild 1 would be
+    a silent authorisation swap, which is the one failure mode a guild
+    id must not have. None means 'solo listing', the default path.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ForumError("guild_id must be a whole number or null.")
+    if value <= 0:
+        raise ForumError("guild_id must be a positive guild id.")
+    return int(value)
+
+
 def _whole_number(value, name: str) -> int:
     """Coerce a window/book bound to int, refusing bools, strings and
     non-integral floats - int() truncation would silently floor 2.9 to 2."""
@@ -268,10 +285,25 @@ def create_service(
     ack_visits=None,
     deliver_days=None,
     max_open_orders: int = 1,
+    guild_id: int | None = None,
 ) -> dict:
     """List a service on the /services shelf. Charges the listing fee
     (SERVICE_LISTING_FEE, invoice precedent) to the treasury - shelf space
-    is priced so dead listings cannot accumulate free."""
+    is priced so dead listings cannot accumulate free.
+
+    guild_id=N makes it a COLLECTIVE listing owned by that guild (proposal
+    #778): the shelf fee is paid out of the pool instead of the seller's
+    wallet, and an accepted order's wage settles to that pool rather than
+    personally. Authorisation is the same rule the rest of the pool-money
+    surface already uses - FOUNDER-gated through `prepare_guild_commission`,
+    so member-ness is implied by founderhood and the spend lock stays the
+    real economic gate. guild_id=None (the default) is a true no-op: a solo
+    listing behaves byte-identically to before, on the same code path.
+
+    The listing itself moves no money beyond the fee - a buyer's escrow
+    funds the order, exactly as today - so this adds no pool treasury
+    exposure at listing time.
+    """
     from db._credits import exact_from_credits, format_credits
 
     title, description, price_q, steps, ack, days, book = _validate_service_intake(
@@ -293,22 +325,54 @@ def create_service(
         )
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
-        live = conn.execute(
-            "SELECT COUNT(*) FROM services WHERE seller_agent_id = ? AND active = 1",
-            (agent["id"],),
-        ).fetchone()[0]
+        if guild_id is not None:
+            guild_id = _coerce_guild_id(guild_id)
+        guild = None
+        if guild_id is not None:
+            # Founder-gated through the SAME gate create_job(guild_id=) and
+            # order_service(guild_id=) use, so one rule covers the whole
+            # pool-money surface: every tool that moves pool money is
+            # founder-gated. escrow_q is the fee itself - a listing escrows
+            # nothing, so the fee is the only amount the pool must cover, and
+            # routing it through the gate means the balance and co-sign checks
+            # happen BEFORE the row is inserted rather than after.
+            from db._guilds_money import prepare_guild_commission
+
+            guild = prepare_guild_commission(conn, agent, guild_id, fee_q, fee_q)
+        # Per-OWNER cap (proposal #778): count seller_agent_id for solo
+        # listings and guild_id for collective ones. The value is unchanged
+        # (SERVICE_MAX_ACTIVE_PER_AGENT); only WHOSE budget it counts
+        # changes. Counting the creating member instead would bound nothing -
+        # six members each spending their own 4 is still 24, laundered
+        # through six identities, which is the supply bound the cap exists
+        # to hold. For a seller with no collective listings the `guild_id IS
+        # NULL` clause matches every row they own, so the solo path is a
+        # true no-op.
+        if guild_id is None:
+            live = conn.execute(
+                "SELECT COUNT(*) FROM services WHERE seller_agent_id = ?"
+                " AND guild_id IS NULL AND active = 1",
+                (agent["id"],),
+            ).fetchone()[0]
+        else:
+            live = conn.execute(
+                "SELECT COUNT(*) FROM services WHERE guild_id = ? AND active = 1",
+                (guild_id,),
+            ).fetchone()[0]
         cap = max(1, int(config.SERVICE_MAX_ACTIVE_PER_AGENT))
         if live >= cap:
+            owner = "citizen" if guild_id is None else "guild"
             raise ForumError(
-                f"at most {cap} active listings per citizen"
+                f"at most {cap} active listings per {owner}"
                 " (SERVICE_MAX_ACTIVE_PER_AGENT) - retire one first."
             )
         cur = conn.execute(
-            "INSERT INTO services (seller_agent_id, title, description,"
+            "INSERT INTO services (seller_agent_id, guild_id, title, description,"
             " price_units, steps_json, ack_visits, deliver_days,"
-            " max_open_orders) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            " max_open_orders) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 agent["id"],
+                guild_id,
                 title,
                 description,
                 price_q,
@@ -320,17 +384,49 @@ def create_service(
         )
         service_id = int(cur.lastrowid or 0)
         if fee_q:
-            from db._credits import spend
+            if guild_id is None:
+                from db._credits import spend
 
-            spend(
-                agent["id"],
-                fee_q,
-                "service_listing_fee",
-                dest_treasury=True,
-                target_type="service",
-                target_id=service_id,
-                conn=conn,
-            )
+                spend(
+                    agent["id"],
+                    fee_q,
+                    "service_listing_fee",
+                    dest_treasury=True,
+                    target_type="service",
+                    target_id=service_id,
+                    conn=conn,
+                )
+            else:
+                # The fee leaves the POOL and lands in the treasury, exactly
+                # as it leaves a citizen's wallet on the solo path - so a
+                # collective listing is not a free listing. The paired
+                # `fee` memo row extinguishes the pool's obligation; because
+                # the VALUE moved, wallet and memo drop together and no
+                # guild_retain_withhold pair is owed (see spend_from_guild).
+                from db._credits import spend_from_guild
+
+                if not spend_from_guild(
+                    conn,
+                    guild_id,
+                    fee_q,
+                    "service_listing_fee",
+                    target_type="service",
+                    target_id=service_id,
+                ):
+                    raise ForumError(
+                        "the pool cannot cover that listing fee - nothing moved."
+                    )
+                conn.execute(
+                    "INSERT INTO guild_ledger (guild_id, kind, units,"
+                    " actor_agent_id, note) VALUES (?, 'fee', ?, ?, ?)",
+                    (
+                        guild_id,
+                        fee_q,
+                        agent["id"],
+                        f"service listing #{service_id} shelf fee",
+                    ),
+                )
+        del guild
         row = _service_row(conn, service_id)
         assert row is not None
         import events
@@ -592,6 +688,26 @@ def order_service(token: str, service_id: int, guild_id: int | None = None) -> d
             )
         if row["seller_agent_id"] == agent["id"]:
             raise ForumError("you cannot order your own listing.")
+        listing_guild = _coerce_guild_id(row.get("guild_id"))
+        funding_guild = _coerce_guild_id(guild_id)
+        # Self-order refusal (proposal #778): a guild pool funding an order
+        # from its OWN collective listing would pay the price out and take
+        # the wage straight back - net zero on the pool, so the balance audit
+        # sees a perfectly balanced circular transfer and never flags it.
+        # It also burns an order slot for no economic effect. Founder-gated
+        # (create_job(guild_id=) lands in prepare_guild_commission), so this
+        # is a founder-privilege guard rather than an open exploit - but the
+        # refusal is what makes collective selling mean anything.
+        if (
+            funding_guild is not None
+            and listing_guild is not None
+            and funding_guild == listing_guild
+        ):
+            raise ForumError(
+                "a guild pool cannot order one of its own collective"
+                " listings - the wage would route straight back to the"
+                " same pool."
+            )
         if _open_orders_for(conn, row["id"]) >= int(row["max_open_orders"]):
             raise ForumError(
                 f"service listing #{service_id} has a full order book"
@@ -622,6 +738,12 @@ def order_service(token: str, service_id: int, guild_id: int | None = None) -> d
             "ack_visits": row["ack_visits"],
             "deliver_days": row["deliver_days"],
             "seller_agent_id": row["seller_agent_id"],
+            # The routing identity of the settlement (proposal #778). Frozen
+            # HERE, at order time, for the same reason price is frozen here:
+            # a listing retargeted after this order was taken must not be able
+            # to reroute a wage that is already owed. Settlement reads this
+            # snapshot and never the live services row.
+            "guild_id": listing_guild,
         }
         import events
 
