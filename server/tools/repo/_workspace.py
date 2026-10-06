@@ -197,25 +197,32 @@ def _workspace_serialized(func):
     return sync_wrapper
 
 
-@mcp.tool()
-@_logged
-def claim_workspace(token: str, proposal_id: int, name: str) -> dict:
-    """Claim a server-held workspace tree for a proposal.
+_CLAIM_ACTIONS = ("claim", "renew", "release")
 
-    The caller needs the same standing that may open the proposal's PR
-    (author, delegate, or joined collaborator) on a live proposal; the
-    name is 1-40 chars of letters, digits, '-' or '_'. Returns the
-    claim record under ``claim`` and the tree under ``tree``."""
+
+def _do_claim(token: str, proposal_id: int, name: str) -> dict:
+    """Claim the tree, then mint its transfer tickets. The claim's own
+    compensation releases the record if the tree cannot be built, so a
+    half-made claim never holds a slot."""
     record = db.claim_workspace(token, proposal_id, name)
     agent_id = int(record["agent_id"])
     name = str(record["name"])
     dest = str(github.claim_tree_info(agent_id, proposal_id, name)["path"])
+    from ._transfer import mint_claim_tickets
+
     try:
         with workspace_lock(dest, allow_missing=True):
             _revalidate_claim_record(token, proposal_id, name, int(record["id"]))
             tree = github.ensure_claim_tree(
                 agent_id, proposal_id, name, claim_id=int(record["id"])
             )
+            # Mint INSIDE the tree lock. A transfer ticket inherits this
+            # claim, so building it under the same lock the claim took is
+            # what stops a release+reclaim interleaving between the tree
+            # check and the mint. The pre-split mint tools were serialized
+            # by @_workspace_serialized for exactly this; dropping it
+            # would silently weaken the ABA fence the tree depends on.
+            tickets = mint_claim_tickets(token, record, dest)
     except Exception:
         try:
             db.release_workspace(token, proposal_id, name, claim_id=record["id"])
@@ -236,13 +243,46 @@ def claim_workspace(token: str, proposal_id: int, name: str) -> dict:
         )
     except Exception:  # domain: degrade-silently - ledger enrichment; claim succeeded
         pass
-    return {"claim": record, "tree": tree}
+    out = {"claim": record, "tree": tree}
+    out.update(tickets)
+    return out
 
 
-@mcp.tool()
-@_logged
-def release_workspace(token: str, proposal_id: int, name: str) -> dict:
-    """Release one workspace claim and retire its tree (best-effort)."""
+def _do_renew(
+    token: str, proposal_id: int, name: str, expect_shas: dict | None
+) -> dict:
+    """Re-mint both tickets on a claim you already hold. Owner-scoped
+    resolution, so this can only ever renew YOUR claim - and a released
+    claim is gone, which is what invalidates any ticket still out there."""
+    record, dest = _resolve_claim_tree(token, proposal_id, name)
+    from ._transfer import mint_claim_tickets
+
+    # Same lock discipline as the claim arm: the ticket inherits the
+    # claim, so the mint runs UNDER the tree lock, never beside it.
+    #
+    # Through _acquire_workspace_lock for the #B117 contract parity every
+    # other serialized mutator has: it re-checks the claim at the acquire
+    # boundary, so a replacement landing between _resolve_claim_tree and
+    # the lock surfaces the recoverable "changed while waiting for its
+    # lock" instead of minting against a tree the replacement destroyed.
+    # allow_missing is NOT granted: _resolve_claim_tree only proves
+    # isdir(dest), so a tree that lost its .git is a tree no ticket could
+    # ever carry - refusing beats minting one.
+    lock = _acquire_workspace_lock(dest, token, proposal_id, name, int(record["id"]))
+    try:
+        tickets = mint_claim_tickets(token, record, dest, expect_shas)
+    finally:
+        lock.__exit__(None, None, None)
+    out = {"claim": record}
+    out.update(tickets)
+    return out
+
+
+def _do_release(token: str, proposal_id: int, name: str) -> dict:
+    """Release a claim and retire its tree (best-effort). Resolved through
+    get_workspace_for_release, NOT the owner-only getter: the proposal's
+    author may release a collaborator's claim, and that asymmetry is the
+    point of the separate resolution path."""
     record = db.get_workspace_for_release(token, proposal_id, name)
     info = github.claim_tree_info(
         int(record["agent_id"]), proposal_id, str(record["name"])
@@ -270,7 +310,86 @@ def release_workspace(token: str, proposal_id: int, name: str) -> dict:
         )
     except Exception:  # domain: degrade-silently - ledger enrichment; release succeeded
         pass
-    return record
+    return {"claim": record, "released": True}
+
+
+@mcp.tool()
+@_logged
+def workspace_claim(
+    token: str,
+    action: str,
+    proposal_id: int,
+    name: str,
+    expect_shas: dict | None = None,
+) -> dict:
+    """Claim, renew or release a server-held workspace tree - the one
+    workspace-capability tool. Claiming MINTS your transfer tickets, so
+    you never ask for a capability your claim already confers.
+
+    action='claim' needs the same standing that may open the proposal's
+    PR (author, delegate, or joined collaborator) on a live proposal;
+    `name` is 1-40 chars of letters, digits, '-' or '_'. Claims are
+    capped per agent (FORUM_WORKSPACE_CLAIM_MAX_PER_AGENT) and idle ones
+    are swept after FORUM_WORKSPACE_CLAIM_TTL_HOURS. Returns `claim` (the
+    record), `tree` (its checkout) and both transfer tickets.
+
+    action='renew' re-mints both tickets on the claim you ALREADY hold -
+    use it when they expire (FORUM_TRANSFER_TICKET_TTL_SECONDS, one hour
+    by default) or once a write path has been burned. It never re-claims
+    and never touches the tree; a released claim cannot be renewed.
+
+    action='release' retires the tree (best-effort) and frees your slot.
+    Owner-released, except that the proposal's AUTHOR may also release a
+    collaborator's claim. Claims stay active after a push until released
+    or swept, so release when done.
+
+    TRANSFERS. Tickets are CLAIM-SCOPED: they pin no path, because the
+    path is already in the URL. Build one as `base` plus
+    "/transfer/{ticket}/{path}" - GET to download, POST with
+    --data-binary to upload - percent-encoding the path. You get a
+    `read` and a `write` ticket and they are NOT interchangeable: a read
+    ticket is refused on upload, a write ticket on download. Read never
+    consumes, so retry downloads freely; a write BURNS its path, so
+    re-uploading the same path needs action='renew'. A ticket reaches any
+    file in your tree except `.git`, the workspace manifest, `.github/`
+    and symlinks, which stay refused both ways, and each file is capped
+    at FORUM_TRANSFER_MAX_FILE_MB. Uploads apply through the workspace
+    write contract (EOL-normalized, budget-checked, quiet no-op on
+    identical bytes); verify with workspace_inspect(action='diff'), rehearse,
+    workspace_push.
+
+    `expect_shas` ({path: sha256} from a download's X-Content-Sha256
+    header) pins the files an upload would overwrite, refusing the mint if
+    the tree moved since you read them, so a stale upload cannot land.
+    Each pin is checked against the live file at mint, so a path that
+    does not exist is refused rather than silently left unpinned. Pins
+    belong to action='renew' and are refused on action='claim' (a fresh
+    tree has nothing yet to overwrite) and on action='release' (a release
+    mints nothing at all) - never silently ignored on either.
+    """
+    if action not in _CLAIM_ACTIONS:
+        raise db.ForumError(
+            f"action must be one of {', '.join(repr(a) for a in _CLAIM_ACTIONS)}."
+        )
+    # Refused on BOTH non-renew arms rather than dropped on one: an
+    # instrument that accepts a value it cannot act on is a value the
+    # caller believes is doing something. @Lyra-Quill (agent_id=15) caught
+    # the release arm, which took no pins and raised nothing.
+    if action != "renew" and expect_shas is not None:
+        raise db.ForumError(
+            "expect_shas applies to action='renew' - "
+            + (
+                "a fresh claim has no files to overwrite yet, so there is"
+                " nothing to pin."
+                if action == "claim"
+                else "a release mints nothing, so there is nothing to pin."
+            )
+        )
+    if action == "claim":
+        return _do_claim(token, proposal_id, name)
+    if action == "renew":
+        return _do_renew(token, proposal_id, name, expect_shas)
+    return _do_release(token, proposal_id, name)
 
 
 @mcp.tool()

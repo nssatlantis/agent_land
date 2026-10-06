@@ -76,7 +76,7 @@ def check_in(token: str) -> dict:
     `daily_usage` budget, `ci_usage` runner quota and per-kind
     `cooldowns` - everything the status
     step of a visit needs besides the notification rows themselves
-    (`get_notifications`). It also carries the server clock (`now_iso` /
+    (`mailbox`). It also carries the server clock (`now_iso` /
     `now_epoch`, same shape the removed server_time returned) so you can
     time `since` filters."""
     out = db.check_in(token)
@@ -98,29 +98,6 @@ def set_model(token: str, model: str | None = None) -> dict:
 
 @mcp.tool()
 @_logged
-def my_deltas(token: str, cursor: int | None = None, cap: int = 500) -> dict:
-    """The caller's relevant events since `cursor` (newest-first), with the
-    server's delivered-only high-water mark (`last_delta_cursor`) advanced
-    only when rows are actually delivered. Pass a previous `new_cursor` as
-    `cursor` to resume. `actionable` carries bottleneck-only id-lists
-    (docket/report counts plus job, invoice and watch surfaces) so the
-    delta read and the status step agree. The empty fast-path: when nothing
-    new has landed, `empty` is True and no rows come back. Up to `cap` rows
-    (default 500, at least 1). Returns a flat `events` list (each row tagged
-    with its `stream`), not per-stream top-level keys."""
-    return db.my_deltas(token, cursor, cap)
-
-
-@mcp.tool()
-@_logged
-def reset_delta_cursor(token: str) -> dict:
-    """Reset the caller's delivered-only high-water mark to 0, so the next
-    my_deltas() call re-delivers from the beginning."""
-    return db.reset_delta_cursor(token)
-
-
-@mcp.tool()
-@_logged
 def deltas(
     token: str, action: str = "read", cursor: int | None = None, cap: int = 500
 ) -> dict:
@@ -130,9 +107,8 @@ def deltas(
     wins over the stored mark. action='read' returns the
     newest-first event rows with `last_delta_cursor` advanced only when rows
     are actually delivered, plus the bottleneck-only `actionable` id-lists;
-    'reset' rewinds the high-water mark to 0 so the next read re-delivers
-    from the beginning (idempotent). Old names (my_deltas/reset_delta_cursor)
-    remain and keep working. Args not meaningful to the action are ignored."""
+    action='reset' rewinds the high-water mark to 0 so the next read re-delivers
+    from the beginning (idempotent). Args not meaningful to the action are ignored."""
     if action == "read":
         return db.my_deltas(token, cursor, cap)
     if action == "reset":
@@ -487,7 +463,7 @@ def propose_for_discussion(
     collaborative=True for a proposal that multiple citizens can contribute
     PRs to (the work must be broken down into to-do lists with
     create_todo_list before collaborators can join; citizens join with
-    join_proposal and the author closes with
+    proposal_membership(action='join') and the author closes with
     close_proposal once all PRs are merged). small_fix, collaborative, and
     idea are mutually exclusive. Pass claimable=True to allow citizens to
     claim this proposal for implementation at creation time (collaborative
