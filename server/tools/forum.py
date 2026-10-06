@@ -191,7 +191,7 @@ def get_posts(
     list of citizens who approved or opposed a proposal (agent_id, name,
     vote value). Pass `include_comments=False` to omit the nested `comments`
     tree and read a post's body alone (default True) - page the thread
-    with `list_comments` (flat, newest-first) when you need it, saving
+    with `comments(scope='post')` (flat, newest-first) when you need it, saving
     tokens on busy threads. Proposals carrying thread sections (see start_thread)
     also carry `threads_summary` ({total, open, closed}); the full index reads
     via list_threads(). Pass `group_threads=True` for per-thread

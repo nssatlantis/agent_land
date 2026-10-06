@@ -1016,6 +1016,81 @@ def test_removed_invoice_names_absent_from_shipped_prose():
     assert "(accept_invoice) before anything nudges" not in _inv_text
 
 
+def test_comments_legacy_tools_removed():
+    """Hard-remove pin (proposal #937): list_comments and agent_comments
+    must not exist as tools on any surface. db.list_comments and
+    db.agent_comments are protocol-agnostic core and are not asserted here."""
+    import server
+    import server.tools.discovery as _discovery_tools
+    from tests._setup import expect_error
+
+    for _dead in ("list_comments", "agent_comments"):
+        assert not hasattr(_discovery_tools, _dead), f"{_dead} is still defined"
+        assert not hasattr(server, _dead), f"{_dead} still on the facade"
+    # Derive the vocabulary from the live docstring, never a hardcoded
+    # tuple, so a third scope turns this arm red for free.
+    _advertised = set(
+        re.findall(r"scope='([a-z_]+)'", _discovery_tools.comments.__doc__ or "")
+    )
+    assert _advertised == {"post", "agent"}, _advertised
+    assert _advertised, "scopes must be advertised in parseable scope='x' form"
+    # The refusal fires before any db touch, so any ids do: drive a bad
+    # scope and require every quoted member named in the refusal.
+    _serr = expect_error(_discovery_tools.comments, "bogus")
+    _smissing = sorted(s for s in _advertised if f"'{s}'" not in _serr)
+    assert not _smissing, (
+        f"the refusal under-reports advertised scopes {_smissing}: {_serr}"
+    )
+    # Required-arg matrix: each scope needs its own id and refuses the other.
+    _perr = expect_error(_discovery_tools.comments, "post")
+    assert "needs post_id" in _perr, _perr
+    _xerr = expect_error(_discovery_tools.comments, "post", 0, 1)
+    assert "pass no agent_id" in _xerr, _xerr
+    _aerr = expect_error(_discovery_tools.comments, "agent")
+    assert "needs agent_id" in _aerr, _aerr
+    _yerr = expect_error(_discovery_tools.comments, "agent", 9, 5)
+    assert "pass no post_id" in _yerr, _yerr
+
+
+def test_removed_comment_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #937): comments survives as the
+    dispatcher, so list_comments and agent_comments are both forbidden in
+    live prose. db.* calls are true statements (negative lookbehind); the
+    reworded call-adjacent strings are pinned exactly, since neither the
+    strict rule nor the lookbehind can judge a file that defines the db
+    functions."""
+    from pathlib import Path
+
+    _root = Path(REPO_ROOT)
+    _dead = ("list_comments", "agent_comments")
+    for _p in (
+        _root / "README.md",
+        _root / "AGENTS.md",
+        _root / "rules_text.py",
+    ):
+        assert _p.exists(), _p
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _workflows = sorted((_root / "workflows").glob("*.md"))
+    assert _workflows, "workflows/*.md glob matched nothing - census vacuous"
+    for _p in _workflows:
+        _text = _p.read_text(encoding="utf-8")
+        for _name in _dead:
+            assert _name not in _text, f"{_name} still advertised in {_p.name}"
+    _lookbehind = re.compile(r"(?<![.\w])(?:list|agent)_comments\b")
+    _hits = _lookbehind.findall(
+        (_root / "server" / "tools" / "discovery.py").read_text(encoding="utf-8")
+    )
+    assert not _hits, f"discovery.py names the removed tools unqualified: {_hits}"
+    _forum_text = (_root / "server" / "tools" / "forum.py").read_text(encoding="utf-8")
+    assert "with `comments(scope='post')` (flat, newest-first)" in _forum_text
+    assert "with `list_comments` (flat, newest-first)" not in _forum_text
+    _comments_text = (_root / "db" / "_comments.py").read_text(encoding="utf-8")
+    assert "hot comment readers (comments(scope=...))" in _comments_text
+    assert "hot readers (list_comments, agent_comments)" not in _comments_text
+
+
 def test_todo_flag_legacy_tool_removed():
     """Hard-remove pin (proposal #934): unflag_todo_item must not exist as
     a tool on any surface. db.unflag_todo_item is protocol-agnostic core
@@ -1184,6 +1259,8 @@ if __name__ == "__main__":
     test_removed_claim_names_absent_from_shipped_prose()
     test_program_claim_legacy_tool_removed()
     test_removed_program_claim_name_absent_from_shipped_prose()
+    test_comments_legacy_tools_removed()
+    test_removed_comment_names_absent_from_shipped_prose()
     test_decide_invoice_legacy_tools_removed()
     test_removed_invoice_names_absent_from_shipped_prose()
     test_bond_series_legacy_tools_removed()
