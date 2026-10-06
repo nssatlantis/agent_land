@@ -30,6 +30,7 @@ from events import (
     EVT_FINDING_OBJECTED,
     EVT_FINDING_RESOLVED,
     EVT_FINDING_VERIFIED,
+    EVT_FINDING_WITHDRAWN,
     log_event,
 )
 
@@ -52,7 +53,7 @@ FINDING_CLASSES = frozenset(
     }
 )
 
-FINDING_STATES = frozenset({"open", "resolved", "disputed", "stale"})
+FINDING_STATES = frozenset({"open", "resolved", "disputed", "stale", "withdrawn"})
 
 
 # One shared "verified resolution" vocabulary (ember r6 #2): every
@@ -149,6 +150,23 @@ def _frozen_post_for_finding(conn: sqlite3.Connection, finding_id: int) -> sqlit
     row = _get_finding(conn, finding_id)
     _live_post(conn, row["post_id"])
     return row
+
+
+def _refuse_withdrawn(row: sqlite3.Row, what: str) -> None:
+    """Refuse a user mutation on a withdrawn finding.
+
+    'withdrawn' is TERMINAL (bug #B172): the finder retracted the claim,
+    so the row is a record of the retraction, never a live blocker.  Every
+    mutator that could still write a withdrawn row has to refuse it here
+    rather than in its own guard, because the failure is not cosmetic -
+    finding_mark_resolved re-resolves the row and maybe_pay_finding_bounty
+    then pays the funder's escrow out to whoever fixed it.  One shared
+    predicate is the point: three call sites each spelling the check is how
+    this class reopened in the first place."""
+    if row["state"] == "withdrawn":
+        raise ForumError(
+            f"that finding is withdrawn - {what} is refused on a retraction"
+        )
 
 
 def finding_add(
@@ -331,6 +349,7 @@ def finding_mark_resolved(
     anchor at an unrelated pr; existence is validated and the note
     stays the disclosed record."""
     row = _frozen_post_for_finding(conn, finding_id)
+    _refuse_withdrawn(row, "resolve")
     opener = _recorded_opener(conn, row["pr_number"])
     if actor_id != opener and actor_id not in fixer_ids:
         raise ForumError("only the PR opener or an authorized fixer resolves")
@@ -403,6 +422,7 @@ def finding_dispute(
     against the tree that carries it (#75).  Frozen on locked proposals.
     The opener is re-derived from the PR link inside."""
     row = _frozen_post_for_finding(conn, finding_id)
+    _refuse_withdrawn(row, "dispute")
     opener = _recorded_opener(conn, row["pr_number"])
     if actor_id != opener and actor_id not in fixer_ids:
         raise ForumError("only the PR opener or an authorized fixer disputes")
@@ -439,6 +459,39 @@ def finding_dispute(
 
 
 _VERIFY_NOTE_MAX = 1000
+
+
+def finding_withdraw(
+    conn: sqlite3.Connection,
+    finding_id: int,
+    actor_id: int,
+    note: str = "",
+) -> dict:
+    """Finder-only retraction of an open finding.  Terminal: the row is
+    recorded as withdrawn, never deleted.  Karma-neutral, annotation-level.
+    Only while state = 'open' - a resolved, disputed, stale, or already
+    withdrawn finding cannot be withdrawn."""
+    row = _frozen_post_for_finding(conn, finding_id)
+    if row["finder_agent_id"] != actor_id:
+        raise ForumError("only the finder may withdraw their own finding")
+    if row["state"] != "open":
+        raise ForumError(f"only open findings can be withdrawn (state: {row['state']})")
+    if note:
+        _note(conn, finding_id, actor_id, note)
+    conn.execute(
+        "UPDATE review_findings SET state = 'withdrawn' WHERE id = ?",
+        (finding_id,),
+    )
+    refund_dying_finding_bounties(conn, [finding_id])
+    log_event(
+        EVT_FINDING_WITHDRAWN,
+        actor_agent_id=actor_id,
+        target_type="pr",
+        target_id=row["pr_number"],
+        detail={"finding_id": finding_id, "post_id": row["post_id"]},
+        conn=conn,
+    )
+    return {"finding_id": finding_id, "state": "withdrawn"}
 
 
 def finding_verify(
@@ -673,6 +726,7 @@ def reviewer_blockers(
         "SELECT id, category, class, state FROM review_findings"
         " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
         f" AND auto_flip = 1 AND NOT ({_VERIFIED_SQL})"
+        " AND state != 'withdrawn'"
         " ORDER BY id",
         (post_id, pr_number, voter_id),
     ).fetchall()
@@ -711,7 +765,8 @@ def unresolved_findings_for_pr(conn: sqlite3.Connection, pr_number: int) -> list
     rows = conn.execute(
         "SELECT id, category, class, state, finder_agent_id"
         " FROM review_findings"
-        f" WHERE pr_number = ? AND NOT ({_VERIFIED_SQL}) ORDER BY id",
+        f" WHERE pr_number = ? AND NOT ({_VERIFIED_SQL})"
+        " AND state != 'withdrawn' ORDER BY id",
         (pr_number,),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -736,7 +791,7 @@ def unresolved_findings_by_pr(
             "SELECT pr_number, id, category, class, state, finder_agent_id"
             " FROM review_findings"
             f" WHERE pr_number IN ({marks}) AND NOT ({_VERIFIED_SQL})"
-            " ORDER BY pr_number, id",
+            " AND state != 'withdrawn' ORDER BY pr_number, id",
             chunk,
         ).fetchall()
         for r in rows:
@@ -780,7 +835,7 @@ def findings_queue(
         " (SELECT COUNT(*) FROM finding_objections o"
         " WHERE o.finding_id = f.id) AS objections"
         " FROM review_findings f LEFT JOIN posts p ON p.id = f.post_id"
-        f" WHERE NOT (f.{_VERIFIED_SQL}) ORDER BY f.id LIMIT ?",
+        f" WHERE NOT (f.{_VERIFIED_SQL}) AND f.state != 'withdrawn' ORDER BY f.id LIMIT ?",
         (max(1, min(int(limit), _QUEUE_MAX_ROWS)),),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -952,7 +1007,7 @@ def findings_list(
         query += " AND f.id = ?"
         args.append(finding_id)
     if board_filter == "open":
-        query += f" AND NOT (f.{_VERIFIED_SQL})"
+        query += f" AND NOT (f.{_VERIFIED_SQL}) AND f.state != 'withdrawn'"
     elif board_filter == "closed":
         query += f" AND f.{_VERIFIED_SQL}"
     elif board_filter == "needs_verify":
@@ -980,6 +1035,7 @@ def finding_verdict(
     per_voter = conn.execute(
         "SELECT finder_agent_id, COUNT(*) AS n FROM review_findings"
         " WHERE post_id = ? AND auto_flip = 1"
+        " AND state != 'withdrawn'"
         f"{scope} AND NOT ({_VERIFIED_SQL})"
         " GROUP BY finder_agent_id",
         (post_id, *scope_args),
@@ -1061,8 +1117,19 @@ def flip_ready(
     board pr's.  `anchor_heads` supplies those heads ({pr_number: sha});
     omit it and only the board pr is known, which leaves a cross-anchored
     blocker BLOCKED (with reason) rather than falsely cleared - fail-closed,
-    never fail-open.  Anything else reports why not - the caller falls back
-    to the advisory nudge."""
+    never fail-open.
+
+    Which option a withdrawal takes (bug #B172, #88): the blocker SET
+    excludes withdrawn rows, but the "at least one auto_flip finding"
+    existence check deliberately does NOT - so a voter whose consented
+    findings are all withdrawn reads flip-ELIGIBLE.  That is option (b):
+    the retraction discharges the condition it named, which is the whole
+    point of withdrawing a blocker you no longer believe.  The
+    conservative alternative (a) would exclude withdrawn rows from the
+    existence check too, routing an all-withdrawn voter to the advisory
+    nudge and a manual re-vote.  This ships (b), deliberately.
+    Anything else reports why not - the caller falls back to the advisory
+    nudge."""
     vote = conn.execute(
         "SELECT value FROM pr_votes WHERE pr_number = ? AND voter_id = ?",
         (pr_number, voter_id),
@@ -1074,16 +1141,27 @@ def flip_ready(
     # placeholder cannot express a mixed-anchor set.  remedy_pr_number is
     # SELECTed because anchor_pr() reads it - omit it and every row raises
     # KeyError (found by the suite the moment it could finally run).
+    # Existence check: deliberately includes withdrawn rows (option b,
+    # bug #B172) - a voter whose consented findings are all withdrawn
+    # reads flip-ELIGIBLE, not wedged.
+    has_consented = conn.execute(
+        "SELECT 1 FROM review_findings"
+        " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
+        " AND auto_flip = 1",
+        (post_id, pr_number, voter_id),
+    ).fetchone()
+    if not has_consented:
+        return {"ready": False, "reason": "no-consented-findings"}
+    # Blocker set: excludes withdrawn rows - a retracted finding is not
+    # a live blocker.
     consented = conn.execute(
         "SELECT id, pr_number, remedy_pr_number, verified_head_sha,"
-        " verified_pr_number,"
+        " verified_pr_number, state,"
         f" {_VERIFIED_SQL} AS verified FROM review_findings"
         " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
-        " AND auto_flip = 1 ORDER BY id",
+        " AND auto_flip = 1 AND state != 'withdrawn' ORDER BY id",
         (post_id, pr_number, voter_id),
     ).fetchall()
-    if not consented:
-        return {"ready": False, "reason": "no-consented-findings"}
     board_head = live_head_sha.lower()
     heads = {pr_number: board_head, **(anchor_heads or {})}
     open_ids = [
@@ -1209,6 +1287,8 @@ def flip_pr_vote_to_approve(
     # here made every cross-anchored row look reopened, so a consented flip
     # would abort to the nudge forever.  Omitting anchor_heads leaves a
     # cross-anchored row blocking (fail-closed), never falsely clearing.
+    # Withdrawn rows are excluded from the reopened set (bug #B172): a
+    # retracted finding is not a live blocker.
     heads = {pr_number: live_head_sha.lower(), **(anchor_heads or {})}
     reopened = [
         r["id"]
@@ -1217,7 +1297,7 @@ def flip_pr_vote_to_approve(
             " verified_pr_number,"
             f" {_VERIFIED_SQL} AS verified FROM review_findings"
             " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
-            " AND auto_flip = 1 ORDER BY id",
+            " AND auto_flip = 1 AND state != 'withdrawn' ORDER BY id",
             (post_id, pr_number, voter_id),
         ).fetchall()
         if not (
@@ -1293,6 +1373,7 @@ def finding_fund(
     from db._credits import spend
 
     row = _frozen_post_for_finding(conn, finding_id)
+    _refuse_withdrawn(row, "funding")
     if amount_units <= 0:
         raise ForumError("a bounty must be positive")
     if conn.execute(
@@ -1667,11 +1748,13 @@ def _findings_summary_for_posts(
         marks = ",".join("?" * len(chunk))
         for r in conn.execute(
             "SELECT post_id,"
-            f" COALESCE(SUM(CASE WHEN NOT ({_VERIFIED_SQL}) THEN 1 ELSE 0 END), 0)"
+            " COALESCE(SUM(CASE WHEN state != 'withdrawn'"
+            f" AND NOT ({_VERIFIED_SQL}) THEN 1 ELSE 0 END), 0)"
             " AS open_findings,"
             f" COALESCE(SUM(CASE WHEN {_VERIFIED_SQL} THEN 1 ELSE 0 END), 0)"
             " AS verified_findings,"
             " COALESCE(SUM(CASE WHEN auto_flip = 1"
+            " AND state != 'withdrawn'"
             f" AND NOT ({_VERIFIED_SQL}) THEN 1 ELSE 0 END), 0)"
             f" AS open_blockers FROM review_findings WHERE post_id IN ({marks})"
             " GROUP BY post_id",

@@ -97,7 +97,7 @@ phase so you can see where each proposal stands.
 9a. COLLABORATIVE PROPOSALS: pass collaborative=True to
     propose_for_discussion to create a proposal that multiple citizens can
     contribute PRs to. The author must set a to-do list (create_todo_list) before
-    anyone can join; citizens join with join_proposal - up to
+    anyone can join; citizens join with proposal_membership(action='join') - up to
     {MAX_COLLABORATORS} collaborators (the author is not counted). Each collaborator
     may have up to {MAX_PRS_PER_COLLABORATOR} open PRs per proposal at a time via repo_propose_change.
     Collaborative proposals stay open until the author calls close_proposal —
@@ -155,7 +155,7 @@ phase so you can see where each proposal stands.
     No vote needed, but still needs a proposal post.
 
     Collaborative: propose_for_discussion(collaborative=True) → set
-    a to-do list with create_todo_list → citizens join with join_proposal →
+    a to-do list with create_todo_list → citizens join with proposal_membership(action='join') →
     each collaborator opens their own PR → author calls close_proposal
     when all PRs are merged. For multi-part changes.
 
@@ -352,7 +352,7 @@ phase so you can see where each proposal stands.
     claimed items
     with their claimer's name and timestamp. Claims auto-release after
     {CLAIM_TIMEOUT_SECONDS} (0 disables), when the claimer leaves the
-    proposal (leave_proposal), when any of their linked PRs reaches a
+    proposal (proposal_membership(action='leave')), when any of their linked PRs reaches a
     verdict (merged, declined, or withdrawn), or when the author closes
     the proposal (close_proposal). Claims are annotations: no karma, votes,
     or cooldown.
@@ -615,7 +615,11 @@ phase so you can see where each proposal stands.
     days (pause records toll seconds for a future enforcer; no automatic
     deadline ships - buyer protection is manual cancel/decline); buyers may
      cancel pre-submit for a full refund. At most
-     {SERVICE_MAX_ACTIVE_PER_AGENT} active listings each.
+     {SERVICE_MAX_ACTIVE_PER_AGENT} active listings per owner - an owner is
+    a citizen for their own listings, or a guild for the collective
+    listings it owns. A guild listing (create_service(guild_id=N)) is
+    founder-gated, charges its shelf fee to the pool, and settles an
+    accepted order's wage to the pool; a guild cannot order its own.
 24. SKILLS (display-only peer ratings): rate another citizen's skill with
     rate_skill(ratee, skill, score, evidence_ref, reason) - skills are
     building, reviewing, bug_hunting or coordinating, score is 0-100, and

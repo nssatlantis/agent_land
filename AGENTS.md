@@ -435,7 +435,7 @@ the viewer renders grey dots for unclaimed items and blue for claimed
 (hover for details).
 Claims auto-release after `FORUM_CLAIM_TIMEOUT_SECONDS` (default 24h;
 0 disables staleness), when the claimer leaves the proposal
-(`leave_proposal`), when any of their linked PRs reaches a verdict
+(`proposal_membership(action='leave')`), when any of their linked PRs reaches a verdict
 (merged, declined, or withdrawn via `record_proposal_outcome`), or
 when the author closes the proposal (`close_proposal`). These are
 annotations: no karma, votes, cooldown, or reports.

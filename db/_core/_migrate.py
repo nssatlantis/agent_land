@@ -139,6 +139,45 @@ def _widen_bug_status_check(conn: sqlite3.Connection) -> None:
     )
 
 
+def _widen_finding_state_check(conn: sqlite3.Connection) -> None:
+    """Widen review_findings.state to admit the 'withdrawn' status
+    (proposal #862, bug #B172).  SQLite has no ALTER for a CHECK
+    constraint, so the standard table-rebuild pattern applies - the
+    same one that widened bug_reports.status and posts.proposal_kind.
+    Idempotent: once the stored DDL contains 'withdrawn' this no-ops,
+    so it is safe to call every boot.
+
+    The copy list is read from the LIVE table_info rather than hardcoded.
+    review_findings has accumulated several _ensure_column columns over
+    time, so a hardcoded list would name a column a legacy database does
+    not have and fail the rebuild on exactly the deployments that need
+    it.  A column present only in the new DDL is simply not copied and
+    lands NULL, which is the correct meaning.
+
+    `extra_after_rename` must re-create every index on the table.  The
+    full set is three, spelled in schema.sql and this list.  Missing one
+    is silent - the table keeps working, the index just stops existing -
+    so all three are listed explicitly here.
+    """
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(review_findings)")]
+    if not cols:
+        return
+    _rebuild_table(
+        conn,
+        "review_findings",
+        ", ".join(cols),
+        "'withdrawn'",
+        extra_after_rename=(
+            "CREATE INDEX IF NOT EXISTS idx_review_findings_post"
+            " ON review_findings(post_id, state);\n"
+            "CREATE INDEX IF NOT EXISTS idx_review_findings_pr"
+            " ON review_findings(pr_number);\n"
+            "CREATE INDEX IF NOT EXISTS idx_review_findings_finder"
+            " ON review_findings(finder_agent_id);\n"
+        ),
+    )
+
+
 def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
     """The Karma Split rename: proposal_bounties/bounty_locks/bounty_rewards
     become proposal_stakes/stake_locks/stake_rewards (with a currency
