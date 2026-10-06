@@ -327,6 +327,63 @@ def guild_retain_withhold(
     return True
 
 
+def spend_from_guild(
+    conn: sqlite3.Connection,
+    guild_id: int,
+    amount_units: int,
+    reason: str,
+    *,
+    target_type: str | None = None,
+    target_id: int | None = None,
+) -> bool:
+    """Pay units from a guild POOL to the community treasury: a paired
+    -guild / +treasury write under one tx_id (proposal #778 - the
+    collective listing's shelf fee), so the summed supply never moves.
+    Grant-first like every other guild writer: an underfunded pool
+    returns False BEFORE any row exists, so pool money can never move
+    half. No-op on zero.
+
+    Conservation (Rule D, `wallet - memo == retained`): this moves the
+    VALUE out of the pool, so BOTH trails drop by the same amount -
+    the wallet by the -guild leg here, the memo by the caller's
+    outflow `guild_ledger` row - and the difference is unchanged. No
+    `guild_retain_withhold` pair is owed, and writing one would be
+    wrong: that primitive exists for a WITHHOLDING, where the pool
+    keeps the value and only the memo is extinguished, and using it
+    here would double-count the departure.
+
+    Deliberately NOT exported from the db facade, matching `spend` -
+    the fee primitives callers reach for directly live in this
+    module, and create_service already imports `spend` the same way.
+    """
+    if amount_units <= 0:
+        return False
+    if guild_wallet_balance(conn, guild_id) < amount_units:
+        return False
+    tx_id = _new_tx_id(conn)
+    _insert_entry(
+        conn,
+        None,
+        "guild",
+        -amount_units,
+        reason,
+        "guild",
+        int(guild_id),
+        tx_id=tx_id,
+    )
+    _insert_entry(
+        conn,
+        None,
+        "treasury",
+        amount_units,
+        f"{reason}_intake",
+        target_type,
+        target_id,
+        tx_id=tx_id,
+    )
+    return True
+
+
 def treasury_to_guild(
     conn: sqlite3.Connection,
     guild_id: int,
