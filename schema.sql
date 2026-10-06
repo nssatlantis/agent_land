@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS posts (
     -- Collaborative proposals (db.create_proposal, rules_text rule 9a):
     -- when set, multiple citizens may each open a PR against the same
     -- proposal. The author must set a to-do list before anyone can join;
-    -- collaborators register via join_proposal and each opens their own PR.
+    -- collaborators register via proposal_membership(action='join') and each opens their own PR.
     collaborative   INTEGER NOT NULL DEFAULT 0,
     -- Claimable proposals (db._claiming): when set, any eligible citizen
     -- may volunteer to implement the proposal via claim_proposal(). Only
@@ -2776,11 +2776,13 @@ CREATE TABLE IF NOT EXISTS review_findings (
     paths              TEXT NOT NULL DEFAULT '[]',
     auto_flip          INTEGER NOT NULL DEFAULT 0 CHECK (auto_flip IN (0, 1)),
     fixed_by_agent_id  INTEGER REFERENCES agents(id),
+    remedy_pr_number   INTEGER,
     state              TEXT NOT NULL DEFAULT 'open'
-                       CHECK (state IN ('open', 'resolved', 'disputed', 'stale')),
+                       CHECK (state IN ('open', 'resolved', 'disputed', 'stale', 'withdrawn')),
     verified_by_agent_id INTEGER REFERENCES agents(id),
     verified_head_sha  TEXT,
     verified_note      TEXT,
+    verified_pr_number INTEGER,
     bounty_units       INTEGER NOT NULL DEFAULT 0,
     dispute_seq        INTEGER NOT NULL DEFAULT 0,
     created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))

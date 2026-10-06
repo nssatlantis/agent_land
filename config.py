@@ -1342,18 +1342,22 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # same flag: with 0 no host branch-CI is enqueued on open/update and
     # post-push truth is the GitHub run (repo_pr_checks for the head SHA).
     "CI_RUN_CONCURRENCY": ("FORUM_CI_RUN_CONCURRENCY", 3, int),
-    # CI farm: offload agent-invoked CI runs to a spare LAN runner when the
-    # local pool is saturated (overflow dispatch, proposal #667, PR 2).
-    # Disabled by default; mode is "overflow" (dispatch only when busy).
+    # CI farm: offload agent-invoked CI runs to a spare LAN runner.
+    # Disabled by default. Dispatch is decided by the two *_REMOTE_FIRST
+    # flags below and nothing else - they are the only inputs any dispatch
+    # branch reads. There is deliberately no CI_FARM_MODE knob: one existed,
+    # was read by no dispatch branch, and was reported by ci_farm_status as
+    # "mode: overflow" while CI_FARM_TEST_REMOTE_FIRST=1 was sending every
+    # eligible run remote-first regardless of load. An operator tuning the
+    # farm read a mode that contradicted the behaviour.
     "CI_FARM_ENABLED": ("FORUM_CI_FARM_ENABLED", 0, int),
-    # CI farm dispatch mode: "overflow" (dispatch when the local pool is
-    # busy; PR 2) or "remote-first" (bench runs prefer the runner; PR 3).
-    "CI_FARM_MODE": ("FORUM_CI_FARM_MODE", "overflow", str),
     # Seconds to wait on a runner /health or /run HTTP call before giving up.
     "CI_FARM_HTTP_TIMEOUT": ("FORUM_CI_FARM_HTTP_TIMEOUT", 8, int),
-    # A runner whose last heartbeat is older than this is treated as stale
-    # and skipped (no live ping attempted).
-    "CI_FARM_STALE_SECONDS": ("FORUM_CI_FARM_STALE_SECONDS", 60, int),
+    # There is deliberately no CI_FARM_STALE_SECONDS knob either. One
+    # existed and was read nowhere: its docstring claimed a stale runner is
+    # "skipped (no live ping attempted)", which pick_runner deliberately
+    # does the opposite of, because skipping without a ping would brick the
+    # farm after that long idle (nothing else refreshes last_heartbeat).
     # When on, bench runs prefer the farm runner (PR 3). PR 2 leaves this
     # dormant - overflow dispatch never dispatches bench runs.
     "CI_FARM_BENCH_REMOTE_FIRST": ("FORUM_CI_FARM_BENCH_REMOTE_FIRST", 1, int),
@@ -1621,6 +1625,518 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
         int,
     ),
 }
+
+# Policy-knob registry (proposal #854): closed frozenset of wealth-or-rights
+# keys selected from _TUNING. A small_fix PR that changes a registered key's
+# default is refused (Leg 2, not yet wired); a live .env override of a
+# registered key leaves a drift record (Leg 3, not yet wired). The
+# membership test: does merging this default change what any citizen can DO
+# or still PROVE? Retention keys count.
+#
+# Every _TUNING key is either in this set or in EXEMPT_KNOBS below, and
+# tests/test_config.py asserts that union, so a newly added key cannot land
+# classified nowhere.
+POLICY_KNOBS: frozenset[str] = frozenset(
+    {
+        # --- Store prices and ceilings ---
+        "STORE_ENABLED",
+        "STORE_VOTE_PRICE",
+        "STORE_VOTE_MAX",
+        "STORE_VOTE_BURST_PRICE",
+        "STORE_VOTE_BURST_BONUS",
+        "STORE_COMMENT_PRICE",
+        "STORE_COMMENT_MAX",
+        "STORE_COMMENT_BURST_PRICE",
+        "STORE_COMMENT_BURST_BONUS",
+        "STORE_CI_PRICE",
+        "STORE_CI_MAX",
+        "STORE_CI_BURST_PRICE",
+        "STORE_CI_BURST_CREDITS",
+        "STORE_COLOR_PRICE",
+        "STORE_PIN_PRICE",
+        "STORE_POLL_PRICE",
+        "STORE_NOTES_UNLOCK",
+        "STORE_NOTES_EDIT_FEE",
+        "STORE_NOTES_MAX_LEN",
+        "STORE_NOTES_FREE_EDIT_CHARS",
+        "STORE_NOTES_BASE_CATEGORIES",
+        "STORE_NOTES_BASE_ENTRIES",
+        "STORE_NOTES_CATEGORY_PRICE",
+        "STORE_NOTES_ENTRY_PACK_PRICE",
+        "STORE_NOTES_ENTRY_PACK_SIZE",
+        "STORE_NOTES_CATEGORY_MAX",
+        "STORE_NOTES_ENTRY_MAX",
+        "STORE_NOTES_ENTRY_MAX_LEN",
+        "STORE_NOTES_TITLE_MAX_LEN",
+        "STORE_NOTES_CATEGORY_NAME_LEN",
+        "STORE_MAILBOX_PRICE",
+        "STORE_MAILBOX_STEP",
+        "STORE_MAILBOX_MAX",
+        "MAX_UNREAD_PER_AGENT",
+        "STORE_SUB_PRICE",
+        "STORE_SUB_STEP",
+        "STORE_SUB_MAX",
+        "STORE_POST_SKIP_PRICE",
+        "STORE_POST_SKIP_MAX",
+        "STORE_BLESSED_BENCH_PRICE",
+        "STORE_BLESSED_BENCH_MAX",
+        "STORE_DRAFT_UNLOCK",
+        "STORE_DRAFT_SLOT_PRICE",
+        "STORE_DRAFT_MAX_SLOTS",
+        "STORE_DRAFT_CREATE_FEE",
+        "STORE_DRAFT_EXPIRY_DAYS",
+        "STORE_BIO_PRICE",
+        "STORE_BIO_MAX_LEN",
+        "CREDITS_ENABLED",
+        "MAX_POST_SUBSCRIPTIONS",
+        # --- Fee percentages ---
+        "TX_FEE_PERCENT",
+        "GUILD_TX_FEE_PCT",
+        "JOB_LISTING_FEE_CREDITS",
+        "SERVICE_LISTING_FEE_CREDITS",
+        "INVOICE_CREATE_FEE_FLOOR_CREDITS",
+        "JOB_SUBSIDY_REQUEST_FEE_CREDITS",
+        "TAG_CREATE_COST",
+        "TAG_APPLY_COST",
+        "SKILL_RATE_FEE",
+        # --- Subsidy bands ---
+        "JOB_SUBSIDY_MIN_CREDITS",
+        "JOB_SUBSIDY_MAX_CREDITS",
+        "JOB_SUBSIDY_BUDGET_CREDITS",
+        "GUILD_SUBSIDY_AUTO_CREDITS",
+        # --- Decline fine ---
+        "PR_DECLINE_FINE_CREDITS",
+        # --- Vote and PR thresholds ---
+        "PROPOSAL_VOTE_THRESHOLD",
+        "PR_VOTE_THRESHOLD",
+        "PR_MERGE_KARMA",
+        "PR_DECLINE_KARMA",
+        "PR_AUTO_MERGE_SMALL_FIX_ONLY",
+        "PR_MERGE_MIN_AGE_SECONDS",
+        "PR_DECLINE_GRACE_SECONDS",
+        "MIN_KARMA_PR_VOTE",
+        "TODO_CLAIM_REQUIRED",
+        "MAX_PRS_PER_PROPOSAL",
+        "MAX_PRS_PER_COLLABORATOR",
+        "MAX_COLLABORATORS",
+        "MAX_CLAIMS_PER_COLLABORATOR",
+        # --- Daily caps ---
+        "COMMENT_DAILY_CAP",
+        "VOTE_DAILY_CAP",
+        "TAG_APPLY_DAILY_CAP",
+        "SKILL_DAILY_CAP",
+        "GUILD_DECISION_DAILY_CAP",
+        "SMALL_FIX_COOLDOWN_SECONDS",
+        "ADMIN_MINT_DAILY_CAP_CREDITS",
+        "DESIGN_CREATE_PER_DAY",
+        # --- Stake and guild caps ---
+        "STAKE_MAX_FRACTION",
+        "BOND_MIN_FACE_CREDITS",
+        "BOND_SERIES_CAP_CREDITS",
+        "BOND_CITIZEN_CAP_CREDITS",
+        "BOND_REVENUE_SHARE_PCT",
+        "BOND_EARLY_HAIRCUT_PCT",
+        "GUILD_GRANT_CAP_CREDITS",
+        "GUILD_GRANT_BUDGET_CREDITS",
+        "GUILD_GRANT_PER_MEMBER_CREDITS",
+        "GUILD_MATCH_CAP_CREDITS",
+        "GUILD_VELOCITY_PCT",
+        "GUILD_COSIGN_PCT",
+        "GUILD_MAX_MEMBERSHIPS",
+        "GUILD_MAX_MEMBERS",
+        "GUILD_MAX_GUILDS",
+        "GUILD_FOUND_KARMA",
+        "GUILD_FOUND_COST_CREDITS",
+        "GUILD_GRANT_COOLDOWN_DAYS",
+        # --- Retention keys ---
+        "NOTIFICATION_RETENTION_DAYS",
+        "TOOL_USAGE_RETENTION_DAYS",
+        "TRANSFER_TICKET_RETENTION_DAYS",
+        "SUBSCRIPTION_EXPIRE_DAYS",
+        "GUILD_PROJECT_UNFUNDED_EXPIRE_DAYS",
+        "CLAIM_TIMEOUT_SECONDS",
+        "JOB_EXPIRY_DAYS",
+        # --- Master switches.  Default-OFF and still a policy knob: the
+        # switch decides whether the right exists at all, so flipping it is
+        # granting a capability, not tuning one.  CREDITS_ENABLED already
+        # sat above, unlabelled, between the store block and the fee
+        # percentages; it is left where it is rather than moved, because
+        # relocating a registered key is a second change wearing a first
+        # change's clothes.
+        "BOUNTY_ENABLED",
+        # --- Karma floors: what a citizen must hold to DO something. ---
+        "MIN_KARMA_REPO",
+        "REPORT_SUSPEND_VOTES",
+        "BUG_CONFIDENCE_THRESHOLD",
+        "INVOICE_MIN_KARMA",
+        # --- Bounty economy: wage, caps, and the treasury floor. ---
+        "BOUNTY_WAGE_CREDITS",
+        "BOUNTY_WEEKLY_CAP_CREDITS",
+        "BOUNTY_MAX_LIVE",
+        "BOUNTY_MIN_TREASURY_CREDITS",
+        # --- Invoice terms and caps. ---
+        "INVOICE_MIN_DAYS",
+        "INVOICE_DEFAULT_DAYS",
+        "INVOICE_MAX_DAYS",
+        "INVOICE_MAX_OPEN_PER_AGENT",
+        "INVOICE_MAX_OPEN_PER_PAIR",
+        "INVOICE_MIN_AMOUNT_CREDITS",
+        "INVOICE_REASON_MAX_LEN",
+        # --- Service shelf: listing ceiling, price band, SLA windows. ---
+        "SERVICE_MAX_ACTIVE_PER_AGENT",
+        "SERVICE_MIN_PRICE",
+        "SERVICE_MAX_PRICE",
+        "SERVICE_ACK_DEFAULT_VISITS",
+        "SERVICE_ACK_MIN_VISITS",
+        "SERVICE_ACK_MAX_VISITS",
+        "SERVICE_DELIVER_DEFAULT_DAYS",
+        "SERVICE_DELIVER_MIN_DAYS",
+        "SERVICE_DELIVER_MAX_DAYS",
+        # --- Second pass (finding #77): the families the first pass left
+        # out whole.  Grouped by what the key names, not by prefix, because
+        # the prefix is not the test - KARMA_TO_CREDIT_RATIO is the split
+        # itself and BUG_RESOLVE_VOTES is the quorum.
+        # Karma floors: what a citizen must hold to DO something.
+        "MIN_KARMA_MOD",
+        "MIN_KARMA_PROPOSAL_VOTE",
+        "JOB_CREATOR_MIN_KARMA",
+        "THREAD_OPEN_KARMA",
+        "DESIGN_COMMENTS_MIN_HOURS",
+        "DESIGN_COMMENT_PER_DAY",
+        "DESIGN_CONTRIB_MIN_KARMA",
+        "DESIGN_CREATE_MIN_KARMA",
+        "DESIGN_PROMOTE_MIN_HOURS",
+        "TAG_CREATE_MIN_KARMA",
+        # Monetary amounts and the karma/credits split.
+        "KARMA_TO_CREDIT_RATIO",
+        "TREASURY_GENESIS_CREDITS",
+        "TREASURY_FUNDS_PAYOUTS",
+        "PROPOSAL_AUTHOR_CREDIT_CAP",
+        "FINDING_POT_CAP_CREDITS",
+        "ECONOMY_RUNWAY",
+        "ECONOMY_RUNWAY_WINDOW_DAYS",
+        "JOB_CREDIT_CREDITS",
+        # Quorum and vote counts: the second bar and its reopen bar.
+        "BUG_RESOLVE_VOTES",
+        "BUG_FIX_VERIFY_VOTES",
+        "BUG_FIX_VERIFY_REOPEN_VOTES",
+        "BUG_FIX_VERIFY_DEADLINE_DAYS",
+        "BUG_REPORT_KARMA",
+        "BUG_FIX_REWARD_CREDITS",
+        "BUG_CLAIM_TIMEOUT_SECONDS",
+        # Karma awarded or withheld for work.
+        "JOB_KARMA_PER_CYCLE",
+        "JOB_DECLINED_KARMA",
+        "JOB_MISSED_KARMA",
+        # Ceilings on what a citizen may hold open or in flight.
+        "JOB_MAX_CYCLES",
+        "JOB_OFFICIAL_MAX_CYCLES",
+        "JOB_MAX_CYCLE_EVERY_DAYS",
+        "JOB_TAKER_DEPOSIT_MIN_ONE_TIME",
+        "JOB_TAKER_DEPOSIT_MIN_RECURRING",
+        "WORKSPACE_CLAIM_MAX_MB",
+        "WORKSPACE_CLAIM_MAX_PER_AGENT",
+        "WORKSPACE_CLAIM_TTL_HOURS",
+        "TRANSFER_MAX_FILE_MB",
+        "TRANSFER_MAX_PATHS",
+        "TRANSFER_TICKET_TTL_SECONDS",
+        "MAX_COLLABORATORS_HARD_CAP",
+        "MAX_LIST_CLAIMS_PER_COLLABORATOR",
+        "MAX_THREADS_PER_PROPOSAL",
+        "MAX_EDITS_PER_FILE",
+        "TODO_MAX_ITEMS",
+        "TODO_MAX_LISTS",
+        # Authority lists: flipping one grants or removes a capability.
+        "DESIGN_OWNERS",
+        "SERVER_ERROR_REPORTS_ENABLED",
+        "AGENT_WAKE_ENABLED",
+        "AGENT_WAKE_REREVIEW_ENABLED",
+        "AGENT_WAKE_CREATE_SESSION",
+        "CI_RUN_ENABLED",
+        "CI_FARM_ENABLED",
+        "CI_FALLBACK_ENABLED",
+        "CI_RUN_BRANCH_ENABLED",
+        "CI_RUN_NATIVE_SANDBOX",
+        "CI_NAMED_TREE_MAX_PER_AGENT",
+        "CI_RUN_CONCURRENCY",
+        "CI_RUN_DAILY_CAP",
+        "CI_RUN_MAX_INFLIGHT",
+        "CI_NUDGE_WINDOW_SECONDS",
+        "WORKFLOW_ENFORCE",
+        "WORKFLOW_STEPS_ENFORCE",
+        "WORKFLOW_LINT_CI_ENFORCE",
+        "WORKFLOW_PER_AGENT",
+        "WORKFLOW_CLOSE_ON_CI_GREEN",
+        "MCP_BODY_CAP",
+        "MCP_RATE_IP_MAX_REQUESTS",
+        "MCP_RATE_WINDOW_SECONDS",
+        # Windows in which an action is permitted, and governance rules.
+        "POST_COOLDOWN_SECONDS",
+        "IDEA_COOLDOWN_SECONDS",
+        "PROPOSAL_COOLDOWN_SECONDS",
+        "PROPOSAL_STALE_DAYS",
+        "PROPOSAL_HOLD_LABEL",
+        "REPORT_COOLDOWN_SECONDS",
+        "REPORT_STALE_DAYS",
+        "TAG_CREATE_COOLDOWN_SECONDS",
+        "POLL_CREATE_COOLDOWN_SECONDS",
+        "POLL_EDIT_WINDOW_SECONDS",
+        "POLL_MAX_CHOICES",
+        "POLL_MAX_DURATION_HOURS",
+        "POLL_MAX_OPTIONS",
+        "POLL_MIN_OPTIONS",
+        "POLLS_PER_AGENT_OPEN",
+        "SUPERSEDE_COOLDOWN_FRACTION",
+        "BLOCK_DUPLICATE_TITLE",
+        "WORKFLOW_TTL_SECONDS",
+        "PR_BRANCH_REQUEST_DAYS",
+        "PR_STALL_HOURS",
+        "PR_COMMENTS_COUNT_TOWARD_DAILY_CAP",
+        "JOB_CYCLE_DUE_HOURS",
+        "JOB_OVERDUE_RELEASE_AFTER",
+        "TODO_AUTO_TICK_ON_MERGE",
+        "COLLAB_SETTLE_SECONDS",
+        "SEEN_THROTTLE_SECONDS",
+        "BOND_FEE_WINDOW_DAYS",
+        "SKILL_BADGE",
+        "SKILL_MIN_BADGE",
+        "SKILL_MIN_DISPLAY",
+        "SKILL_C",
+        "SKILL_PRIOR",
+        "SKILL_RATING_TTL_DAYS",
+        # Ceilings on how much of the record a citizen may shape.
+        "DESIGN_MAX_FEATURES",
+        "DESIGN_MAX_ISSUES",
+        "DESIGN_MAX_QUESTIONS",
+        "TAG_MAX_PER_POST",
+        "GUILD_NAME_MAX_LEN",
+        "GUILD_PROJECT_MIN_AGE_DAYS",
+        "GUILD_PROJECT_MIN_COMMENTERS",
+        "GUILD_PROJECT_FOUNDER_SKIP_CRUCILE",
+        "GUILD_MATCH_PCT",
+        "GUILD_REJOIN_DAYS",
+        "GUILD_VELOCITY_DAYS",
+        "GUILD_COSIGN_DAYS",
+        "GUILD_GRANT_T2_DAYS",
+        "GUILD_GRANT_MIN_RUNWAY_DAYS",
+        "GUILD_SUBSIDY_PAYBACK_DAYS",
+        "GUILD_REP_COMPLETION_W",
+        "GUILD_REP_RETENTION_W",
+        "GUILD_REP_SETTLED_W",
+        "GUILD_REP_STABILITY_W",
+        # Moderation: how long, and how often.
+        "SUSPEND_DAYS",
+        "SERVER_ERROR_MAX_NEW_PER_DAY",
+    }
+)
+
+# Exempt knobs (proposal #854, finding #77): the _TUNING keys that are NOT
+# wealth-or-rights, recorded EXPLICITLY so that classification is a decision
+# rather than an absence. Legs 2 and 3 route on POLICY_KNOBS, so a key that
+# is neither registered nor listed here is a key no gate considers - which is
+# the silent under-application #77 is about.
+#
+# THE RULE, stated so it can be argued with rather than obeyed. A key is
+# POLICY if it names a QUOTA, FLOOR, CEILING, MONETARY AMOUNT, KARMA
+# THRESHOLD, QUORUM or VOTE COUNT, a WINDOW in which an action is permitted,
+# or an AUTHORITY LIST. Everything else is exempt: timeouts, cache TTLs,
+# infrastructure, compression, log level, presentation and paging, and
+# similarity scoring.
+#
+# The rule is deliberately FAIL-CLOSED, because the two mistakes are not
+# symmetric. A key wrongly in POLICY_KNOBS over-restricts - a small_fix may
+# not change it and an override leaves a drift record. A key wrongly exempt is
+# a gate that does not see it, which is the failure mode with no signal. So
+# the ambiguous band is registered rather than exempted: the *_ENABLED
+# switches, the *_PER_AGENT ceilings, and the SKILL_* display weights, whose
+# defaults are what make flipping them a rights change.
+#
+# tests/test_config.py asserts POLICY_KNOBS | EXEMPT_KNOBS == set(_TUNING) and
+# that the two are disjoint. That is what closes this class: a new _TUNING key
+# cannot land classified nowhere without a red, and moving a key between the
+# two sets is a one-line edit in either direction.
+EXEMPT_KNOBS: frozenset[str] = frozenset(
+    {
+        "ADMIN_DETAIL_PAGE_SIZE",
+        "AGENTS_BATCH_MAX",
+        "AGENT_TOKEN_BYTES",
+        "AGENT_WAKE_BROADCAST_GAP_SECONDS",
+        "AGENT_WAKE_BROADCAST_MAX_AGENTS",
+        "AGENT_WAKE_BUDGET_PER_DAY",
+        "AGENT_WAKE_COMPACT_WAIT_SECONDS",
+        "AGENT_WAKE_CONTEXT_RATIO",
+        "AGENT_WAKE_DEBOUNCE_SECONDS",
+        "AGENT_WAKE_HTTP_TIMEOUT",
+        "AGENT_WAKE_POLL_SECONDS",
+        "AGENT_WAKE_QUIET_END_HOUR",
+        "AGENT_WAKE_QUIET_START_HOUR",
+        "AGENT_WAKE_REQUIRE_AL_TITLE",
+        "AGENT_WAKE_SESSION_MAX_AGE_SECONDS",
+        "AUTO_LINK_MARGIN",
+        "AUTO_LINK_MAX_MATCHES",
+        "AUTO_LINK_POLL_SECONDS",
+        "AUTO_LINK_THRESHOLD",
+        "AUTO_LINK_WINDOW_DAYS",
+        "BACKUP_RETENTION",
+        "BENCH_ANCHOR_MAX_AGE_DAYS",
+        "BENCH_HEARTBEAT_DAYS",
+        "BENCH_QUIET_ONLY",
+        "BENCH_QUIET_WAIT_SECONDS",
+        "BODY_PREVIEW_LENGTH",
+        "CI_BRANCH_TREE_MAX",
+        "CI_BRANCH_TREE_TTL_HOURS",
+        "CI_FALLBACK_AFTER_SECONDS",
+        "CI_FARM_BENCH_REMOTE_FIRST",
+        "CI_FARM_DISPATCH_TIMEOUT",
+        "CI_FARM_HTTP_TIMEOUT",
+        "CI_FARM_RUNNER_MAX_ACTIVE",
+        "CI_FARM_TEST_REMOTE_FIRST",
+        "CI_NAMED_TREE_MAX_MB",
+        "CI_NAMED_TREE_TTL_HOURS",
+        "CI_PER_PAGE",
+        "CI_POLL_SECONDS",
+        "CI_RUN_BUILD_TIMEOUT",
+        "CI_RUN_CLONE_TIMEOUT",
+        "CI_RUN_COOLDOWN_SECONDS",
+        "CI_RUN_EVENT_TAIL_BYTES",
+        "CI_RUN_GIT_TIMEOUT",
+        "CI_RUN_IMAGE_BASE",
+        "CI_RUN_MAIN_FETCH_TTL_SECONDS",
+        "CI_RUN_MAX_RETAINED_BYTES",
+        "CI_RUN_MYPY_CACHE_DIR",
+        "CI_RUN_RESPOND_SECONDS",
+        "CI_RUN_RUFF_CACHE_DIR",
+        "CI_RUN_SANDBOX_CPUS",
+        "CI_RUN_SANDBOX_MEMORY_MB",
+        "CI_RUN_SANDBOX_PIDS",
+        "CI_RUN_SANDBOX_SWAP_MB",
+        "CI_RUN_SANDBOX_TMP_SIZE_MB",
+        "CI_RUN_SUITE_WORKERS",
+        "CI_RUN_TAIL_BYTES",
+        "CI_RUN_TIMEOUT_SECONDS",
+        "COMMENT_SIMILAR_RESULTS",
+        "COMMENT_SIMILAR_THRESHOLD",
+        "DB_ID_CHUNK_SIZE",
+        "DEFAULT_PAGE_SIZE",
+        "DELETION_TITLE_TRUNCATE",
+        "DESIGN_SHORT_TOKEN_N",
+        "DESIGN_SIMILAR_REASON_MIN",
+        "DESIGN_SIMILAR_SHORT_THRESHOLD",
+        "DESIGN_SIMILAR_THRESHOLD",
+        "DESIGN_TYPO_MAX_CHARS",
+        "DESIGN_TYPO_MIN_JACCARD",
+        "ECONOMY_CHECKPOINT_SECONDS",
+        "EVENT_TOTAL_CACHE_SECONDS",
+        "GITHUB_CONN_IDLE_TIMEOUT",
+        "GITHUB_ETAG_STORE_MAX",
+        "GITHUB_HTTP_TIMEOUT_SECONDS",
+        "GITHUB_MAX_CONNECTIONS",
+        "GITHUB_PRS_PER_PAGE",
+        "GITHUB_TREE_CACHE_SECONDS",
+        "GIT_FETCH_CACHE_SECONDS",
+        "GIT_WORKSPACE_FETCH_TTL",
+        "GIT_WORKSPACE_LOCK_TIMEOUT",
+        "GIT_WORKSPACE_MODE",
+        "GIT_WORKSPACE_POOL",
+        "GRACEFUL_SHUTDOWN_SECONDS",
+        "GUILD_EMPTY_TIMEOUT_DAYS",
+        "GUILD_HEARTBEAT_DAYS",
+        "GUILD_IDLE_DAYS",
+        "GUILD_INVITE_DAYS",
+        "GUILD_JOIN_REQUEST_DAYS",
+        "GUILD_MATCH_DAYS",
+        "GUILD_POLL_MAX_DAYS",
+        "GUILD_REFOUND_DAYS",
+        "GUILD_SUBSIDY_COOLDOWN_DAYS",
+        "GUILD_SUCCESSOR_GRACE_DAYS",
+        "GZIP_COMPRESSLEVEL",
+        "GZIP_MEMLEVEL",
+        "GZIP_MINIMUM_SIZE",
+        "GZIP_THREAD_MINIMUM_SIZE",
+        "GZIP_WBITS",
+        "HTTP_KEEPALIVE_TIMEOUT_SECONDS",
+        "JOB_DESC_MAX_LEN",
+        "JOB_EVIDENCE_MAX_LEN",
+        "JOB_FEEDBACK_MAX_LEN",
+        "JOB_MAX_STEPS",
+        "JOB_SCOPE_MAX_LEN",
+        "JOB_STEP_MAX_LEN",
+        "JOB_TITLE_MAX_LEN",
+        "LOG_LEVEL",
+        "MAX_BODY_LEN",
+        "MAX_COMMENT_LEN",
+        "MAX_MODEL_LEN",
+        "MAX_NAME_LEN",
+        "MAX_PAGE_SIZE",
+        "MAX_QUERY_LENGTH",
+        "MAX_TITLE_LEN",
+        "MCP_RATE_IP_EXEMPT",
+        "MCP_REGISTER_DELAY_SECONDS",
+        "MENTION_TITLE_TRUNCATE",
+        "POSTS_BATCH_MAX",
+        "PROPOSALS_PER_PAGE",
+        "PRS_BATCH_MAX",
+        "PR_CACHE_SECONDS",
+        "PR_MERGE_POLL_SECONDS",
+        "PUBLIC_BASE_URL",
+        "PULSE_TREND_LIMIT",
+        "QUOTE_MAX_LEN",
+        "RECENT_ACTIVITY_DEFAULT_SIZE",
+        "RECENT_ACTIVITY_MAX_SIZE",
+        "RECORD_CACHE_SECONDS",
+        "REPO_READ_MAX_LINES",
+        "REPO_SEARCH_DEFAULT_MAX_FILES",
+        "REPO_SEARCH_LINE_TRIM",
+        "REPO_SEARCH_MAX_FILES",
+        "REPO_SEARCH_MAX_PER_FILE",
+        "RESTART_RETRY_AFTER_SECONDS",
+        "SEARCH_SNIPPET_WIDTH",
+        "SIMILAR_PRS_RESULTS",
+        "SIMILAR_PRS_THRESHOLD",
+        "SIMILAR_RESULTS",
+        "SIMILAR_THRESHOLD",
+        "SQLITE_BUSY_TIMEOUT_SECONDS",
+        "SQLITE_MMAP_SIZE_BYTES",
+        "SQLITE_SLOW_BLOCK_MS",
+        "SQLITE_TEMP_STORE",
+        "SQLITE_VACUUM_THRESHOLD_BYTES",
+        "STATUS_BIG_FILE_THRESHOLD",
+        "STATUS_CACHE_SECONDS",
+        "TAG_NAME_MAX_LEN",
+        "TAG_SUGGEST_RESULTS",
+        "TAG_SUGGEST_THRESHOLD",
+        "TODO_DELTA_MAX_SNAPSHOT_OPS",
+        "TODO_ITEM_MAX_LEN",
+        "TODO_PROGRESS_MAX_LEN",
+        "TODO_TITLE_MAX_LEN",
+        "TOOL_USAGE_NOTE_CAP",
+        "VIEWER_CACHE_TTL",
+        "VIEWER_REFRESH_SECONDS",
+        "VOTES_BATCH_MAX",
+        "WAL_CHECKPOINT_BYTES",
+        "WORKFLOW_RERUN_COOLDOWN_HOURS",
+    }
+)
+
+
+def is_policy_knob(name: str) -> bool:
+    """Membership test: is *name* a registered policy knob?
+
+    Pass the _TUNING attribute name (e.g. "CREDITS_ENABLED"); the env
+    name is _TUNING[name][0] and CONFIG_KNOBS below carries the
+    (env, attr) pairs. A registered key's default changes what a
+    citizen can DO (spend, vote, claim, stake) or still PROVE
+    (retention, expiry).
+
+    Default-OFF feature switches are registered too, and the reason is
+    the membership test itself: flipping BOUNTY_ENABLED from 0 to 1
+    does not tune a capability, it creates one that did not exist for
+    every citizen behind the flag.  "Currently off" and "not a policy
+    knob" are different facts, and the second one is what this
+    frozenset asserts.
+    """
+    return name in POLICY_KNOBS
+
 
 # Reverse lookup for reload validation: env key -> converter. Built once from
 # the registry so reload_dotenv() can reject an invalid value (a bad .env edit

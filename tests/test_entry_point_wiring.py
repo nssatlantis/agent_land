@@ -15,9 +15,12 @@ through a globals() list driver, and that form genuinely executes them.
 Files run_all skips (e2e suites + benchmark, own harnesses) are excluded,
 mirroring tests/run_all.py:_SKIP by name.
 
-Known debt lives in EXPECTED_UNWIRED_COUNTS (dated 2026-09-25): per-file
-counts of unreached defs, enforced exactly. The map can only shrink -
-wiring a test without shrinking it fails CI, and so does any growth.
+Known debt lives in EXPECTED_UNWIRED (dated 2026-09-25): per-file SETS of
+unreached def NAMES, enforced exactly in both directions. It is a name set
+rather than a count because a count cannot see a swap - wire one def, add a
+fresh unwired one, and the count is unchanged while the debt is not
+(#B203). The map can only shrink: wiring a test without shrinking it fails
+CI, and so does any growth.
 """
 
 from __future__ import annotations
@@ -43,16 +46,46 @@ SKIPPED_BY_RUN_ALL = frozenset(
 _DYNAMIC_DISCOVERY = frozenset({"globals", "locals", "dir", "vars"})
 
 # Pinned record of known entry-point debt at the per-test ratchet landing
-# (2026-09-25, #672 item 5342, PR #1462): filename -> unreached test-def
-# count. Enforced EXACTLY - growth fails CI, fixes must shrink this map in
-# the same PR. Never extend it for new code; wire the tests instead.
-EXPECTED_UNWIRED_COUNTS = {
-    "test_credits.py": 3,
-    "test_farm.py": 2,
-    "test_bench_gate.py": 1,
-    "test_economy.py": 1,
-    "test_pr_vote.py": 1,
+# (2026-09-25, #672 item 5342, PR #1462), as NAMES rather than counts.
+# A count records HOW MANY defs a file fails to reach and never WHICH, so a
+# swap - wire one def, add a fresh unwired one - held the count steady and
+# this ratchet green, which is the "never extend it for new code" clause
+# failing to enforce itself (#B203). Asserted by name: growth fails CI, and
+# a fix must shrink this map in the same PR.
+#
+# Measured by running this module's own _module_test_defs /
+# _tail_reached_tests over each debt file, not by reading them; the counts
+# this map replaces came back identical, which is the cross-check.
+EXPECTED_UNWIRED = {
+    "test_bench_gate.py": frozenset({"test_namespaced_key_loads_with_precedence"}),
+    "test_credits.py": frozenset(
+        {
+            "test_downvote_on_zero_balance_grants_nothing",
+            "test_group_transactions_legacy_null_passthrough",
+            "test_vote_flip_never_farms",
+        }
+    ),
+    # ROTTED, not merely unwired - see the note below the dict (#B207).
+    "test_economy.py": frozenset({"test_verify_ledger_public_pages_past_first_page"}),
+    "test_farm.py": frozenset(
+        {
+            "test_dispatch_timeout_reaches_urlopen",
+            "test_run_checks_bench_overflow_passes_allow_remote",
+        }
+    ),
+    "test_pr_vote.py": frozenset({"test_remove_pr_label_encodes_url"}),
 }
+# test_economy.py STAYS on this map even though wiring its single unreached
+# def is a one-line edit, because that pin is rotted rather than merely
+# unwired (#B207): it INSERTs into `credit_entries (… delta_quarters …)`, a
+# column the twentieths migration renamed to `delta_units` (`_rename_scale`,
+# db/_core/_migrate.py:489), and those two INSERTs were the last callers of
+# the old name anywhere in the tree. Repaired and executed, it then fails its
+# own `assert pub["chain_ok"] is True` - so wiring it here would ship either
+# a red, or a pin whose failing assertion had been deleted to go green. An
+# unwired pin that is honestly recorded beats either. Its #B30 assertion
+# (`entries_replayed == seal["entry_count"]`) does pass once the column is
+# repaired, so the #B30 fix itself is verified working.
 
 
 def _module_test_defs(tree: ast.Module) -> list:
@@ -163,23 +196,26 @@ def test_all_test_files_execute_their_tests():
     detail = "; ".join(
         fname + ": " + ", ".join(actual[fname]) for fname in sorted(actual)
     )
-    assert set(actual) == set(EXPECTED_UNWIRED_COUNTS), (
+    assert set(actual) == set(EXPECTED_UNWIRED), (
         "entry-point debt membership changed (#672 item 5342): actual=["
         + detail
         + "] allowlisted="
-        + str(sorted(EXPECTED_UNWIRED_COUNTS))
+        + str(sorted(EXPECTED_UNWIRED))
         + ". Wire the tests (and shrink the allowlist in the same PR) "
         "instead of extending it."
     )
-    for fname, expected in EXPECTED_UNWIRED_COUNTS.items():
-        assert len(actual[fname]) == expected, (
+    for fname, expected in EXPECTED_UNWIRED.items():
+        got = set(actual[fname])
+        # By NAME, not by len(). A count cannot see a swap - wire one def and
+        # add a fresh unwired one, and len() is unchanged while the debt is
+        # not (#B203) - and it cannot say which def arrived, which is the
+        # only part a reader needs. Both directions are named below.
+        assert got == set(expected), (
             fname
-            + ": "
-            + str(len(actual[fname]))
-            + " unreached, allowlist pins "
-            + str(expected)
-            + " (#672 item 5342): "
-            + ", ".join(actual[fname])
+            + ": unreached set changed (#672 item 5342 / #B203). Unwired now: "
+            + (", ".join(sorted(got - set(expected))) or "(none)")
+            + ". Wired but still allowlisted: "
+            + (", ".join(sorted(set(expected) - got)) or "(none)")
             + ". Shrink the wiring AND the allowlist in the same PR."
         )
 

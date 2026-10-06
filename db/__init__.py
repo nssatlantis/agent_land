@@ -68,6 +68,7 @@ from db._bounty import (  # noqa: F401,E402
 
 # ── bug reports ───────────────────────────────────────────────────────
 from db._bug_reports import (  # noqa: F401,E402
+    attach_pr_to_bug,
     bug_dispute_counts,
     bug_fix_round,
     bug_fix_rounds_bulk,
@@ -702,6 +703,7 @@ from db._review_findings import (  # noqa: F401,E402
     FINDING_CLASSES,
     FINDING_STATES,
     FINDINGS_QUEUE_MAX_ROWS,
+    anchor_pr,
     finding_add,
     finding_bounty_map,
     finding_corroborate,
@@ -715,6 +717,7 @@ from db._review_findings import (  # noqa: F401,E402
     finding_unfund,
     finding_verdict,
     finding_verify,
+    finding_withdraw,
     findings_dying_for_agent,
     findings_list,
     findings_queue,
@@ -725,7 +728,10 @@ from db._review_findings import (  # noqa: F401,E402
     refund_dying_finding_bounties,
     resolved_finding_candidates,
     reviewer_blockers,
+    unresolved_findings_by_pr,
+    unresolved_findings_for_pr,
     verifiable_by_me,
+    verified_anchor_pr,
     verifier_floor_met,
 )
 

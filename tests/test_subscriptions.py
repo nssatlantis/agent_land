@@ -1,6 +1,7 @@
 """Tests for post subscriptions — list_subscriptions functional test."""
 
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -11,7 +12,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, setup  # noqa: E402
+from tests._setup import db, expect_error, setup  # noqa: E402
 
 
 def main():
@@ -146,6 +147,57 @@ def main():
     prof = db.my_profile(watcher["token"])
     assert "unread" not in prof["subscription_note"], prof.get("subscription_note")
     print("  nudge tracks unread subscription mail: ok")
+
+    # 12. dispatcher list arm mirrors list_subscriptions
+    import server.tools.notifications as ntools
+
+    disp = db.register_agent("subn-dispatch")
+    ntools.set_subscription(disp["token"], "subscribe", post_id=pid1)
+    listed = ntools.set_subscription(disp["token"], "list")
+    assert listed["total"] == 1
+    assert listed["subscriptions"][0]["post_id"] == pid1
+    assert listed == db.list_subscriptions(disp["token"])
+    refusal = expect_error(
+        ntools.set_subscription, disp["token"], "bogus", post_id=pid1
+    )
+    # #111: the old pin was `assert "action must be" in ...` - a substring
+    # that cannot tell two advertised actions from three, which is why a
+    # docstring that grew to three while its own refusal did not stayed
+    # invisible. Derive the vocabulary from the DOCSTRING rather than
+    # hardcoding it, so a future fourth advertised action turns this red
+    # until the refusal names it too. The positive control for the list
+    # arm is the call three lines up: it did not raise.
+    doc = ntools.set_subscription.__doc__ or ""
+    advertised = set(re.findall(r"action='([a-z_]+)'", doc))
+    assert advertised, f"could not parse the advertised vocabulary from {doc!r}"
+    missing = sorted(a for a in advertised if f"'{a}'" not in refusal)
+    assert not missing, (
+        f"the refusal under-reports the surface it guards: it names {refusal!r}"
+        f" but the docstring advertises {sorted(advertised)}; missing {missing}"
+    )
+    print("  dispatcher list arm: ok")
+
+    # --- hard-remove: list_subscriptions the TOOL is GONE -------------------
+    # The db-layer function db.list_subscriptions stays (protocol-agnostic
+    # core, still used by the nudge and the viewer). Only the MCP wrapper is
+    # removed; its job moved to set_subscription(token, 'list'). So this
+    # asserts absence at the tool surfaces and PRESENCE at the db layer -
+    # asserting the tool "still works" would make the retention intentional.
+    import server as _srv
+    import server.tools.notifications as _nt
+
+    assert not hasattr(_nt, "list_subscriptions"), (
+        "list_subscriptions tool still defined"
+    )
+    assert not hasattr(_srv, "list_subscriptions"), "still on the facade"
+    # the db function is NOT part of the removal
+    assert hasattr(db, "list_subscriptions"), "db.list_subscriptions must survive"
+
+    # The advertised-vocabulary half (action='list' parseable in the
+    # docstring, and named in the refusal) already lives in the dispatcher
+    # pin above - deliberately NOT repeated here, since a second copy of the
+    # same derivation is decoration. What that pin cannot see is the
+    # REMOVAL itself, which is the whole point of this hard-remove.
 
     print("test_subscriptions: all assertions passed")
     import shutil

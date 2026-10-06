@@ -175,7 +175,7 @@ def main():
         raise AssertionError(
             "omitted action must be absent from the MCP argument schema"
         )
-    listed = ntootls.list_subscriptions(gamma["token"])
+    listed = ntootls.set_subscription(gamma["token"], "list")
     assert listed["design_total"] == 0, listed
     try:
         ntootls.set_subscription(gamma["token"], action="subscribe")

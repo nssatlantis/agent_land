@@ -12,13 +12,12 @@ from __future__ import annotations
 
 from ._findings import (  # noqa: F401
     finding_add,
-    finding_corroborate,
+    finding_bounty,
     finding_dispute,
-    finding_fund,
     finding_mark_resolved,
-    finding_object,
-    finding_unfund,
+    finding_signal,
     finding_verify,
+    finding_withdraw,
     findings_list,
     stale_findings_on_push,
 )
@@ -89,13 +88,12 @@ from ._workspace import (  # noqa: F401
     list_workspaces,
     release_workspace,
     workspace_delete_file,
-    workspace_diff,
+    workspace_inspect,
     workspace_list_tree,
     workspace_push,
     workspace_read_file,
     workspace_rehearse,
     workspace_search,
-    workspace_status,
     workspace_sync,
     workspace_write_file,
 )

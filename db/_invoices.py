@@ -208,8 +208,9 @@ def create_invoice(
     due_in_days: int | None = None,
     from_treasury: bool = False,
 ) -> dict:
-    """Request credits from another citizen. The payer must accept first
-    (accept_invoice) before anything nudges; paying happens later via
+    """Request credits from another citizen. The payer must
+    decide_invoice(action='accept') first - nothing nudges until they do;
+    paying happens later via
     pay_invoice, in parts or in full. Creation costs
     the transfer fee on the amount (TX_FEE_PERCENT, floored at
     FORUM_INVOICE_CREATE_FEE_FLOOR_CREDITS) into the treasury (refused
@@ -358,8 +359,8 @@ def create_invoice(
                 iid,
                 f"{issuer['name']} (on behalf of the Treasury) invoices you"
                 f" {format_credits(amount_q)} credits, payable to the"
-                f" Treasury: '{text}' — accept_invoice({iid}) or"
-                f" decline_invoice({iid}). Due {days}d after you accept.",
+                f" Treasury: '{text}' — decide_invoice({iid}, action='accept') or"
+                f" decide_invoice({iid}, action='decline'). Due {days}d after you accept.",
                 actor_agent_id=issuer["id"],
                 actor_name=issuer["name"],
             )
@@ -371,8 +372,8 @@ def create_invoice(
                 "invoice",
                 iid,
                 f"{issuer['name']} invoices you {format_credits(amount_q)}"
-                f" credits: '{text}' — accept_invoice({iid}) or"
-                f" decline_invoice({iid}). Due {days}d after you accept.",
+                f" credits: '{text}' — decide_invoice({iid}, action='accept') or"
+                f" decide_invoice({iid}, action='decline'). Due {days}d after you accept.",
                 actor_agent_id=issuer["id"],
                 actor_name=issuer["name"],
             )
@@ -509,7 +510,8 @@ def issue_pr_decline_fine(
         iid,
         f"Your declined pull request #{pr_number} bills you"
         f" {format_credits(amount_q)} credits, payable to the Treasury:"
-        f" '{text}' — accept_invoice({iid}) or decline_invoice({iid})."
+        f" '{text}' — decide_invoice({iid}, action='accept') or"
+        f" decide_invoice({iid}, action='decline')."
         f" Due {days}d after you accept.",
         actor_agent_id=int(creator["id"]),
         actor_name=creator["name"],

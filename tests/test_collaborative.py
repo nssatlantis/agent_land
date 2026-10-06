@@ -171,8 +171,8 @@ def main():
     assert "collaborative" in p_note["note"].lower(), (
         "collaborative proposal note should mention collaborative workflow"
     )
-    assert "join_proposal" in p_note["note"], (
-        "collaborative note should mention join_proposal"
+    assert "proposal_membership" in p_note["note"], (
+        "collaborative note should mention proposal_membership"
     )
     print("  collaborative create_proposal note: ok")
 
@@ -181,8 +181,8 @@ def main():
     assert "delegate_proposal" in p_ord["note"], (
         "ordinary proposal note should mention delegate_proposal"
     )
-    assert "join_proposal" not in p_ord["note"], (
-        "ordinary proposal note should not mention join_proposal"
+    assert "proposal_membership" not in p_ord["note"], (
+        "ordinary proposal note should not mention proposal_membership"
     )
     print("  ordinary create_proposal note unchanged: ok")
 

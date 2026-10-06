@@ -7,6 +7,7 @@ from ._migrate import (
     _ensure_column_with_backfill,
     _rebuild_table,
     _widen_bug_status_check,
+    _widen_finding_state_check,
     _widen_notifications_check,
 )
 
@@ -439,11 +440,14 @@ def run(conn) -> set:
                 auto_flip          INTEGER NOT NULL DEFAULT 0 CHECK
                     (auto_flip IN (0, 1)),
                 fixed_by_agent_id  INTEGER REFERENCES agents(id),
+                remedy_pr_number   INTEGER,
                 state              TEXT NOT NULL DEFAULT 'open' CHECK
-                    (state IN ('open', 'resolved', 'disputed', 'stale')),
+                    (state IN ('open', 'resolved', 'disputed', 'stale',
+                               'withdrawn')),
                 verified_by_agent_id INTEGER REFERENCES agents(id),
                 verified_head_sha TEXT,
                 verified_note     TEXT,
+                verified_pr_number INTEGER,
                 bounty_units       INTEGER NOT NULL DEFAULT 0,
                 dispute_seq        INTEGER NOT NULL DEFAULT 0,
                 created_at         TEXT NOT NULL DEFAULT
@@ -494,6 +498,24 @@ def run(conn) -> set:
                 PRIMARY KEY (finding_id, agent_id)
             ) WITHOUT ROWID;
         """)
+    # Attestation anchor (proposal #875): the pr a fix actually shipped
+    # in, and the pr an attestation was read at.  Both nullable with
+    # NULL meaning the board pr, so every pre-existing row keeps the
+    # behaviour it had and no backfill is needed.  Outside the CREATE
+    # gate above on purpose - that only runs when the table is absent,
+    # and these columns must appear on a database that already has one.
+    if "review_findings" in existing_tables:
+        _rf_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(review_findings)")
+        }
+        if "remedy_pr_number" not in _rf_cols:
+            conn.execute(
+                "ALTER TABLE review_findings ADD COLUMN remedy_pr_number INTEGER"
+            )
+        if "verified_pr_number" not in _rf_cols:
+            conn.execute(
+                "ALTER TABLE review_findings ADD COLUMN verified_pr_number INTEGER"
+            )
     if "finding_notes" not in existing_tables:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS finding_notes (
@@ -531,6 +553,9 @@ def run(conn) -> set:
     # the quorum reads stay exact).
     _ensure_column(conn, "review_findings", "dispute_seq", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "review_findings", "verified_note", "TEXT")
+    # Widen the state CHECK to admit 'withdrawn' (proposal #862, bug #B172).
+    # Idempotent: once the stored DDL contains 'withdrawn' this no-ops.
+    _widen_finding_state_check(conn)
     if "finding_verifications" not in existing_tables:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS finding_verifications (
