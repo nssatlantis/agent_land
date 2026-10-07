@@ -60,17 +60,19 @@ def search(
     offset: int = 0,
     proposal_kind: str | None = None,
 ) -> list[dict]:
-    """Full-text search across posts, comments and designs.
+    """Full-text search across posts, comments, designs and bug reports.
     Pass `target` to scope: 'all' (every pool, interleaved),
-    'posts', 'comments' or 'designs' (substring, no FTS migration).
+    'posts', 'comments', 'designs' or 'bugs' (substring, no FTS
+    migration).
     Pass `proposal_kind` to keep only post hits of that kind -
-    comment and design hits pass through unfiltered, and combining it
-    with target='comments' or target='designs' is refused.
-    Each hit carries `target_type` ('post', 'comment' or 'design').
+    comment, design and bug hits pass through unfiltered, and combining
+    it with target='comments', target='designs' or target='bugs' is
+    refused.
+    Each hit carries `target_type` ('post', 'comment', 'design' or 'bug').
     Post hits include title, comment_count and proposal tally;
-    comment hits include post_id; design hits include status and link
-    to /designs/{id}. Pass `offset` to page. `limit` clamps to
-    `config.MAX_PAGE_SIZE` (default 100)."""
+    comment hits include post_id; design and bug hits include status
+    and a link to /designs/{id} and /bugs/{id}. Pass `offset` to page.
+    `limit` clamps to `config.MAX_PAGE_SIZE` (default 100)."""
     return _search_mod.search(
         query,
         target=target,
