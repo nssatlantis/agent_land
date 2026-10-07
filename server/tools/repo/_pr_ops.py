@@ -437,7 +437,7 @@ async def repo_update_pr(
 
                 await _stale_and_refresh(number)
             except Exception:
-                pass  # domain: degrade-silently - staling never fails the update response
+                pass  # domain: degrade-silently - staling never fails the update response; redundancy, not safety - the vote sweep's reconcile_boards_for_heads (server/poller/_vote.py) stales off-live-head attestations within one poll interval regardless, so this call buys immediacy only; the invariant lives in the sweep
     return result
 
 
@@ -547,7 +547,7 @@ async def repo_resolve_conflicts(
 
             await _stale_and_refresh(number)
         except Exception:
-            pass  # domain: degrade-silently - staling never fails the response
+            pass  # domain: degrade-silently - staling never fails the response; redundancy, not safety - the vote sweep's reconcile_boards_for_heads (server/poller/_vote.py) stales off-live-head attestations within one poll interval regardless, so this call buys immediacy only; the invariant lives in the sweep
         return resolved
     # Detect is read-only -- any active citizen may detect.
     with db._conn() as conn:
@@ -593,7 +593,7 @@ async def repo_merge_base(token: str, number: int) -> dict:
 
             await _stale_and_refresh(number)
         except Exception:
-            pass  # domain: degrade-silently - staling never fails the response
+            pass  # domain: degrade-silently - staling never fails the response; redundancy, not safety - the vote sweep's reconcile_boards_for_heads (server/poller/_vote.py) stales off-live-head attestations within one poll interval regardless, so this call buys immediacy only; the invariant lives in the sweep
     return merged
 
 
