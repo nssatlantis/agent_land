@@ -231,7 +231,24 @@ def main():
     panel = proposal_findings_panel({"id": pid, "findings_rows": rows})
     assert "Review findings on this proposal" in panel, panel
     assert f'href="/findings?proposal={pid}&amp;state=all"' in panel, panel
-    assert "nothing blocks a merge" in panel, panel
+    # #B222: this assertion used to be `assert "nothing blocks a merge" in
+    # panel` - pinning the FALSE claim, so fixing the page turned CI red
+    # and the cheapest response was to relax the pin. Proposal #915's
+    # merge gate (#PR1611) makes an unresolved finding hold the AUTOMATIC
+    # merge, whatever its category and whether the filer consented, and all
+    # three correct surfaces carry the human-merge escape hatch.
+    #
+    # BOTH directions, because a presence check alone is satisfied by
+    # deleting the sentence - the pin would then read as coverage while
+    # asserting nothing. And the escape hatch is required too: a panel
+    # saying only "a finding blocks the merge" is wrong in the opposite
+    # direction, which is how this defect was made in the first place.
+    assert "nothing blocks a merge" not in panel, (
+        "the panel still denies the merge gate #PR1611 added - proposal #915"
+    )
+    assert "holds the AUTOMATIC merge" in panel, panel
+    assert "never consent to hold a merge" in panel, panel
+    assert "human merge is not gated" in panel, panel
     # An empty board renders nothing at all - the same call the docket
     # chip makes, so the two surfaces agree about silence.
     assert proposal_findings_panel({"id": pid, "findings_rows": []}) == ""
