@@ -798,11 +798,7 @@ def search_designs(query: str, limit: int | None = None, offset: int = 0) -> lis
     likes = []
     params: list = []
     for term in terms:
-        like = (
-            "%"
-            + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            + "%"
-        )
+        like = _like(term)
         likes.append(
             "(d.title LIKE ? ESCAPE '\\'"
             " OR d.description LIKE ? ESCAPE '\\'"
@@ -841,6 +837,56 @@ def search_designs(query: str, limit: int | None = None, offset: int = 0) -> lis
         return out
 
 
+def _like(term: str) -> str:
+    """One LIKE pattern for `term`, with SQL wildcards escaped."""
+    esc = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return "%" + esc + "%"
+
+
+def search_bugs(query: str, limit: int | None = None, offset: int = 0) -> list[dict]:
+    """Substring search over bug reports (no FTS migration in v1).
+
+    Scans bug titles and bodies with LIKE, newest first. Each hit carries
+    `target_type` ('bug') plus id, title, status and a `snippet` of the
+    match, so a reader can link straight to /bugs/{id}. Read-only.
+    """
+    limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
+    terms = _fts_query(query)
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
+    offset = max(0, int(offset))
+    likes = []
+    params: list = []
+    for term in terms:
+        like = _like(term)
+        likes.append("(b.title LIKE ? ESCAPE '\\' OR b.body LIKE ? ESCAPE '\\')")
+        params.extend([like, like])
+    where = " AND ".join(likes)
+    with db._conn() as conn:
+        rows = conn.execute(
+            "SELECT b.id, b.title, b.status, b.body, b.created_at"
+            " FROM bug_reports b WHERE "
+            + where
+            + " ORDER BY b.id DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        ).fetchall()
+        out = []
+        for r in rows:
+            b = dict(r)
+            hay = " ".join([b.get("title") or "", b.get("body") or ""])
+            out.append(
+                {
+                    "target_type": "bug",
+                    "id": b["id"],
+                    "title": b["title"],
+                    "status": b["status"],
+                    "created_at": b["created_at"],
+                    "rank": 0,
+                    "snippet": _bounded_snippet(hay),
+                }
+            )
+        return out
+
+
 def search(
     query: str,
     target: str = "all",
@@ -848,30 +894,36 @@ def search(
     offset: int = 0,
     proposal_kind: str | None = None,
 ) -> list[dict]:
-    """Unified full-text search across posts, comments and designs.
-    Posts/comments rank by bm25 relevance; designs match by substring
-    (no FTS migration in v1) and follow the ranked hits, newest first. `target` picks the content pool: 'all'
-    (every pool, interleaved), 'posts', 'comments' or 'designs'.
+    """Unified full-text search across posts, comments, designs and bugs.
+    Posts/comments rank by bm25 relevance; designs and bug reports match
+    by substring (no FTS migration in v1) and follow the ranked hits,
+    newest first. `target` picks the content pool: 'all' (every pool,
+    interleaved), 'posts', 'comments', 'designs' or 'bugs'.
     `proposal_kind` keeps only post hits of that kind
-    ('proposal', 'small_fix', 'idea', 'any', 'none'); comment and
-    design hits pass through unfiltered, and combining it with
-    target='comments' or target='designs' is refused. Each hit
-    carries `target_type` ('post', 'comment' or 'design') plus
-    type-specific fields: posts get title, comment_count and
-    proposal tally; comments get post_id for linking; designs get
-    status for linking to /designs/{id}. `offset` pages through
-    the combined result set."""
+    ('proposal', 'small_fix', 'idea', 'any', 'none'); comment, design
+    and bug hits pass through unfiltered, and combining it with
+    target='comments', target='designs' or target='bugs' is refused.
+    Each hit carries `target_type` ('post', 'comment', 'design' or 'bug')
+    plus type-specific fields: posts get title, comment_count and
+    proposal tally; comments get post_id for linking; designs get status
+    for linking to /designs/{id}; bugs get status for linking to
+    /bugs/{id}. `offset` pages through the combined result set."""
     limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     offset = max(0, int(offset))
-    if target not in ("all", "posts", "comments", "designs"):
-        raise db.ForumError("target must be 'all', 'posts', 'comments' or 'designs'.")
+    if target not in ("all", "posts", "comments", "designs", "bugs"):
+        raise db.ForumError(
+            "target must be 'all', 'posts', 'comments', 'designs' or 'bugs'."
+        )
     proposal_kind = proposal_kind or None
-    if proposal_kind is not None and target in ("comments", "designs"):
-        raise db.ForumError("proposal_kind filters posts - not comments or designs.")
+    if proposal_kind is not None and target in ("comments", "designs", "bugs"):
+        raise db.ForumError(
+            "proposal_kind filters posts - not comments, designs or bugs."
+        )
     post_results: list[dict] = []
     comment_results: list[dict] = []
     design_results: list[dict] = []
+    bug_results: list[dict] = []
     if target == "all":
         # For unified ranking, over-fetch from each source then slice the
         # interleaved result — native offset would break cross-source
@@ -881,6 +933,7 @@ def search(
         )
         comment_results = search_comments(query, limit=limit + offset)
         design_results = search_designs(query, limit=limit + offset)
+        bug_results = search_bugs(query, limit=limit + offset)
         for r in post_results:
             r["target_type"] = "post"
         for r in comment_results:
@@ -889,14 +942,18 @@ def search(
             post_results + comment_results,
             key=lambda r: r.get("rank", 0),
         )
-        fresh_designs = sorted(design_results, key=lambda r: r["id"], reverse=True)
-        return (ranked + fresh_designs)[offset : offset + limit]
+        fresh_unranked = sorted(
+            design_results + bug_results, key=lambda r: r["id"], reverse=True
+        )
+        return (ranked + fresh_unranked)[offset : offset + limit]
     if target == "posts":
         combined = search_posts(
             query, limit=limit, offset=offset, proposal_kind=proposal_kind
         )
     elif target == "designs":
         combined = search_designs(query, limit=limit, offset=offset)
+    elif target == "bugs":
+        combined = search_bugs(query, limit=limit, offset=offset)
     else:
         combined = search_comments(query, limit=limit, offset=offset)
     return combined
