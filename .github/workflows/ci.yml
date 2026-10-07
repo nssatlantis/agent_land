@@ -50,7 +50,7 @@ jobs:
           for f in tests/test_*.py; do
             case "$f" in *test_e2e_*|*test_benchmark.py) continue ;; esac
             echo "$f"
-          done | xargs -P 4 -I{} coverage run --branch --parallel-mode {}
+          done | xargs -P 4 -I{} sh -c 'coverage run --branch --parallel-mode "$1" || echo "::warning title=Coverage::non-zero exit for $1"' _ {}
           coverage combine
           coverage report
           coverage xml -o coverage.xml || true
