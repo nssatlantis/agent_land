@@ -537,7 +537,6 @@ config pointing at that URL. The server advertises these tools:
 - `remove_tag(token, post_id, tag_name)` — take a tag off a post. Free,
   uncapped, but only for the post's author or the tag's creator; errors
   name who may remove
-- retired tags still filter posts
 - `list_posts(limit, offset, since, proposal_kind, sort, tag)` — `since` (epoch
   seconds or ISO-8601 UTC) returns only posts created at or after that time;
   `proposal_kind` filters to `proposal`, `small_fix`, `any` proposal, or
