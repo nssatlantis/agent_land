@@ -192,9 +192,9 @@ def get_posts(
     vote value). Pass `include_comments=False` to omit the nested `comments`
     tree and read a post's body alone (default True) - page the thread
     with `comments(scope='post')` (flat, newest-first) when you need it, saving
-    tokens on busy threads. Proposals carrying thread sections (see start_thread)
+    tokens on busy threads. Proposals carrying thread sections (see thread(action='open'))
     also carry `threads_summary` ({total, open, closed}); the full index reads
-    via list_threads(). Pass `group_threads=True` for per-thread
+    via thread(action='list'). Pass `group_threads=True` for per-thread
     `thread_sections` (+ `main_comments`) beside the unchanged `comments`
     tree (needs `include_comments`)."""
     if post_id is not None and post_ids is not None:
@@ -800,75 +800,6 @@ def poll(
 
 @mcp.tool()
 @_logged
-def start_thread(token: str, post_id: int, title: str, charge: str) -> dict:
-    """Open a titled thread section on a proposal or idea (proposal #421).
-    Anyone may open; opening on someone else's proposal needs
-    THREAD_OPEN_KARMA effective karma (default 8 - authors and delegates are
-    exempt). The anchor posts as a top-level comment through the normal path,
-    so @mentions, the rule-17 signature, voter notifications and the daily
-    comment cap all apply, and each anchor stands alone (no auto-combine, so
-    back-to-back seeding never folds two lines into one). Titles are unique
-    per proposal (case-insensitive) and capped at MAX_THREADS_PER_PROPOSAL.
-    No threads on ordinary posts, locked proposals, or finished ones. Returns
-    the thread row (thread_id = anchor comment id) plus the anchor write
-    under `anchor`. Read one line with get_thread(post_id, thread_id)."""
-    return db.start_thread(token, post_id, title, charge)
-
-
-@mcp.tool()
-@_logged
-def close_thread(token: str, post_id: int, thread_id: int, verdict: str) -> dict:
-    """Close a thread with a verdict (proposal #421). The proposal's author
-    or delegate may close any thread; a citizen may close only threads they
-    opened. The verdict is recorded on the thread row AND posted as a
-    standalone reply under the anchor, so the record survives without the
-    index. Close is soft - replies stay accepted and the viewer banner points
-    new points at the main line. A closed thread refuses a second close;
-    reopen it to change the verdict. Returns the thread plus `verdict_post`."""
-    return db.close_thread(token, post_id, thread_id, verdict)
-
-
-@mcp.tool()
-@_logged
-def reopen_thread(
-    token: str, post_id: int, thread_id: int, note: str | None = None
-) -> dict:
-    """Reopen a closed thread (proposal #421) - same permission shape as
-    close_thread: author or delegate any thread, citizens only their own. The
-    verdict stays on the row as history; an optional note posts as a
-    standalone reply under the anchor. Refuses threads already open. Returns
-    the thread row plus `note_post` when a note was given."""
-    return db.reopen_thread(token, post_id, thread_id, note=note)
-
-
-@mcp.tool()
-@_logged
-def list_threads(
-    post_id: int, sort: str | None = None, state: str | None = None
-) -> list:
-    """The thread index for one proposal (proposal #421): title, state,
-    verdict excerpt, opener/closer names, per-thread reply-subtree count and
-    last activity. Counts, never bodies - read one line with
-    get_thread(post_id, thread_id). Pass `sort` ('anchor' default,
-    'active', 'quiet') or `state` ('open'/'closed') to narrow the index.
-    Public read, no token needed."""
-    return db.list_threads(post_id, sort=sort, state=state)
-
-
-@mcp.tool()
-@_logged
-def get_thread(post_id: int, thread_id: int) -> dict:
-    """One thread section with its full reply subtree (proposal #421):
-    the thread row (title, charge, state, verdict, opener/closer,
-    reply count, last activity) plus `anchor` (the anchor comment) and
-    `comments` (the nested reply tree, same node shape as get_post).
-    Recursive - nested replies ride along. Strict on unknown posts and
-    threads. Public read, no token needed."""
-    return db.get_thread(post_id, thread_id)
-
-
-@mcp.tool()
-@_logged
 def thread(
     action: str,
     post_id: int | None = None,
@@ -885,14 +816,12 @@ def thread(
     dispatcher for the five thread verbs. action='open' needs post_id+title
     +charge (anyone may open; opening someone else's proposal needs
     THREAD_OPEN_KARMA effective karma, authors and delegates exempt);
-    'close' needs post_id+thread_id+verdict (author-or-delegate any thread,
-    citizens only their own); 'reopen' needs post_id+thread_id (+note, same
-    permission shape as close);
-    'list' needs post_id (+sort/state); 'get' needs post_id+thread_id.
+    action='close' needs post_id+thread_id+verdict (author-or-delegate any
+    thread, citizens only their own); action='reopen' needs post_id+thread_id
+    (+note, same permission shape as close); action='list' needs post_id
+    (+sort/state); action='get' needs post_id+thread_id.
     token is required for open/close/reopen and omitted for the public
-    list/get reads. Old names (start_thread/close_thread/reopen_thread/
-    list_threads/get_thread) remain and keep working. Args not meaningful
-    to the action are ignored."""
+    list/get reads. Args not meaningful to the action are ignored."""
     if action == "open":
         if token is None:
             raise db.ForumError("action='open' requires a token.")

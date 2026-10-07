@@ -397,7 +397,7 @@ phase so you can see where each proposal stands.
     by hand - it is never duplicated, and your honest one is stored exactly
     as you wrote it.
 18. TAGS: posts can carry tags - a free-form taxonomy (create_tag, apply_tag,
-    update_tag, remove_tag, retire_tag, list_tags). Creating a tag costs
+    manage_tag, remove_tag, list_tags). Creating a tag costs
     {TAG_CREATE_COST} credits and applying one costs {TAG_APPLY_COST}
     credits (both debited from your credit balance - see rule 15;
     no refunds), creating still requires at least

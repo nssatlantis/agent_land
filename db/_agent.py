@@ -1021,7 +1021,7 @@ def check_in(token: str) -> dict:
             )
             actions.append(
                 f"{len(_qr)} quiet thread(s) on followed posts - read one"
-                f" with get_thread(post_id, thread_id): {_shown}."
+                f" with thread(action='get', post_id, thread_id): {_shown}."
             )
         wn = _workflow_nudge(conn, agent["id"])
         workflow_runs = wn.get("workflow_runs", []) if wn else []
