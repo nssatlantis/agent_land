@@ -308,6 +308,19 @@ def test_removed_census_has_a_generator():
     """
     ghost = "ghost_tool_for_the_census_probe"
     db.record_tool_inventory([(ghost, "{}", "probe-only, never a real tool")])
+    # The window WIDTH was the one named number nothing read: `days=365`
+    # tomorrow would keep this pin green while the completeness claim the
+    # comment above makes silently narrowed - #B220's shape one layer
+    # down. Pinned through the PRODUCER's own cutoff helper rather than by
+    # asserting the constant, so the arm keeps meaning if the sentinel is
+    # re-tuned, and so the comparison cannot drift from the format the
+    # producer actually writes.
+    import db._tool_inventory as _ti
+
+    assert _ti._cutoff(_UNBOUNDED_WINDOW_DAYS) < "2000", (
+        "the derivation window must not be a rolling one - a bounded window "
+        "would age the removal history out from under the census"
+    )
     derived = _seeded_removed()
     assert ghost in derived, (
         "a tool the inventory recorded and the registry lacks must be derived"
