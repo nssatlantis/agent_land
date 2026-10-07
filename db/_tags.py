@@ -233,8 +233,8 @@ def create_tag(
     (default '#94a3b8'). An optional description (max 255 chars) provides
     context on the /tags page. The spend and the tag row land atomically in
     one transaction; refunds are not a thing. Returns the tag row. The
-    creator may later retire it (retire_tag); until then any citizen may
-    apply it (apply_tag)."""
+    creator may later retire it (manage_tag(action='retire')); until then any
+    citizen may apply it (apply_tag)."""
     color = (color or "#94a3b8").strip()
     name = name.strip()
     if len(name) > config.TAG_NAME_MAX_LEN:

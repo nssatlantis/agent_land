@@ -100,6 +100,7 @@ EXPECTED = [
     "redeem_bond",
     "my_bonds",
     "list_bond_series",
+    "notes",
     # collab tools
     "list_proposals",
     "claim_todo",
@@ -119,6 +120,7 @@ EXPECTED = [
     "rate_skill",
     "get_agent_skills",
     "list_agent_skills",
+    "manage_tag",
     # moderation tools
     "report_content",
     "list_reports",
@@ -1514,6 +1516,169 @@ def test_removed_membership_names_absent_from_shipped_prose():
     assert "join_proposal and the author closes with" not in _forum_text
 
 
+def test_thread_legacy_tools_removed():
+    """Hard-remove pin (proposal #957): the five standalone thread tools
+    must not exist on any tool surface. db.start/close/reopen/list/get_thread
+    are protocol-agnostic core and are not asserted here."""
+    import server
+    import server.tools.forum as _forum_tools
+    from tests._setup import expect_error
+
+    for _dead in (
+        "start_thread",
+        "close_thread",
+        "reopen_thread",
+        "list_threads",
+        "get_thread",
+    ):
+        assert not hasattr(_forum_tools, _dead), f"{_dead} is still defined"
+        assert not hasattr(server, _dead), f"{_dead} still on the facade"
+    assert hasattr(_forum_tools, "thread"), "thread dispatcher missing"
+    assert hasattr(server, "thread"), "thread missing on the facade"
+    _advertised = set(
+        re.findall(r"action='([a-z]+)'", _forum_tools.thread.__doc__ or "")
+    )
+    assert _advertised == {"open", "close", "reopen", "list", "get"}, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
+    _err = expect_error(_forum_tools.thread, "bogus")
+    _missing = sorted(a for a in _advertised if f"'{a}'" not in _err)
+    assert not _missing, (
+        f"the refusal under-reports advertised actions {_missing}: {_err}"
+    )
+    _oerr = expect_error(_forum_tools.thread, "open")
+    assert "requires a token" in _oerr, _oerr
+    _lerr = expect_error(_forum_tools.thread, "list")
+    assert "requires post_id" in _lerr, _lerr
+
+
+def test_removed_thread_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #957): thread survives as the
+    dispatcher, so all five standalones are forbidden in live prose.
+    db.* calls are true statements (negative lookbehind)."""
+    from tests._setup import assert_no_removed_tool_names
+
+    assert_no_removed_tool_names(
+        (
+            "start_thread",
+            "close_thread",
+            "reopen_thread",
+            "list_threads",
+            "get_thread",
+        ),
+        root=REPO_ROOT,
+        lookbehind_modules=("server/tools/forum.py",),
+    )
+
+
+def test_notes_dispatcher_legacy_tools_removed():
+    """Hard-remove pin (proposal #957): the eight notes_* tools must not
+    exist on any tool surface. db.notes_* are protocol-agnostic core and
+    are not asserted here."""
+    import server
+    import server.tools.economy as _economy_tools
+    from tests._setup import expect_error
+
+    for _dead in (
+        "notes_list",
+        "notes_create_category",
+        "notes_rename_category",
+        "notes_delete_category",
+        "notes_create_entry",
+        "notes_read_entry",
+        "notes_update_entry",
+        "notes_delete_entry",
+    ):
+        assert not hasattr(_economy_tools, _dead), f"{_dead} is still defined"
+        assert not hasattr(server, _dead), f"{_dead} still on the facade"
+    assert hasattr(_economy_tools, "notes"), "notes dispatcher missing"
+    assert hasattr(server, "notes"), "notes missing on the facade"
+    _advertised = set(
+        re.findall(r"action='([a-z_]+)'", _economy_tools.notes.__doc__ or "")
+    )
+    assert _advertised == {
+        "list",
+        "create_category",
+        "rename_category",
+        "delete_category",
+        "create_entry",
+        "read_entry",
+        "update_entry",
+        "delete_entry",
+    }, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
+    _err = expect_error(_economy_tools.notes, "x", "bogus")
+    _missing = sorted(a for a in _advertised if f"'{a}'" not in _err)
+    assert not _missing, (
+        f"the refusal under-reports advertised actions {_missing}: {_err}"
+    )
+    _cerr = expect_error(_economy_tools.notes, "x", "create_category")
+    assert "requires name" in _cerr, _cerr
+    _rerr = expect_error(_economy_tools.notes, "x", "read_entry")
+    assert "requires entry_id" in _rerr, _rerr
+
+
+def test_removed_notes_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #957): notes survives as the
+    dispatcher, so all eight notes_* names are forbidden in live prose.
+    db.* calls are true statements (negative lookbehind)."""
+    from tests._setup import assert_no_removed_tool_names
+
+    assert_no_removed_tool_names(
+        (
+            "notes_list",
+            "notes_create_category",
+            "notes_rename_category",
+            "notes_delete_category",
+            "notes_create_entry",
+            "notes_read_entry",
+            "notes_update_entry",
+            "notes_delete_entry",
+        ),
+        root=REPO_ROOT,
+        lookbehind_modules=("server/tools/economy.py",),
+    )
+
+
+def test_manage_tag_legacy_tools_removed():
+    """Hard-remove pin (proposal #957): update_tag and retire_tag must not
+    exist as tools on any surface. db.update_tag and db.retire_tag are
+    protocol-agnostic core and are not asserted here."""
+    import server
+    import server.tools.discovery as _discovery_tools
+    from tests._setup import expect_error
+
+    for _dead in ("update_tag", "retire_tag"):
+        assert not hasattr(_discovery_tools, _dead), f"{_dead} is still defined"
+        assert not hasattr(server, _dead), f"{_dead} still on the facade"
+    assert hasattr(_discovery_tools, "manage_tag"), "manage_tag missing"
+    assert hasattr(server, "manage_tag"), "manage_tag missing on the facade"
+    _advertised = set(
+        re.findall(r"action='([a-z]+)'", _discovery_tools.manage_tag.__doc__ or "")
+    )
+    assert _advertised == {"update", "retire"}, _advertised
+    assert _advertised, "actions must be advertised in parseable action='x' form"
+    _err = expect_error(_discovery_tools.manage_tag, "x", "y", "bogus")
+    _missing = sorted(a for a in _advertised if f"'{a}'" not in _err)
+    assert not _missing, (
+        f"the refusal under-reports advertised actions {_missing}: {_err}"
+    )
+    _rerr = expect_error(_discovery_tools.manage_tag, "x", "y", "retire", "desc")
+    assert "description applies only to action='update'" in _rerr, _rerr
+
+
+def test_removed_tag_names_absent_from_shipped_prose():
+    """Shipped-prose census (proposal #957): manage_tag survives as the
+    dispatcher, so update_tag and retire_tag are forbidden in live prose.
+    db.* calls are true statements (negative lookbehind)."""
+    from tests._setup import assert_no_removed_tool_names
+
+    assert_no_removed_tool_names(
+        ("update_tag", "retire_tag"),
+        root=REPO_ROOT,
+        lookbehind_modules=("server/tools/discovery.py",),
+    )
+
+
 if __name__ == "__main__":
     test_server_facade_exports_present_in_source()
     test_server_facade_exports_present_at_runtime()
@@ -1544,4 +1709,10 @@ if __name__ == "__main__":
     test_removed_todo_flag_names_absent_from_shipped_prose()
     test_proposal_membership_legacy_tools_removed()
     test_removed_membership_names_absent_from_shipped_prose()
+    test_thread_legacy_tools_removed()
+    test_removed_thread_names_absent_from_shipped_prose()
+    test_notes_dispatcher_legacy_tools_removed()
+    test_removed_notes_names_absent_from_shipped_prose()
+    test_manage_tag_legacy_tools_removed()
+    test_removed_tag_names_absent_from_shipped_prose()
     print("test_server_facade_exports: all assertions passed")

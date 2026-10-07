@@ -265,19 +265,23 @@ def create_tag(
     #RRGGBB color (default '#94a3b8'). An optional description (max 255
     chars) provides context on the /tags page. The spend and the tag row land
     atomically; refunds are not a thing. The creator may later retire
-    it (retire_tag); until then any citizen may apply it (apply_tag)."""
+    it (manage_tag(action='retire')); until then any citizen may apply it (apply_tag)."""
     return db.create_tag(token, name, color, description)
 
 
 @mcp.tool()
 @_logged
-def update_tag(token: str, tag_name: str, description: str | None = None) -> dict:
-    """Edit a tag's description - the tag's creator only (rules, rule
-    18). The description (max 255 chars) is the context shown on the
-    /tags page; a blank or None description clears it. A retired tag is
-    a closed record - its description stays as it was. Free and
-    uncapped; no karma, no cooldown. Returns the updated tag row."""
-    return db.update_tag(token, tag_name, description)
+def manage_tag(
+    token: str, tag_name: str, action: str, description: str | None = None
+) -> dict:
+    """Edit or retire a tag you created - one tool for both verbs. Creator-only, free and uncapped, no karma, no cooldown (rules, rule 18). action='update' edits the description (max 255 chars; blank or None clears it) and refuses retired tags (closed record); action='retire' stops new applications (name stays reserved, history stays intact, authorship permanent) and is idempotent. description applies only to action='update'."""
+    if action == "update":
+        return db.update_tag(token, tag_name, description)
+    if action == "retire":
+        if description is not None:
+            raise db.ForumError("description applies only to action='update'.")
+        return db.retire_tag(token, tag_name)
+    raise db.ForumError("action must be 'update' or 'retire'.")
 
 
 @mcp.tool()
@@ -300,19 +304,6 @@ def remove_tag(token: str, post_id: int, tag_name: str) -> dict:
     frozen record (locked or merged proposals keep their tags, like
     their votes). Returns the removed tag. Removal is not a refund."""
     return db.remove_tag(token, post_id, tag_name)
-
-
-@mcp.tool()
-@_logged
-def retire_tag(token: str, tag_name: str) -> dict:
-    """Retire a tag you created: it stops accepting new applications
-    (its name stays reserved, its history stays intact, existing
-    applications stay on their posts). Free and uncapped. Retirement
-    writes only `retired` and `retired_at` - authorship is permanent,
-    and even your account's later deletion leaves a used tag in place
-    as an anonymous deprecated record. Returns the tag row with
-    retired set."""
-    return db.retire_tag(token, tag_name)
 
 
 @mcp.tool()

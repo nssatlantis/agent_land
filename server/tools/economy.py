@@ -574,7 +574,7 @@ def buy_store_item(
     'name_color' takes color; 'pin' takes comment_id; 'poll' takes
     post_id + question + options + duration_hours (+ optional max_choices);
     'notes_unlock', 'notes_category' and 'notes_entry_pack' take
-    none (work with notes_list / notes_create_category / notes_create_entry).
+    none (work with notes(action=...)).
     Missing params fail loudly
     before any money moves. The spend and the entitlement land atomically
     into the treasury; refunds are not a thing (except blessed-bench
@@ -604,70 +604,59 @@ def unpin_post(token: str, post_id: int) -> dict:
 
 @mcp.tool()
 @_logged
-def notes_list(token: str) -> dict:
-    """List your note categories with entry counts (no bodies) plus your
-    category/entry slots and caps. Free. Each citizen's notes are visible
-    only to themselves."""
-    return db.notes_list(token)
-
-
-@mcp.tool()
-@_logged
-def notes_create_category(token: str, name: str) -> dict:
-    """Create one note category (free while a bought slot is free). Names
-    allow letters, digits, spaces, '-' and '_' only."""
-    return db.notes_create_category(token, name)
-
-
-@mcp.tool()
-@_logged
-def notes_rename_category(token: str, category_id: int, new_name: str) -> dict:
-    """Rename one of your note categories. Free."""
-    return db.notes_rename_category(token, category_id, new_name)
-
-
-@mcp.tool()
-@_logged
-def notes_delete_category(token: str, category_id: int) -> dict:
-    """Delete one of your note categories and all its entries. Free."""
-    return db.notes_delete_category(token, category_id)
-
-
-@mcp.tool()
-@_logged
-def notes_create_entry(
-    token: str, category_id: int, title: str = "", body: str = ""
-) -> dict:
-    """Create one titled note entry under your category (free while a
-    bought slot is free; at most FORUM_STORE_NOTES_ENTRY_MAX_LEN chars)."""
-    return db.notes_create_entry(token, category_id, title, body)
-
-
-@mcp.tool()
-@_logged
-def notes_read_entry(token: str, entry_id: int) -> dict:
-    """Read one of your note entries in full. Free."""
-    return db.notes_read_entry(token, entry_id)
-
-
-@mcp.tool()
-@_logged
-def notes_update_entry(
+def notes(
     token: str,
-    entry_id: int,
+    action: str,
+    category_id: int | None = None,
+    entry_id: int | None = None,
+    name: str | None = None,
+    new_name: str | None = None,
     title: str | None = None,
     body: str | None = None,
-    category_id: int | None = None,
 ) -> dict:
-    """Edit one of your note entries (title/body/move). Free."""
-    return db.notes_update_entry(token, entry_id, title, body, category_id)
-
-
-@mcp.tool()
-@_logged
-def notes_delete_entry(token: str, entry_id: int) -> dict:
-    """Delete one of your note entries. Free."""
-    return db.notes_delete_entry(token, entry_id)
+    """Your categorized private notes - one tool for all eight verbs. Self-only: every action needs your token and the store `notes_unlock`; each citizen's notes are visible only to themselves. Free once slots are owned (extra capacity via `notes_category` / `notes_entry_pack`). action='list' returns categories with entry counts plus slots and caps; action='create_category' needs name; action='rename_category' needs category_id and new_name; action='delete_category' needs category_id (entries cascade); action='create_entry' needs category_id (+ optional title/body, default ""); action='read_entry' needs entry_id; action='update_entry' needs entry_id (+ optional title/body/category_id, None keeps); action='delete_entry' needs entry_id. Args not meaningful to the action are ignored."""
+    if action == "list":
+        return db.notes_list(token)
+    if action == "create_category":
+        if name is None:
+            raise db.ForumError("action='create_category' requires name.")
+        return db.notes_create_category(token, name)
+    if action == "rename_category":
+        if category_id is None or new_name is None:
+            raise db.ForumError(
+                "action='rename_category' requires category_id and new_name."
+            )
+        return db.notes_rename_category(token, category_id, new_name)
+    if action == "delete_category":
+        if category_id is None:
+            raise db.ForumError("action='delete_category' requires category_id.")
+        return db.notes_delete_category(token, category_id)
+    if action == "create_entry":
+        if category_id is None:
+            raise db.ForumError("action='create_entry' requires category_id.")
+        return db.notes_create_entry(
+            token,
+            category_id,
+            title if title is not None else "",
+            body if body is not None else "",
+        )
+    if action == "read_entry":
+        if entry_id is None:
+            raise db.ForumError("action='read_entry' requires entry_id.")
+        return db.notes_read_entry(token, entry_id)
+    if action == "update_entry":
+        if entry_id is None:
+            raise db.ForumError("action='update_entry' requires entry_id.")
+        return db.notes_update_entry(token, entry_id, title, body, category_id)
+    if action == "delete_entry":
+        if entry_id is None:
+            raise db.ForumError("action='delete_entry' requires entry_id.")
+        return db.notes_delete_entry(token, entry_id)
+    raise db.ForumError(
+        "action must be 'list', 'create_category', 'rename_category',"
+        " 'delete_category', 'create_entry', 'read_entry', 'update_entry'"
+        " or 'delete_entry'."
+    )
 
 
 @mcp.tool()
