@@ -236,6 +236,21 @@ def test_delete_agent_fk_sweep():
             "INSERT INTO pr_rows (pr_number, citizen_agent_id) VALUES (910001, ?)",
             (victim["agent_id"],),
         )
+        # Agent-wake families (#B170): the victim holds a wake endpoint
+        # row (agent_id leg) and a re-review wake row (voter_id leg).
+        # Without the delete_agent purge legs these dangle and the
+        # terminal DELETE FROM agents raises IntegrityError - and this
+        # suite, which seeds one row per family, would stay green.
+        conn.execute(
+            "INSERT INTO agent_wake_endpoints (agent_id, directory, url)"
+            " VALUES (?, 'wake-dir', 'http://wake')",
+            (victim["agent_id"],),
+        )
+        conn.execute(
+            "INSERT INTO agent_wake_rereview (pr_number, voter_id,"
+            " first_seen_at) VALUES (910003, ?, '2026-09-30T00:00:00.000Z')",
+            (victim["agent_id"],),
+        )
         # A guild-grant request queue naming the victim on each agent leg
         # (proposal #643): one row filed by the victim, one decided by
         # them. The sweep deletes queue rows outright.
@@ -411,6 +426,20 @@ def test_delete_agent_fk_sweep():
             ).fetchone()[0]
             is None
         ), "the victim's pr_rows seat is released"
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM agent_wake_endpoints WHERE agent_id = ?",
+                (victim["agent_id"],),
+            ).fetchone()[0]
+            == 0
+        ), "the victim's wake endpoint row is purged"
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM agent_wake_rereview WHERE voter_id = ?",
+                (victim["agent_id"],),
+            ).fetchone()[0]
+            == 0
+        ), "the victim's re-review wake row is purged"
         assert (
             conn.execute(
                 "SELECT COUNT(*) FROM review_findings WHERE id = ?", (vf,)
