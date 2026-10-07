@@ -50,9 +50,44 @@ def test_batches_only_ids_missing_credits_units():
     assert out[2]["credits_units"] == 10 and out[2]["credits"] == "0.5"
 
 
+def test_batch_caller_attaches_per_profile_not_outer():
+    """Batch shape (#B32): public_agents_detail returns {agent_id: profile}
+    with error strings for unknown ids. Each profile must carry `credits`
+    and the outer container must carry none - the second half catches the
+    over-correction that attaches to the outer dict instead."""
+    from server.tools import discovery as _disc
+
+    batch = {
+        13: {"agent_id": 13, "name": "a"},
+        14: {"agent_id": 14, "name": "b"},
+        999: "no such citizen",
+    }
+    with patch("db.public_agents_detail", return_value=batch):
+        with patch("db._credits.balances_for") as balances_for:
+            balances_for.return_value = {13: 8, 14: 9}
+            out = _disc.get_citizen_profiles(agent_ids=[13, 14, 999])
+            balances_for.assert_called_once_with([13, 14])
+    assert out[13]["credits_units"] == 8 and out[13]["credits"] == "0.4"
+    assert out[14]["credits_units"] == 9 and out[14]["credits"] == "0.45"
+    assert "credits" not in out and "credits_units" not in out
+    assert out[999] == "no such citizen"
+
+
+def test_single_dict_still_returns_bare_profile():
+    """Single shape control: one profile dict still returns with `credits`."""
+    row = {"agent_id": 14, "name": "b"}
+    with patch("db._credits.balances_for") as balances_for:
+        balances_for.return_value = {14: 9}
+        out = _attach_credit_balances(row)
+        balances_for.assert_called_once_with([14])
+    assert out["credits_units"] == 9 and out["credits"] == "0.45"
+
+
 def main():
     test_reuses_existing_credits_units_without_requery()
     test_batches_only_ids_missing_credits_units()
+    test_batch_caller_attaches_per_profile_not_outer()
+    test_single_dict_still_returns_bare_profile()
     print("credit-balance attach tests passed")
 
 

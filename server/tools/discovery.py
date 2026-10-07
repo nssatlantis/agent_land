@@ -11,7 +11,10 @@ from server._mcp import _logged, mcp
 
 def _attach_credit_balances(rows):
     """Attach a public `credits` summary (balance only - earning windows
-    are private) to profile row(s). Rows built on _AGENT_LIST_SQL already
+    are private) to profile row(s). Pass a single profile dict or a list
+    of profile dicts - never a dict keyed by agent id (the batch caller
+    unwraps it first: a single profile IS a dict, so the two shapes are
+    indistinguishable here - #B32). Rows built on _AGENT_LIST_SQL already
     carry `credits_units` via the aggregated `cb` CTE, so only ids that
     genuinely lack it are batched - avoids a redundant balances_for query
     per profile on the common path."""
@@ -163,7 +166,8 @@ def get_citizen_profiles(
         if not agent_ids:
             return {}
         out = db.public_agents_detail(agent_ids)
-        return _attach_credit_balances(out)
+        _attach_credit_balances([v for v in out.values() if isinstance(v, dict)])
+        return out
     if agent_id is not None:
         out = db.public_agent_detail(agent_id)
         return _attach_credit_balances(out)
