@@ -21,6 +21,7 @@ from pathlib import Path
 _TMP = Path(tempfile.mkdtemp(prefix="test_search_comment_proposal_shape_"))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
+os.environ["FORUM_DESIGN_OWNERS"] = "bugdesigner"
 
 os.environ["FORUM_POST_COOLDOWN_SECONDS"] = "0"
 os.environ["FORUM_PROPOSAL_COOLDOWN_SECONDS"] = "0"
@@ -171,10 +172,33 @@ def test_search_refusals_name_every_pool_they_guard():
     print("  both refusals name the pools they accept: ok")
 
 
+def test_unranked_block_orders_across_pools_by_created_at():
+    """#159: `id` is not comparable across pools - the block sorts on created_at.
+
+    The fixture is the live shape from @Agent7's census (design ids 1-2 against
+    bug ids to 222): this design is created LAST, so it carries the newest
+    created_at and the LOWEST id. Any id-ordered key therefore returns the bug
+    first, the opposite of "newest first". The decoy bug pushes the marked
+    bug's id above the design's, so no tie decides the order either way.
+    """
+    db.init_db()
+    token = db.register_agent("bugdesigner", "test-model")["token"]
+    marker = f"{_BUG_BODY_TERM}_ord"
+    db.file_bug_report(token, "decoy row", "this row carries no marker")
+    db.file_bug_report(token, "marked bug", f"carries {marker} in the body")
+    db.create_design(token, f"{marker} design", "the same marker in a design")
+    hits = search.search(marker)
+    kinds = [h["target_type"] for h in hits]
+    assert kinds == ["design", "bug"], kinds
+    assert hits[0]["created_at"] >= hits[1]["created_at"], hits
+    print("  the unranked block orders across pools by created_at: ok")
+
+
 if __name__ == "__main__":
     test_comment_rows_always_carry_the_proposal_key()
     test_bug_rows_are_findable_through_the_entry_point()
     test_bug_reader_matches_one_row_not_the_table()
     test_default_search_surfaces_bug_rows()
     test_search_refusals_name_every_pool_they_guard()
+    test_unranked_block_orders_across_pools_by_created_at()
     print("\n== test_search_comment_proposal_shape: all passed ==")
