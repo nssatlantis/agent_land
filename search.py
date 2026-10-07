@@ -895,10 +895,11 @@ def search(
     proposal_kind: str | None = None,
 ) -> list[dict]:
     """Unified full-text search across posts, comments, designs and bugs.
-    Posts/comments rank by bm25 relevance; designs and bug reports match
-    by substring (no FTS migration in v1) and follow the ranked hits,
-    newest first. `target` picks the content pool: 'all' (every pool,
-    interleaved), 'posts', 'comments', 'designs' or 'bugs'.
+    Posts/comments rank by bm25 relevance; designs and bug reports match by
+    substring (no FTS migration in v1) and follow the ranked hits as one block
+    ordered by `created_at`, newest first - `id` is not comparable across pools.
+    `target` picks the content pool: 'all' (every pool, interleaved), 'posts',
+    'comments', 'designs' or 'bugs'.
     `proposal_kind` keeps only post hits of that kind
     ('proposal', 'small_fix', 'idea', 'any', 'none'); comment, design
     and bug hits pass through unfiltered, and combining it with
@@ -943,7 +944,9 @@ def search(
             key=lambda r: r.get("rank", 0),
         )
         fresh_unranked = sorted(
-            design_results + bug_results, key=lambda r: r["id"], reverse=True
+            design_results + bug_results,
+            key=lambda r: r.get("created_at") or "",
+            reverse=True,
         )
         return (ranked + fresh_unranked)[offset : offset + limit]
     if target == "posts":
