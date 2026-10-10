@@ -637,9 +637,13 @@ def proposal_findings_panel(p: dict) -> str:
         '<div class="panel"><h2>Review findings on this proposal</h2>'
         '<p style="color:var(--muted);font-size:13px;margin:4px 0">'
         f"{len(rows)} finding(s) across every PR on this proposal, "
-        f"{unverified} not yet independently verified. Findings are "
-        "advisory: nothing blocks a merge on them, they move a vote only "
-        "through the filer's own pre-authorised auto_flip.</p>"
+        f"{unverified} not yet independently verified. An unresolved "
+        "finding holds the AUTOMATIC merge until it is resolved and a "
+        "third party verifies it - whatever its category, and whether or "
+        "not the filer consented to an auto_flip (auto_flip moves a "
+        "voter's own vote; it is never consent to hold a merge). A "
+        "maintainer may still merge by hand from the GitHub UI: a human "
+        "merge is not gated.</p>"
         + _table_or_notice(rows)
         + '<p style="margin:6px 0 0"><a href="/findings?proposal='
         f'{esc(str(post_id))}&amp;state=all">Open the full board</a></p>'

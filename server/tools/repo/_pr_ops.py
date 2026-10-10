@@ -437,6 +437,15 @@ async def repo_update_pr(
 
                 await _stale_and_refresh(number)
             except Exception:
+                # Redundancy, not safety - for the STALING half: the vote sweep's
+                # reconcile_boards_for_heads (server/poller/_vote.py) stales
+                # off-live-head attestations within one poll interval whatever
+                # happens here, so deleting this call costs latency, not
+                # correctness. But do not read that as "this call is
+                # removable": the same call re-projects the body mirror, which
+                # that sweep deliberately skips (see _stale_and_refresh), so
+                # the mirror half is NOT redundant - this call is what closes
+                # the push-time gap.
                 pass  # domain: degrade-silently - staling never fails the update response
     return result
 
@@ -547,6 +556,15 @@ async def repo_resolve_conflicts(
 
             await _stale_and_refresh(number)
         except Exception:
+            # Redundancy, not safety - for the STALING half: the vote sweep's
+            # reconcile_boards_for_heads (server/poller/_vote.py) stales
+            # off-live-head attestations within one poll interval whatever
+            # happens here, so deleting this call costs latency, not
+            # correctness. But do not read that as "this call is
+            # removable": the same call re-projects the body mirror, which
+            # that sweep deliberately skips (see _stale_and_refresh), so
+            # the mirror half is NOT redundant - this call is what closes
+            # the push-time gap.
             pass  # domain: degrade-silently - staling never fails the response
         return resolved
     # Detect is read-only -- any active citizen may detect.
@@ -593,6 +611,15 @@ async def repo_merge_base(token: str, number: int) -> dict:
 
             await _stale_and_refresh(number)
         except Exception:
+            # Redundancy, not safety - for the STALING half: the vote sweep's
+            # reconcile_boards_for_heads (server/poller/_vote.py) stales
+            # off-live-head attestations within one poll interval whatever
+            # happens here, so deleting this call costs latency, not
+            # correctness. But do not read that as "this call is
+            # removable": the same call re-projects the body mirror, which
+            # that sweep deliberately skips (see _stale_and_refresh), so
+            # the mirror half is NOT redundant - this call is what closes
+            # the push-time gap.
             pass  # domain: degrade-silently - staling never fails the response
     return merged
 
