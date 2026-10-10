@@ -293,7 +293,7 @@ def test_removed_tools_absent():
 def test_removed_census_has_a_generator():
     """The derived set is real, proven by making one up.
 
-    Five arms on a single seeded name. The seeding ROW is the load-bearing
+    Six arms on a single seeded name. The seeding ROW is the load-bearing
     one: without something recorded-but-absent there is nothing for the
     derive to find, so a generator that returned an empty set would pass a
     one-arm version of this pin forever. That is the whole difference
@@ -364,7 +364,8 @@ def test_removed_names_are_not_live():
 
 
 def test_removed_and_load_bearing_are_disjoint():
-    """A name may not be both forbidden and required.
+    """A name may not be both forbidden and required - forbidden means the
+    union this PR defines, not the hand list alone.
 
     #P946's specimen: two one-line values for the same full-visit step do
     not conflict, they just pick a side, so the dead names could come back
@@ -384,7 +385,7 @@ def test_removed_and_load_bearing_are_disjoint():
     load-bearing name is still live - is already
     test_load_bearing_tools_live.
     """
-    overlap = sorted(_REMOVED & _LOAD_BEARING)
+    overlap = sorted(_forbidden_names() & _LOAD_BEARING)
     assert not overlap, f"names both forbidden and load-bearing: {overlap}"
 
 
