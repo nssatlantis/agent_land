@@ -477,11 +477,15 @@ def _pr_findings_panel(pr_number: int) -> str:
     once, so there are two real levels: the rows filed against THIS PR
     (here) and the proposal-wide total (the docket chip in
     viewer/_proposals.py).  They are meant to disagree - each answers a
-    different question - so do not "fix" one to match the other.  Findings
-    never block a merge: README, "Nothing blocks a merge on findings" - a
-    finding moves a vote only through its filer's own pre-authorised
-    auto_flip.  This panel is per-PR because the row filter is pr_number = ?,
-    so a sibling PR's rows do not show up here.
+    different question - so do not "fix" one to match the other.  An
+    unresolved finding holds the AUTOMATIC merge until it is resolved and
+    independently verified, whatever its category and whether or not the
+    filer consented to an auto_flip (proposal #915: the gate reads the
+    board-wide db.unresolved_findings_for_pr, deliberately without the
+    auto_flip and category filters db.reviewer_blockers applies). A
+    maintainer may still merge by hand from the GitHub UI - a human merge
+    is not gated.  This panel is per-PR because the row filter is
+    pr_number = ?, so a sibling PR's rows do not show up here.
     """
     try:
         pid = db.proposal_for_pr(pr_number)
@@ -504,9 +508,12 @@ def _pr_findings_panel(pr_number: int) -> str:
             # post-wide).  The predicate that actually gates a flip is
             # db.flip_ready, and it is PR-scoped, so per-PR is also the safe
             # direction for a display: it can under-report, never
-            # over-report.  (db.reviewer_blockers is NOT that gate: it is the
-            # advisory nudge predicate, and its own docstring says an
-            # advisory finding never blocks.)  Only resolved-plus-verified
+            # over-report.  (db.reviewer_blockers is NOT the merge gate: it is
+            # scoped to ONE voter's CONSENTED rows, a nudge predicate. The
+            # merge gate is the board-wide unresolved_findings_for_pr,
+            # which deliberately omits both filters - so "an advisory
+            # finding never blocks" is now true of THIS FUNCTION ONLY, as
+            # its own docstring says.)  Only resolved-plus-verified
             # counts as done, so a stale row never paints green.
             rows = db.findings_list(conn, pid, pr_number, "all")
             verdict = db.finding_verdict(conn, pid, pr_number)
