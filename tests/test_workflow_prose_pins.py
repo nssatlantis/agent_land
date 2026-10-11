@@ -32,6 +32,16 @@ from tests._setup import db  # noqa: E402, I001
 
 db.init_db()
 
+# Own the inventory table before anything reads it. Session mode shares one
+# DB per worker across files, and db.init_db() DECLARES schema without
+# deleting rows, so a snapshot another file left behind would make the
+# derived half worker-schedule dependent - an intermittent red that gets
+# "fixed" by reordering or re-timing the suite instead of by being
+# bisected. A pin whose input nobody established is the shape this whole
+# file exists to distrust.
+with db._conn() as _own:
+    _own.execute("DELETE FROM tool_inventory")
+
 _WORKFLOWS = Path(__file__).resolve().parent.parent / "workflows"
 
 # Removed tools must never read as live instructions (replacements live in
@@ -211,15 +221,172 @@ def _live_names():
     return names
 
 
+# --- The removed-tool census gets a generator (post #P947) ---------------
+#
+# `_REMOVED` above is hand-typed, and a hand-typed list has a coverage
+# nobody can state: #P947 measured it at 3 of 20 removed names registered,
+# and six unregistered ones physically shipped in workflows/full-visit.md
+# behind a green suite. The instinct that produced it (add the name on
+# every removal) was right every time; the cost was typing it twenty times.
+#
+# The generator is db.tool_inventory_changes. That table's own module
+# docstring says "one row per tool ever seen (history is kept, nothing is
+# deleted)", so ever-recorded AND NOT currently live is complete by
+# construction. The only thing that ages it is the `days` window the
+# CALLER passes - which is why this reads the db function with an
+# unbounded window instead of the agentland://tools/changes page. That
+# page is a change report over a sliding window, and #B220 is the
+# receipt: an Added entry aged out of a frozen snapshot with nothing
+# deployed.
+#
+# HONESTLY, and this is the headline rather than a footnote: in THIS test
+# DB the derived half is EMPTY by construction. The only rows in
+# tool_inventory are the snapshot just taken from the live registry, and
+# `present` excludes every one of them, so `_seeded_removed()` returns
+# the empty set. What ships is the GENERATOR; what CI still runs is the
+# hand list. The pin below proves the generator works. It does not prove
+# CI exercises it, and no green in this file should be read as saying so.
+_UNBOUNDED_WINDOW_DAYS = 100_000
+
+
+def _seeded_removed() -> set[str]:
+    """Tool names the inventory has recorded that are not live right now."""
+    present = _live_names()
+    db.record_tool_inventory(td._inventory_items())
+    changes = db.tool_inventory_changes(days=_UNBOUNDED_WINDOW_DAYS, present=present)
+    return set(changes["removed"])
+
+
+def _forbidden_names() -> set[str]:
+    """Every name the sweep must not see: the hand list plus the derived
+    half. Union, not replacement - a tool removed before inventory
+    tracking began is in the table's absence by definition and can never
+    be derived, so the hand list stays the residue it has always been.
+    """
+    return _REMOVED | _seeded_removed()
+
+
+def _sweep(texts: dict[str, str], names: set[str]) -> None:
+    """Raise if any backticked span in `texts` names one of `names`.
+
+    Split out of test_removed_tools_absent so a pin can drive the SAME
+    body over a synthetic texts map. Without that seam the union this PR
+    adds was unpinned: reverting the sweep to the bare hand list kept the
+    whole file green, because the derived half is empty in a fresh DB and
+    nothing asserted that the sweep CONSUMES it. #P946 again - a missing
+    pin is visible in review; an unpinned wiring is invisible in both.
+    """
+    for fname in sorted(texts):
+        for name in sorted(names):
+            assert not _span_pat(name).search(texts[fname]), (
+                f"{fname} names removed tool `{name}`"
+            )
+
+
 def test_removed_tools_absent():
     # Same span rule as the live-tool half: a removed tool reintroduced in
     # call form (`repo_my_proposals(view='mine')`) is the same drift, and an
     # exact "`name`" match would wave it straight through (#B93's mirror).
-    for fname in sorted(_TEXTS):
-        for name in sorted(_REMOVED):
-            assert not _span_pat(name).search(_TEXTS[fname]), (
-                f"{fname} names removed tool `{name}`"
-            )
+    _sweep(_TEXTS, _forbidden_names())
+
+
+def test_removed_census_has_a_generator():
+    """The derived set is real, proven by making one up.
+
+    Six arms on a single seeded name. The seeding ROW is the load-bearing
+    one: without something recorded-but-absent there is nothing for the
+    derive to find, so a generator that returned an empty set would pass a
+    one-arm version of this pin forever. That is the whole difference
+    between "the generator works" and "the test is green either way".
+
+    The last two arms exist to cover what the first two cannot. In a fresh
+    DB the derived half is empty, so the sweep in
+    test_removed_tools_absent runs over a forbidden set identical to the
+    hand list - which left the wiring this PR adds both unpinned and
+    revertable with the file still green. These arms pin the CONSUMPTION,
+    over a synthetic texts map so no production prose is involved.
+    """
+    ghost = "ghost_tool_for_the_census_probe"
+    db.record_tool_inventory([(ghost, "{}", "probe-only, never a real tool")])
+    # The window WIDTH was the one named number nothing read: `days=365`
+    # tomorrow would keep this pin green while the completeness claim the
+    # comment above makes silently narrowed - #B220's shape one layer
+    # down. Pinned through the PRODUCER's own cutoff helper rather than by
+    # asserting the constant, so the arm keeps meaning if the sentinel is
+    # re-tuned, and so the comparison cannot drift from the format the
+    # producer actually writes.
+    import db._tool_inventory as _ti
+
+    assert _ti._cutoff(_UNBOUNDED_WINDOW_DAYS) < "2000", (
+        "the derivation window must not be a rolling one - a bounded window "
+        "would age the removal history out from under the census"
+    )
+    derived = _seeded_removed()
+    assert ghost in derived, (
+        "a tool the inventory recorded and the registry lacks must be derived"
+    )
+    assert ghost not in _live_names(), "the probe name must not be a live tool"
+    assert ghost in _forbidden_names(), (
+        "the union must carry the derived half, or the sweep cannot see it"
+    )
+    probe = {"probe.md": f"`{ghost}(token)` is an instruction"}
+    try:
+        _sweep(probe, _forbidden_names())
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("the sweep must forbid a derived name in call form")
+
+
+def test_removed_names_are_not_live():
+    """No forbidden name may be a live tool.
+
+    ONE failure shape, claimed as one on purpose: a tool removed and later
+    re-registered under the same name, or a hand entry naming something
+    live. Either way the sweep forbids a name every citizen can actually
+    call, and the honest prose fix - delete the entry - is
+    indistinguishable from the drift the sweep exists to catch. #P946's
+    inverted-pin case one step earlier: the instrument asserting the
+    thing being retired.
+
+    What this arm does NOT catch, stated so no reader assumes it: a TYPO
+    in the hand list. A misspelling is not live, so it cannot reach
+    `also_live`; it is not in the inventory either, because the tool was
+    never seen under that spelling, so it is not derivable. That residual
+    is exactly what the generator closes for any removal newer than
+    inventory tracking, and it is unclosable here for the residue older
+    than it. Narrowing the claim was the honest option here; asserting
+    two shapes would have been the over-claim this repo files against.
+    """
+    live = _live_names()
+    also_live = sorted(n for n in _forbidden_names() if n in live)
+    assert not also_live, f"forbidden names that are live tools: {also_live}"
+
+
+def test_removed_and_load_bearing_are_disjoint():
+    """A name may not be both forbidden and required - forbidden means the
+    union this PR defines, not the hand list alone.
+
+    #P946's specimen: two one-line values for the same full-visit step do
+    not conflict, they just pick a side, so the dead names could come back
+    into the one file both branches certify - while _LOAD_BEARING
+    DEMANDED the resurrection and the suite reported green. An inverted
+    pin is not a pin that fails to hold a property; it asserts the defect
+    and says so. This arm is the cheapest thing that makes that head red.
+
+    Honest about its own weight: this arm is REDUNDANT with its two
+    neighbours. Any X in the overlap is either not live - which reds
+    test_load_bearing_tools_live - or live, which reds
+    test_removed_names_are_not_live; those cases are disjoint, so this
+    arm can never be the one to catch the head above. It is kept because
+    it names the invariant directly, fails with a message that says which
+    set to fix, and because #P946's specimen is a property no single
+    neighbour states in those words. The other half of #P946 - every
+    load-bearing name is still live - is already
+    test_load_bearing_tools_live.
+    """
+    overlap = sorted(_forbidden_names() & _LOAD_BEARING)
+    assert not overlap, f"names both forbidden and load-bearing: {overlap}"
 
 
 def test_category_list_matches_live():
@@ -399,6 +566,12 @@ if __name__ == "__main__":
     print("ok - test_span_matcher_accepts_bare_and_call_forms_only")
     test_removed_tools_absent_sees_call_forms()
     print("ok - test_removed_tools_absent_sees_call_forms")
+    test_removed_census_has_a_generator()
+    print("ok - test_removed_census_has_a_generator")
+    test_removed_names_are_not_live()
+    print("ok - test_removed_names_are_not_live")
+    test_removed_and_load_bearing_are_disjoint()
+    print("ok - test_removed_and_load_bearing_are_disjoint")
     test_spans_ascii_audit()
     print("ok - test_spans_ascii_audit")
     test_create_pr_quality_pass_step_is_a_real_step()
