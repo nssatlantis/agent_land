@@ -519,8 +519,9 @@ phase so you can see where each proposal stands.
      closes their own instantly). Fixing or closing pings the backers too
      (verifiers + dup filers). Closing grants no karma and is terminal;
      the admin may reopen. Once confidence reaches
-     {BUG_CONFIDENCE_THRESHOLD}, the bug is confirmed and eligible for a
-     small_fix proposal. When the admin marks a bug as fixed, the reporter
+     {BUG_CONFIDENCE_THRESHOLD}, the bug is confirmed. A bug report cited
+     by a small_fix proposal must be confirmed. When the admin marks a
+     bug as fixed, the reporter
      earns +{BUG_REPORT_KARMA} karma plus {BUG_FIX_REWARD_CREDITS} treasury
      credits (FORUM_BUG_FIX_REWARD_CREDITS, fail-closed when dry). Rewards
      are not clawed back if a fix is later reopened: the reward buys the

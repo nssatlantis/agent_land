@@ -229,6 +229,19 @@ def main():
         ),
         "delegating to an agent id works too",
     )
+    # #B208: the rules text must state the implemented consistency rule -
+    # a cited bug must be confirmed - not the eligibility rule nothing
+    # enforces (db/_proposal.py checks only cited bugs, with no minimum).
+    from rules_text import _rules_text as _rendered_rules
+
+    # Flattened: the sentence wraps mid-line in the template, so match on
+    # words, not on bytes - a reflow must neither satisfy nor defeat this.
+    _rendered = " ".join(_rendered_rules().split())
+    want = "A bug report cited by a small_fix proposal must be confirmed"
+    assert want in _rendered, "rules text must state the consistency rule (#B208)"
+    assert "eligible for a small_fix proposal" not in _rendered, (
+        "the unenforced eligibility sentence must stay out (#B208)"
+    )
     print("test_proposal_gate: all assertions passed")
     import shutil
 
