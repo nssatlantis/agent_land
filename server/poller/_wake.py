@@ -638,16 +638,21 @@ def send_wake(endpoint: dict, session_id: str, text: str) -> bool:
 # --- the prompt -----------------------------------------------------------
 
 
-def build_wake_prompt(pr_number: int, bugs: int, blockers: int) -> str:
+def build_wake_prompt(pr_number: int, open_count: int, blockers: int) -> str:
     """The nudge body. Deliberately does NOT carry finding text.
 
     Findings run 2,000+ characters; pasting them costs input tokens on
     every wake and tends to make the agent re-derive what one tool call
     would fetch. This names the PR, the counts, and the exact call to make.
+
+    `open_count` is category-blind on purpose: it comes from
+    `findings_list(board_filter='open')`, which has no category filter, and
+    a blocking improvement wakes the opener exactly like a bug - which is
+    why the wording says "open", not "bug".
     """
     return (
         f"New open review finding(s) on your PR #{pr_number} "
-        f"({bugs} bug, {blockers} auto-flip blocker).\n"
+        f"({open_count} open, {blockers} auto-flip blocker).\n"
         f"Connect to the AgentLand MCP and run "
         f"findings_list(pr_number={pr_number}, board_filter='open').\n"
         f"Read each check and flip_path, decide fix-vs-defer, and act.\n"
@@ -717,8 +722,8 @@ def _delivered(conn: sqlite3.Connection, finding_id: int) -> bool:
 def _discard(conn: sqlite3.Connection, finding_id: int) -> None:
     """Retire a finding that is permanently not wake-worthy.
 
-    A rejection at the free gates (self-filed, an improvement, not an
-    auto-flip blocker, resolved mid-debounce) will never change, so
+    A rejection at the free gates (self-filed, a non-blocking improvement,
+    not an auto-flip blocker, resolved mid-debounce) will never change, so
     stamping it delivered stops it re-entering the candidate scan every
     tick forever. `notified_at` carries an ISO timestamp rather than NULL
     so the row is distinguishable from a deferred one, which is exactly
@@ -808,7 +813,18 @@ def gate_free(
     """
     if int(candidate.get("finder_agent_id") or 0) == int(agent_id):
         return "self-filed"
-    if str(candidate.get("category")) != "bug":
+    # The category gate rejects only NON-BLOCKING improvements. `auto_flip`
+    # is category-independent in the findings system (finding_add takes the
+    # two flags independently, and the merge gate's blocker predicate is
+    # explicit that an improvement blocks as much as a bug), so a blocking
+    # improvement finding falls through to the auto-flip gate and proceeds.
+    # An unconditioned category gate let a PR sit at the merge bar on an
+    # improvement blocker whose opener was never poked - while the OUTBOUND
+    # direction (deliberately category-blind) still woke the finder when
+    # that same finding was later resolved.
+    if str(candidate.get("category")) != "bug" and not int(
+        candidate.get("auto_flip") or 0
+    ):
         return "category-not-bug"
     if not int(candidate.get("auto_flip") or 0):
         return "not-auto-flip"
@@ -1452,7 +1468,9 @@ def _wake_one(
     # wasted round trip on a path that knows what it wants to say.
     if prompt is None:
         with db._conn() as conn:
-            bugs = len(db.findings_list(conn, pr_number=pr_number, board_filter="open"))
+            open_count = len(
+                db.findings_list(conn, pr_number=pr_number, board_filter="open")
+            )
             blockers = int(
                 conn.execute(
                     "SELECT COUNT(*) FROM review_findings WHERE pr_number = ? "
@@ -1460,7 +1478,7 @@ def _wake_one(
                     (pr_number,),
                 ).fetchone()[0]
             )
-        prompt = build_wake_prompt(pr_number, bugs, blockers)
+        prompt = build_wake_prompt(pr_number, open_count, blockers)
     if not send_wake(endpoint, session_id, prompt):
         _record(
             events.EVT_AGENT_WAKE_FAILED,

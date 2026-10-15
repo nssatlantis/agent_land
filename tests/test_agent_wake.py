@@ -506,8 +506,15 @@ def test_gate_free_rejections():
     assert wake.gate_free(base, **kw) is None, "a clean bug candidate proceeds"
 
     assert wake.gate_free({**base, "finder_agent_id": 1}, **kw) == "self-filed"
+    # A BLOCKING improvement proceeds: auto_flip is category-independent in
+    # the findings system (the merge gate's blocker predicate treats an
+    # improvement exactly like a bug), so the category gate rejects only
+    # NON-BLOCKING improvements. Before the fix this asserted
+    # "category-not-bug" for the blocking case too.
+    assert wake.gate_free({**base, "category": "improvement"}, **kw) is None
     assert (
-        wake.gate_free({**base, "category": "improvement"}, **kw) == "category-not-bug"
+        wake.gate_free({**base, "category": "improvement", "auto_flip": 0}, **kw)
+        == "category-not-bug"
     )
     assert wake.gate_free({**base, "auto_flip": 0}, **kw) == "not-auto-flip"
 
@@ -1546,6 +1553,81 @@ def test_self_filed_finding_does_not_arm_the_debounce():
         restore()
     assert len(sent) == 1, f"the real blocker must not be suppressed: {out}"
     assert any(o["outcome"] == "sent" for o in out), out
+
+
+def test_blocking_improvement_wakes_the_opener():
+    """A blocking improvement finding wakes the opener exactly like a bug.
+
+    The category gate used to run unconditioned, so an improvement carrying
+    auto_flip=1 - a finding that holds a merge exactly like a bug - was
+    discarded as "category-not-bug" and the opener was never poked. The
+    sweep must now deliver it, and the prompt must name the PR without
+    carrying the finding text.
+    """
+    agents = AGENTS
+    alpha = agents["alpha"]["agent_id"]
+    restore = _wake_cfg()
+    pid = _proposal(agents, "alpha", "impwake")
+    with db._conn(immediate=True) as conn:
+        _link(conn, pid, 5043, alpha)
+        _register(conn, alpha, "dir")
+        _finding(
+            conn,
+            pid,
+            agents["beta"]["agent_id"],
+            5043,
+            category="improvement",
+            finding_class="improvement",
+            auto_flip=True,
+        )
+
+    sent = []
+    real, _ = _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        {
+                            "id": "ses_root",
+                            "parentID": None,
+                            "agent": "plan",
+                            "title": "[AL]",
+                            "location": {"directory": "dir"},
+                            "time": {"updated": int(time.time() * 1000)},
+                            "model": {"id": "m", "providerID": "opencode"},
+                        }
+                    ]
+                }
+            ),
+            "/api/model": json.dumps(
+                {
+                    "data": [
+                        {
+                            "id": "m",
+                            "providerID": "opencode",
+                            "limit": {"context": 262144},
+                        }
+                    ]
+                }
+            ),
+            "/session/status": json.dumps({"data": {}}),
+            "/message": json.dumps(
+                [{"info": {"role": "assistant", "tokens": {"total": 1000}}}]
+            ),
+        }
+    )
+    real_send = wake.send_wake
+    wake.send_wake = lambda e, s, t: (sent.append(t), True)[1]
+    try:
+        out = wake.wake_sweep()
+    finally:
+        wake.send_wake = real_send
+        _restore(real)
+        restore()
+    assert len(sent) == 1, f"a blocking improvement must wake the opener: {out}"
+    assert "#5043" in sent[0], sent[0]
+    assert "must never reach a prompt" not in sent[0], sent[0]
+    assert any(o["outcome"] == "sent" and o["pr_number"] == 5043 for o in out), out
 
 
 def test_quiet_hours_and_budget_cost_no_http():
@@ -3199,6 +3281,7 @@ def main():
         test_gate_free_rejections,
         test_gate_debounce_window_edge,
         test_prompt_carries_no_finding_text,
+        test_blocking_improvement_wakes_the_opener,
         test_derive_directory_follows_convention,
         test_disabled_switch_is_a_no_op,
         test_sweep_burst_collapses_to_one_wake,
