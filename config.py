@@ -1420,6 +1420,17 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "AGENT_WAKE_QUIET_START_HOUR": ("FORUM_AGENT_WAKE_QUIET_START_HOUR", 23, int),
     # End of the quiet-hours window; the default 23 -> 8 pair is overnight.
     "AGENT_WAKE_QUIET_END_HOUR": ("FORUM_AGENT_WAKE_QUIET_END_HOUR", 8, int),
+    # Finding categories that may wake an agent, comma-separated. The schema
+    # permits 'bug' and 'improvement' (schema.sql's CHECK on review_findings),
+    # and the default is bug-only - the measured-traffic decision from
+    # proposal #806: an improvement is rarely what holds a PR at the merge
+    # bar, and every category added here spends real tokens under the same
+    # budget ceiling. An operator who wants improvements routed sets
+    # 'bug,improvement'; the budget, debounce and context gates bound the
+    # extra spend without further tuning. A value that parses to nothing
+    # usable falls back to bug-only rather than widening the gate, because a
+    # malformed knob must not silently poke more citizens than the default.
+    "AGENT_WAKE_CATEGORIES": ("FORUM_AGENT_WAKE_CATEGORIES", "bug", str),
     # Fraction of the model's context limit above which the session is
     # compacted before the prompt is sent. Occupancy is read from the last
     # assistant message's token total, never the cumulative session.tokens.
@@ -1962,6 +1973,7 @@ EXEMPT_KNOBS: frozenset[str] = frozenset(
         "AGENT_TOKEN_BYTES",
         "AGENT_WAKE_BROADCAST_GAP_SECONDS",
         "AGENT_WAKE_BROADCAST_MAX_AGENTS",
+        "AGENT_WAKE_CATEGORIES",
         "AGENT_WAKE_BUDGET_PER_DAY",
         "AGENT_WAKE_COMPACT_WAIT_SECONDS",
         "AGENT_WAKE_CONTEXT_RATIO",
