@@ -507,7 +507,8 @@ def test_gate_free_rejections():
 
     assert wake.gate_free({**base, "finder_agent_id": 1}, **kw) == "self-filed"
     assert (
-        wake.gate_free({**base, "category": "improvement"}, **kw) == "category-not-bug"
+        wake.gate_free({**base, "category": "improvement"}, **kw)
+        == "category-not-wakeable"
     )
     assert wake.gate_free({**base, "auto_flip": 0}, **kw) == "not-auto-flip"
 
@@ -814,7 +815,7 @@ def test_every_free_gate_reason_is_classified_and_producible():
     produced |= _returned_strings(wake._rereview_gate_free)
     seen = produced | _reason_literals(wake._rereview_for_endpoint)
     seen |= _reason_literals(wake.wake_sweep)
-    terminal = {"self-filed", "category-not-bug", "not-auto-flip"}
+    terminal = {"self-filed", "category-not-wakeable", "not-auto-flip"}
     deferrable = set(wake._FREE_GATE_DEFERRABLE)
     assert produced - deferrable == terminal, (
         "a free-gate reason is neither terminal nor deferrable - classify"
@@ -3180,6 +3181,150 @@ def test_old_schema_database_regains_the_rereview_table():
     assert "REGAINED" in out.stdout, out.stdout + out.stderr[-2000:]
 
 
+# --- proposal #968: the wakeable categories are a knob ---------------------
+
+
+def test_category_knob_default_is_bug_only():
+    """Pin 2: with the knob unset, behaviour is byte-identical to before.
+
+    The whole safety argument for #968 is that a deployment which never
+    sets the variable cannot tell it shipped, so this asserts the default
+    in BOTH directions rather than only the permissive one.
+    """
+    real = config.AGENT_WAKE_CATEGORIES
+    try:
+        config.AGENT_WAKE_CATEGORIES = "bug"
+        assert wake._wake_categories() == frozenset({"bug"})
+        kw = dict(agent_id=1, pr_number=7, now_epoch=0.0)
+        base = {"finder_agent_id": 2, "auto_flip": 1, "state": "open"}
+        assert wake.gate_free({**base, "category": "bug"}, **kw) is None
+        assert (
+            wake.gate_free({**base, "category": "improvement"}, **kw)
+            == "category-not-wakeable"
+        )
+    finally:
+        config.AGENT_WAKE_CATEGORIES = real
+
+
+def test_category_knob_widens_the_gate_to_improvements():
+    """Pin 1: 'bug,improvement' lets an improvement through gate 5.
+
+    RED before #968: the old gate was `!= "bug"`, which cannot return
+    None for an improvement under any configuration at all.
+    """
+    real = config.AGENT_WAKE_CATEGORIES
+    try:
+        config.AGENT_WAKE_CATEGORIES = "bug,improvement"
+        assert wake._wake_categories() == frozenset({"bug", "improvement"})
+        kw = dict(agent_id=1, pr_number=7, now_epoch=0.0)
+        base = {"finder_agent_id": 2, "auto_flip": 1, "state": "open"}
+        assert wake.gate_free({**base, "category": "improvement"}, **kw) is None
+        assert wake.gate_free({**base, "category": "bug"}, **kw) is None
+    finally:
+        config.AGENT_WAKE_CATEGORIES = real
+
+
+def test_category_knob_is_read_at_call_time_not_import_time():
+    """The knob is in the drift-reload set, so a module-scope frozenset
+    would pin the boot value and make an operator's edit look ignored."""
+    real = config.AGENT_WAKE_CATEGORIES
+    try:
+        config.AGENT_WAKE_CATEGORIES = "bug"
+        assert wake._wake_categories() == frozenset({"bug"})
+        config.AGENT_WAKE_CATEGORIES = "bug,improvement"
+        assert wake._wake_categories() == frozenset({"bug", "improvement"}), (
+            "the category set was cached at import - a live config edit"
+            " cannot take effect, which is what the drift-reload set promises"
+        )
+    finally:
+        config.AGENT_WAKE_CATEGORIES = real
+
+
+def test_category_knob_fails_closed_on_a_malformed_value():
+    """Pin 3, the mutation arm: every unusable spelling reverts to bug-only.
+
+    `frozenset(raw.split(","))` - the obvious implementation - yields
+    `{""}` for an empty knob and `{"nonsense"}` for a typo. BOTH match no
+    category, so the feature silently stops waking anybody, and the ledger
+    cannot be told apart from "no findings qualified". A typo must also not
+    widen: 'bugs' is not 'bug'.
+    """
+    real = config.AGENT_WAKE_CATEGORIES
+    try:
+        for raw in ("", ",", " , ", "nonsense", "bugs", "improvements", None):
+            config.AGENT_WAKE_CATEGORIES = raw
+            assert wake._wake_categories() == frozenset({"bug"}), (
+                f"a malformed knob {raw!r} did not fail closed to bug-only"
+            )
+        # A good value next to a typo keeps the good half and drops the typo.
+        config.AGENT_WAKE_CATEGORIES = "bug, nonsense"
+        assert wake._wake_categories() == frozenset({"bug"})
+        # Case and whitespace are not a typo.
+        config.AGENT_WAKE_CATEGORIES = " BUG , Improvement "
+        assert wake._wake_categories() == frozenset({"bug", "improvement"})
+    finally:
+        config.AGENT_WAKE_CATEGORIES = real
+
+
+def test_no_phantom_agent_wake_knob_names_in_prose():
+    """Pin 4: every AGENT_WAKE_* name the module's prose cites must exist.
+
+    This is the ratchet for the defect #968 fixes: the header cited
+    `AGENT_WAKE_DIGEST` as "a documented knob" that was never added to
+    config, so an operator was pointed at a setting they could not set.
+    Generalises past this one name - any future prose reference to a knob
+    that does not exist goes red here.
+
+    Mutation-proven: re-adding the AGENT_WAKE_DIGEST sentence turns this
+    red naming DIGEST; removing it returns green.
+    """
+    import config as cfg
+
+    source = Path(wake.__file__).read_text(encoding="utf-8")
+    # `EVT_AGENT_WAKE_*` are events.py ledger-kind constants, not tunables,
+    # and they legitimately share the prefix - the negative lookbehind is
+    # what keeps this ratchet discriminating. Without it the pin fires on
+    # EVT_AGENT_WAKE_SENT/_FAILED, which is a false positive that would
+    # train the next reader to delete the test instead of the defect.
+    cited = set(re.findall(r"(?<!EVT_)AGENT_WAKE_[A-Z_]+", source))
+    # The env-var spellings are the same names with a FORUM_ prefix.
+    known = set(cfg._TUNING) | {f"FORUM_{k}" for k in cfg._TUNING}
+    phantom = {name for name in cited if name not in known}
+    assert not phantom, (
+        "server/poller/_wake.py names an AGENT_WAKE_* knob that is not in"
+        f" config._TUNING - add it or stop citing it: {sorted(phantom)}"
+    )
+
+
+def test_an_improvement_is_not_retired_when_the_knob_admits_it():
+    """The permanent-retirement half of the defect.
+
+    `category-not-wakeable` is terminal, so a rejected improvement is
+    _discard-ed and `_delivered` excludes it forever. That is correct
+    while the category is refused - but once an operator admits the
+    category, a finding already retired under the old policy must not be
+    the reason the feature looks broken. Asserts the gate, not the
+    backfill: a NEW improvement arriving under the new policy wakes.
+    """
+    real = config.AGENT_WAKE_CATEGORIES
+    try:
+        config.AGENT_WAKE_CATEGORIES = "bug,improvement"
+        kw = dict(agent_id=4, pr_number=11, now_epoch=0.0)
+        cand = {
+            "finder_agent_id": 9,
+            "auto_flip": 1,
+            "state": "open",
+            "category": "improvement",
+        }
+        assert wake.gate_free(cand, **kw) is None
+        assert "category-not-wakeable" not in wake._FREE_GATE_DEFERRABLE, (
+            "a refused category must stay terminal - making it deferrable"
+            " would re-scan every improvement on every tick forever"
+        )
+    finally:
+        config.AGENT_WAKE_CATEGORIES = real
+
+
 def main():
     tests = [
         test_correction_occupancy_is_last_assistant_not_cumulative,
@@ -3256,6 +3401,12 @@ def main():
         test_rereview_debounce_defers_without_stamping_the_pair,
         test_rereview_switch_off_silences_only_that_direction,
         test_old_schema_database_regains_the_rereview_table,
+        test_category_knob_default_is_bug_only,
+        test_category_knob_widens_the_gate_to_improvements,
+        test_category_knob_is_read_at_call_time_not_import_time,
+        test_category_knob_fails_closed_on_a_malformed_value,
+        test_no_phantom_agent_wake_knob_names_in_prose,
+        test_an_improvement_is_not_retired_when_the_knob_admits_it,
         test_main_registers_every_test_in_this_module,
     ]
     failed = []

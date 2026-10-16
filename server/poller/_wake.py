@@ -115,7 +115,8 @@ remove the large majority of candidates. Only 8+ spend.
   2 pr still open     a merged PR's finding is moot
   3 novelty           finding_id not already delivered
   4 not self-filed    an agent needs no wake for its own report
-  5 category          bugs wake; an improvement is skipped      [policy]
+  5 category          AGENT_WAKE_CATEGORIES decides; bug-only   [policy]
+                      by default, so an improvement is skipped
   6 debounce          per-PR quiet period (the big lever: a 5-finding
                       burst collapses to one wake instead of five)
   7 still blocking    re-read auto_flip AND state at wake time, so a
@@ -130,10 +131,12 @@ overflow somewhere, and that "somewhere" does not exist in this code: an
 improvement is skipped and an over-budget candidate is skipped, both with
 a ledger row and no delivery. The budget ceiling is enforced first, so
 nothing can overspend by reaching the digest - the absence cannot leak
-money, it can only lose an improvement notification. `AGENT_WAKE_DIGEST`
-exists as a documented knob for that future path, and the two docstrings
-that used to describe the digest as live have been corrected to say it is
-not.
+money, it can only lose an improvement notification. There is deliberately
+NO knob for the digest: a setting that gates nothing is the same defect in
+the other direction, and `AGENT_WAKE_CATEGORIES` is the real surface for
+routing an improvement - it wakes on one rather than digesting it. The two
+docstrings that used to describe the digest as live have been corrected to
+say it is not.
 
 EVERY DECISION IS AUDITED. Every rejection returns a reason string AND
 writes an events row, so "why was I not poked?" is answerable by reading the
@@ -703,7 +706,8 @@ def _delivered(conn: sqlite3.Connection, finding_id: int) -> bool:
     no-session / not-deliverable / occupancy-unreadable); the POLICY ladder
     is what `gate_free` and `_rereview_gate_free` can return BEFORE
     anything is delivered, and it is exactly the module's deferral set
-    plus the terminal trio (self-filed / category-not-bug / not-auto-flip).
+    plus the terminal trio (self-filed / category-not-wakeable /
+    not-auto-flip).
     `test_every_free_gate_reason_is_classified_and_producible` pins that
     second ladder as a value; this paragraph only names the first.
     """
@@ -782,6 +786,11 @@ def _mark_seen(
 
 # --- free gates (1-7) -----------------------------------------------------
 
+# The only categories review_findings permits (schema.sql's CHECK). Named
+# here so the knob parser can reject a typo rather than carry it into a set
+# comparison that would silently match nothing.
+_WAKEABLE_CATEGORIES = frozenset({"bug", "improvement"})
+
 # Free-gate reasons that DEFER instead of rejecting: the condition expires
 # on its own clock, so the finding must stay a candidate (`notified_at`
 # NULL) and be retried on a later tick. Discarding one stamps a delivery
@@ -792,6 +801,34 @@ def _mark_seen(
 # added to `gate_free` would have rejoined the terminal set with no code
 # change at all.
 _FREE_GATE_DEFERRABLE = frozenset({"debounce"})
+
+
+def _wake_categories() -> frozenset[str]:
+    """The finding categories gate 5 will wake on.
+
+    Read at call time, not at import: `AGENT_WAKE_CATEGORIES` is in the
+    drift-reload set, so an operator's edit must take effect within
+    FORUM_ENV_POLL_SECONDS without a restart - a module-scope frozenset
+    would pin the value read at boot and make the knob look broken.
+
+    FAILS CLOSED to bug-only. The obvious one-liner
+    (`frozenset(raw.split(","))`) is wrong in two directions that both
+    look like success: an empty knob yields `{""}`, which matches no
+    category and silently disables the whole feature, and a typo yields a
+    set that matches nothing in exactly the same way. Neither is
+    distinguishable from "no findings qualified" in the ledger. So an
+    unrecognised spelling is DROPPED, and a value that leaves nothing
+    usable behind reverts to the default rather than widening or
+    disabling the gate.
+
+    'bug' and 'improvement' are the only values the schema permits
+    (review_findings' CHECK constraint), so anything else is a typo by
+    construction rather than a forward-compatible category.
+    """
+    raw = str(getattr(config, "AGENT_WAKE_CATEGORIES", "bug") or "")
+    wanted = {part.strip().casefold() for part in raw.split(",")}
+    allowed = wanted & _WAKEABLE_CATEGORIES
+    return frozenset(allowed) if allowed else frozenset({"bug"})
 
 
 def gate_free(
@@ -808,8 +845,8 @@ def gate_free(
     """
     if int(candidate.get("finder_agent_id") or 0) == int(agent_id):
         return "self-filed"
-    if str(candidate.get("category")) != "bug":
-        return "category-not-bug"
+    if str(candidate.get("category")) not in _wake_categories():
+        return "category-not-wakeable"
     if not int(candidate.get("auto_flip") or 0):
         return "not-auto-flip"
     last = candidate.get("_last_finding_at")
