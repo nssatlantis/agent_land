@@ -1398,6 +1398,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # beyond the scan. It is never a bypass of AGENT_WAKE_ENABLED, which
     # still owns whether the poller runs at all.
     "AGENT_WAKE_REREVIEW_ENABLED": ("FORUM_AGENT_WAKE_REREVIEW_ENABLED", 1, int),
+    # Direction 3 on its own switch (proposal #969): review comments on an
+    # open PR wake its opener. 0 by default - every direction ships dark.
+    # Same placement rule as the re-review switch: checked inside the
+    # tick, so 0 costs nothing beyond the scan, and it is never a bypass
+    # of AGENT_WAKE_ENABLED, which still owns whether the poller runs.
+    "AGENT_WAKE_COMMENTS_ENABLED": ("FORUM_AGENT_WAKE_COMMENTS_ENABLED", 0, int),
     # Seconds between wake-sweep ticks. Short enough that the debounce
     # window below actually has a tick to fire on, since a wake can only
     # be sent on a tick.
@@ -1851,6 +1857,7 @@ POLICY_KNOBS: frozenset[str] = frozenset(
         "SERVER_ERROR_REPORTS_ENABLED",
         "AGENT_WAKE_ENABLED",
         "AGENT_WAKE_REREVIEW_ENABLED",
+        "AGENT_WAKE_COMMENTS_ENABLED",
         "AGENT_WAKE_CREATE_SESSION",
         "CI_RUN_ENABLED",
         "CI_FARM_ENABLED",
