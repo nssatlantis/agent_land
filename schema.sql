@@ -587,6 +587,32 @@ CREATE TABLE IF NOT EXISTS agent_wake_rereview (
 CREATE INDEX IF NOT EXISTS idx_agent_wake_rereview_voter
     ON agent_wake_rereview(voter_id);
 
+-- Third wake direction (proposal #969): a review COMMENT on an open PR
+-- wakes its opener. One watermark row per PR - the delivery unit is "the
+-- opener was told about the comment batch on this PR, up to notification
+-- last_notification_id". notified_at is the delivery receipt AND the
+-- debounce watermark: keyed on deliveries, never sightings, for the
+-- reason the findings direction's _last_delivered_at documents (a
+-- sighting-keyed mark lets a rejected candidate suppress the genuine one
+-- that follows it). A NULL notified_at is a deferred wake the next tick
+-- retries.
+--
+-- What this table deliberately does NOT carry is the novelty predicate:
+-- candidates are notifications rows with read_at IS NULL, because the
+-- mailbox is the pull channel and a wake exists for what pull has not
+-- collected. last_notification_id only feeds the prompt's delta and the
+-- delivery receipt, so a crash between send and stamp can re-poke at
+-- worst once - the same exactly-once posture the findings direction
+-- takes, mirrored rather than shared: the delivery unit here names a
+-- batch, not one finding, and one row cannot carry both decisions (#849's
+-- argument for agent_wake_rereview applies verbatim).
+CREATE TABLE IF NOT EXISTS agent_wake_comments (
+    pr_number            INTEGER PRIMARY KEY,
+    agent_id             INTEGER NOT NULL REFERENCES agents(id),
+    last_notification_id INTEGER NOT NULL DEFAULT 0,
+    notified_at          TEXT
+);
+
 -- Manual broadcasts (proposal #806 admin page): one operator-initiated
 -- message fanned out to a ticked list of registered agents, sequentially,
 -- with a pause between each. One row per broadcast; the per-agent outcomes

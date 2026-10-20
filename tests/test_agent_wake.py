@@ -1106,6 +1106,7 @@ def test_old_schema_database_gains_the_wake_tables():
     found = out.stdout.strip().splitlines()[-1] if out.stdout.strip() else ""
     assert "agent_wake_endpoints" in found, found
     assert "agent_wake_state" in found, found
+    assert "agent_wake_comments" in found, found
 
 
 def test_state_tables_survive_a_row_round_trip():
@@ -2505,6 +2506,503 @@ def test_a_row_without_a_location_never_matches():
     assert got is None, got
 
 
+# --- the comments direction (proposal #969) ------------------------------
+
+
+def _comments_cfg(**overrides):
+    """_wake_cfg plus the direction switch ON, both restored after.
+
+    The budget default is lifted to 99: this shared-DB file leaves
+    retryable FINDINGS candidates behind from earlier tests, and on a
+    cooperative stub they deliver on the next sweep and spend from the
+    same per-endpoint budget. The shared-budget property itself is pinned
+    by test_comments_share_the_daily_budget with a deterministic
+    pre-stamped row; the delivery tests must not flake on which leftover
+    the findings direction spends first.
+    """
+    overrides.setdefault("AGENT_WAKE_BUDGET_PER_DAY", 99)
+    saved = config.AGENT_WAKE_COMMENTS_ENABLED
+    config.AGENT_WAKE_COMMENTS_ENABLED = 1
+    restore = _wake_cfg(**overrides)
+
+    def _restore_both():
+        restore()
+        config.AGENT_WAKE_COMMENTS_ENABLED = saved
+
+    return _restore_both
+
+
+def _comment_notification(conn, agent_id, pr_number, body=None, read=False):
+    """The row both comment producers write: kind 'pr', ref_type 'pr'.
+
+    PINNED-EXCERPT is the canary: the wake prompt must never carry it.
+    """
+    import notifications as _notifications
+
+    _notifications._notify(
+        conn,
+        agent_id,
+        "pr",
+        "pr",
+        pr_number,
+        body
+        if body is not None
+        else f"Review comment on PR #{pr_number}: PINNED-EXCERPT",
+    )
+    if read:
+        conn.execute(
+            "UPDATE notifications SET read_at ="
+            " strftime('%Y-%m-%dT%H:%M:%fZ','now')"
+            " WHERE agent_id = ? AND ref_type = 'pr' AND ref_id = ?",
+            (agent_id, pr_number),
+        )
+
+
+def _oc_stub():
+    """The standard cooperative OpenCode server: one named root session."""
+    return _stub(
+        {
+            "/api/session": json.dumps(
+                {
+                    "data": [
+                        {
+                            "id": "ses_root",
+                            "parentID": None,
+                            "agent": "plan",
+                            "title": "[AL]",
+                            "location": {"directory": "dir"},
+                            "time": {"updated": int(time.time() * 1000)},
+                            "model": {"id": "m", "providerID": "opencode"},
+                        }
+                    ]
+                }
+            ),
+            "/api/model": json.dumps(
+                {
+                    "data": [
+                        {
+                            "id": "m",
+                            "providerID": "opencode",
+                            "limit": {"context": 262144},
+                        }
+                    ]
+                }
+            ),
+            "/session/status": json.dumps({"data": {}}),
+            "/message": json.dumps(
+                [{"info": {"role": "assistant", "tokens": {"total": 1000}}}]
+            ),
+        }
+    )
+
+
+def _capture_sends():
+    sent = []
+    real_send = wake.send_wake
+
+    def _capture(endpoint, session_id, text):
+        sent.append(text)
+        return True
+
+    wake.send_wake = _capture
+    return sent, real_send
+
+
+def _read_all_comments(conn, agent_id, pr_number):
+    """Teardown hygiene: the candidate predicate is `read_at IS NULL`, so a
+    comment row a test leaves UNREAD stays a candidate into every later
+    sweep in this shared-DB file (the direction loop wakes the lowest PR
+    first). Marking the test's own rows read is what isolates it."""
+    conn.execute(
+        "UPDATE notifications SET read_at ="
+        " strftime('%Y-%m-%dT%H:%M:%fZ','now')"
+        " WHERE agent_id = ? AND ref_type = 'pr' AND ref_id = ?",
+        (agent_id, pr_number),
+    )
+
+
+def test_comment_shape_matching():
+    """The shape gate admits exactly the two comment bodies - and none of
+    the neighbours that share kind='pr', ref_type='pr'."""
+    assert wake._comment_shape("Review comment on PR #1640: excerpt")
+    assert wake._comment_shape("3 new comment(s) on PR #1640 (a title) by beta")
+    assert wake._comment_shape("1 new comment(s) on PR #1640 (t) by beta")
+    # tally body (db/_pr_vote.py's _pr_tally_body: "PR #N: ... (net +M)")
+    assert not wake._comment_shape("PR #1640: 1 approved (beta) (net +1)")
+    # stall notice (server/poller/_vote.py)
+    assert not wake._comment_shape(
+        "PR #1640 has been open 24h+ and sits at net 1 vs bar 5"
+    )
+    # CI-red (server/poller/_batches.py's own sweep)
+    assert not wake._comment_shape("PR #1640 (a title) is failing CI: test")
+    # flip notice (voter-targeted)
+    assert not wake._comment_shape(
+        "PR #1640 findings: all blockers verified at abcdef - your -1 auto-flipped to +1"
+    )
+    # open-for-review notice
+    assert not wake._comment_shape(
+        "Proposal #967 passed its vote - PR #1640 is now open for review and voting."
+    )
+    # finding-filed notice (the findings direction owns these)
+    assert not wake._comment_shape("New bug finding #149 on proposal #967")
+    assert not wake._comment_shape("")
+    assert not wake._comment_shape(None)
+
+
+def test_comment_prefixes_match_their_producers():
+    """Producer ratchet: the two bodies this direction reads must still be
+    the bodies the producers write. A copyedit that renames one goes red
+    HERE, naming the file - instead of silently darkening the trigger."""
+    root = Path(__file__).resolve().parent.parent
+    pr_ops = (root / "server" / "tools" / "repo" / "_pr_ops.py").read_text()
+    batches = (root / "server" / "poller" / "_batches.py").read_text()
+    assert "Review comment on PR #" in pr_ops, "in-band producer renamed"
+    assert " new comment(s) on PR #" in batches, "sweep producer renamed"
+
+
+def test_comments_direction_is_dark_by_default():
+    """Switch off = true no-op: no outcome, no HTTP send, no state row."""
+    agents = AGENTS
+    alpha = agents["alpha"]["agent_id"]
+    saved = config.AGENT_WAKE_COMMENTS_ENABLED
+    config.AGENT_WAKE_COMMENTS_ENABLED = 0
+    restore = _wake_cfg()
+    pid = _proposal(agents, "alpha", "cdark")
+    try:
+        with db._conn(immediate=True) as conn:
+            _link(conn, pid, 5100, alpha)
+            _register(conn, alpha, "dir")
+            _comment_notification(conn, alpha, 5100)
+        real, _calls = _oc_stub()
+        sent, real_send = _capture_sends()
+        try:
+            outcomes = wake.wake_sweep()
+        finally:
+            wake.send_wake = real_send
+            _restore(real)
+    finally:
+        restore()
+        config.AGENT_WAKE_COMMENTS_ENABLED = saved
+    mine = [s for s in sent if "PR #5100" in s]
+    assert not mine, mine
+    assert not [
+        o
+        for o in outcomes
+        if o.get("direction") == "comments" and o.get("pr_number") == 5100
+    ], outcomes
+    with db._conn() as conn:
+        rows = conn.execute(
+            "SELECT COUNT(*) FROM agent_wake_comments WHERE pr_number = 5100"
+        ).fetchone()[0]
+    assert rows == 0, "a dark direction must not even write state"
+    with db._conn(immediate=True) as conn:
+        _read_all_comments(conn, alpha, 5100)
+
+
+def test_comments_wake_delivers():
+    """The headline pin: one unread review comment pokes the opener once,
+    with the PR and the count in the prompt and the comment text NOT."""
+    agents = AGENTS
+    alpha = agents["alpha"]["agent_id"]
+    restore = _comments_cfg()
+    pid = _proposal(agents, "alpha", "ccomments")
+    try:
+        with db._conn(immediate=True) as conn:
+            _link(conn, pid, 5101, alpha)
+            _register(conn, alpha, "dir")
+            _comment_notification(conn, alpha, 5101)
+        real, _calls = _oc_stub()
+        sent, real_send = _capture_sends()
+        try:
+            outcomes = wake.wake_sweep()
+        finally:
+            wake.send_wake = real_send
+            _restore(real)
+    finally:
+        restore()
+    mine = [s for s in sent if "PR #5101" in s]
+    assert len(mine) == 1, sent
+    assert "1 unread" in mine[0], mine[0]
+    assert "PINNED-EXCERPT" not in mine[0], "the prompt carries no comment text"
+    own = [
+        o
+        for o in outcomes
+        if o.get("direction") == "comments" and o.get("pr_number") == 5101
+    ]
+    assert [o["outcome"] for o in own] == ["sent"], outcomes
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT agent_id, notified_at, last_notification_id"
+            " FROM agent_wake_comments WHERE pr_number = 5101"
+        ).fetchone()
+        ledger = conn.execute(
+            "SELECT detail FROM events WHERE kind = 'agent_wake_sent'"
+        ).fetchall()
+    assert row is not None and row["notified_at"] is not None
+    assert row["agent_id"] == alpha and row["last_notification_id"] > 0
+    directions = [json.loads(r["detail"]).get("direction") for r in ledger]
+    assert "comments" in directions, directions
+    with db._conn(immediate=True) as conn:
+        _read_all_comments(conn, alpha, 5101)
+
+
+def test_comments_burst_collapses_then_rearms_while_unread():
+    """Three comments inside the window are ONE wake; while the batch stays
+    UNREAD, a tick past the window pokes again - the wake exists for what
+    pull has not collected."""
+    agents = AGENTS
+    alpha = agents["alpha"]["agent_id"]
+    restore = _comments_cfg()
+    pid = _proposal(agents, "alpha", "cburst")
+    try:
+        with db._conn(immediate=True) as conn:
+            _link(conn, pid, 5102, alpha)
+            _register(conn, alpha, "dir")
+            for _ in range(3):
+                _comment_notification(conn, alpha, 5102)
+        real, _calls = _oc_stub()
+        sent, real_send = _capture_sends()
+        try:
+            wake.wake_sweep()
+            second = wake.wake_sweep()
+        finally:
+            wake.send_wake = real_send
+            _restore(real)
+    finally:
+        restore()
+    mine = [s for s in sent if "PR #5102" in s]
+    assert len(mine) == 1, f"a 3-comment burst is one wake: {mine}"
+    assert "3 unread" in mine[0], mine[0]
+    own = [
+        o
+        for o in second
+        if o.get("direction") == "comments" and o.get("pr_number") == 5102
+    ]
+    assert [o["outcome"] for o in own] == ["debounce"], own
+    # Past the window, still unread: the re-poke fires.
+    with db._conn(immediate=True) as conn:
+        old = (
+            (datetime.now(timezone.utc) - timedelta(seconds=7200))
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
+        conn.execute(
+            "UPDATE agent_wake_comments SET notified_at = ? WHERE pr_number = 5102",
+            (old,),
+        )
+    restore = _comments_cfg()
+    try:
+        real, _calls = _oc_stub()
+        sent, real_send = _capture_sends()
+        try:
+            wake.wake_sweep()
+        finally:
+            wake.send_wake = real_send
+            _restore(real)
+    finally:
+        restore()
+    mine = [s for s in sent if "PR #5102" in s]
+    assert len(mine) == 1 and "3 unread" in mine[0], mine
+    with db._conn(immediate=True) as conn:
+        _read_all_comments(conn, alpha, 5102)
+
+
+def test_comments_read_rows_never_wake():
+    """read_at IS NULL is the novelty predicate: what pull collected never
+    pokes. This is also why no first-sweep baselining exists - a backlog
+    the opener already read is not a candidate."""
+    agents = AGENTS
+    alpha = agents["alpha"]["agent_id"]
+    restore = _comments_cfg()
+    pid = _proposal(agents, "alpha", "cread")
+    try:
+        with db._conn(immediate=True) as conn:
+            _link(conn, pid, 5103, alpha)
+            _register(conn, alpha, "dir")
+            _comment_notification(conn, alpha, 5103, read=True)
+        real, _calls = _oc_stub()
+        sent, real_send = _capture_sends()
+        try:
+            outcomes = wake.wake_sweep()
+        finally:
+            wake.send_wake = real_send
+            _restore(real)
+    finally:
+        restore()
+    assert not [s for s in sent if "PR #5103" in s], sent
+    assert not [
+        o
+        for o in outcomes
+        if o.get("direction") == "comments" and o.get("pr_number") == 5103
+    ], outcomes
+
+
+def test_comments_never_wake_a_non_opener():
+    """The opener check: a comment notification addressed to somebody who
+    did not open the PR (a voter watching it) is not their wake."""
+    agents = AGENTS
+    alpha = agents["alpha"]["agent_id"]
+    beta = agents["beta"]["agent_id"]
+    restore = _comments_cfg()
+    pid = _proposal(agents, "alpha", "cnotop")
+    try:
+        with db._conn(immediate=True) as conn:
+            _link(conn, pid, 5104, alpha)
+            _register(conn, beta, "dir")  # the LISTENER is not the opener
+            _comment_notification(conn, beta, 5104)
+        real, _calls = _oc_stub()
+        sent, real_send = _capture_sends()
+        try:
+            outcomes = wake.wake_sweep()
+        finally:
+            wake.send_wake = real_send
+            _restore(real)
+    finally:
+        restore()
+    assert not [s for s in sent if "PR #5104" in s], sent
+    assert not [
+        o
+        for o in outcomes
+        if o.get("direction") == "comments" and o.get("pr_number") == 5104
+    ], outcomes
+    with db._conn(immediate=True) as conn:
+        _read_all_comments(conn, beta, 5104)
+
+
+def test_comments_merged_pr_never_wakes():
+    """Liveness routes through the shared fragment, not a hand-rolled
+    absence proxy (#B107's ratchet owns that class)."""
+    from db._pr_state import pr_live_sql
+
+    agents = AGENTS
+    alpha = agents["alpha"]["agent_id"]
+    restore = _comments_cfg()
+    pid = _proposal(agents, "alpha", "cmerged")
+    try:
+        with db._conn(immediate=True) as conn:
+            _link(conn, pid, 5105, alpha)
+            _register(conn, alpha, "dir")
+            _comment_notification(conn, alpha, 5105)
+            conn.execute(
+                "INSERT INTO pr_merges (pr_number, agent_id, merged_at)"
+                " VALUES (?, ?, ?)",
+                (5105, alpha, db._now_iso()),
+            )
+        real, _calls = _oc_stub()
+        sent, real_send = _capture_sends()
+        try:
+            outcomes = wake.wake_sweep()
+        finally:
+            wake.send_wake = real_send
+            _restore(real)
+    finally:
+        restore()
+    assert not [s for s in sent if "PR #5105" in s], sent
+    assert not [
+        o
+        for o in outcomes
+        if o.get("direction") == "comments" and o.get("pr_number") == 5105
+    ], outcomes
+    assert "pr_merges" in pr_live_sql("n.ref_id")
+
+
+def test_comments_deferred_wake_retries_next_tick():
+    """A failed send clears the receipt: the batch stays a candidate and
+    the next tick delivers it. Without the clear, one busy tick would lose
+    the wake for good - the inbound _delivered docstring's bug."""
+    agents = AGENTS
+    alpha = agents["alpha"]["agent_id"]
+    restore = _comments_cfg()
+    pid = _proposal(agents, "alpha", "cdefer")
+    try:
+        with db._conn(immediate=True) as conn:
+            _link(conn, pid, 5106, alpha)
+            _register(conn, alpha, "dir")
+            _comment_notification(conn, alpha, 5106)
+        real, _calls = _oc_stub()
+        real_send = wake.send_wake
+        wake.send_wake = lambda *a: False  # the send itself fails
+        try:
+            first = wake.wake_sweep()
+        finally:
+            wake.send_wake = real_send
+            _restore(real)
+    finally:
+        restore()
+    own = [
+        o
+        for o in first
+        if o.get("direction") == "comments" and o.get("pr_number") == 5106
+    ]
+    assert [o["outcome"] for o in own] == ["send-failed"], first
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT notified_at FROM agent_wake_comments WHERE pr_number = 5106"
+        ).fetchone()
+    assert row is not None and row["notified_at"] is None, dict(row)
+    # Next tick, transport healed: the same batch delivers.
+    restore = _comments_cfg()
+    try:
+        real, _calls = _oc_stub()
+        sent, real_send = _capture_sends()
+        try:
+            wake.wake_sweep()
+        finally:
+            wake.send_wake = real_send
+            _restore(real)
+    finally:
+        restore()
+    assert len([s for s in sent if "PR #5106" in s]) == 1, sent
+    with db._conn(immediate=True) as conn:
+        _read_all_comments(conn, alpha, 5106)
+
+
+def test_comments_share_the_daily_budget():
+    """No new spend knob: the comments direction draws the SAME
+    per-endpoint daily budget the findings direction uses (the endpoint
+    row is pre-stamped at the cap, deterministically)."""
+    agents = AGENTS
+    alpha = agents["alpha"]["agent_id"]
+    restore = _comments_cfg(AGENT_WAKE_BUDGET_PER_DAY=3)
+    pid = _proposal(agents, "alpha", "cbudget")
+    try:
+        with db._conn(immediate=True) as conn:
+            _link(conn, pid, 5107, alpha)
+            _register(conn, alpha, "dir")
+            _comment_notification(conn, alpha, 5107)
+            conn.execute(
+                "UPDATE agent_wake_endpoints SET wakes_today = 3,"
+                " budget_day = strftime('%Y-%m-%d','now')"
+                " WHERE agent_id = ?",
+                (alpha,),
+            )
+        real, _calls = _oc_stub()
+        sent, real_send = _capture_sends()
+        try:
+            outcomes = wake.wake_sweep()
+        finally:
+            wake.send_wake = real_send
+            _restore(real)
+    finally:
+        restore()
+    assert not [s for s in sent if "PR #5107" in s], sent
+    own = [
+        o
+        for o in outcomes
+        if o.get("direction") == "comments" and o.get("pr_number") == 5107
+    ]
+    assert [o["outcome"] for o in own] == ["budget-exhausted"], outcomes
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT notified_at FROM agent_wake_comments WHERE pr_number = 5107"
+        ).fetchone()
+    assert row is not None and row["notified_at"] is None, (
+        "a budget deferral must stay retryable"
+    )
+    with db._conn(immediate=True) as conn:
+        _read_all_comments(conn, alpha, 5107)
+
+
 def test_a_blank_directory_fails_closed():
     """Without this a blank registry value would match every row in the
     machine that happens to carry no location."""
@@ -3240,6 +3738,16 @@ def main():
         test_a_bare_convention_name_matches_nothing,
         test_a_row_without_a_location_never_matches,
         test_a_blank_directory_fails_closed,
+        test_comment_shape_matching,
+        test_comment_prefixes_match_their_producers,
+        test_comments_direction_is_dark_by_default,
+        test_comments_wake_delivers,
+        test_comments_burst_collapses_then_rearms_while_unread,
+        test_comments_read_rows_never_wake,
+        test_comments_never_wake_a_non_opener,
+        test_comments_merged_pr_never_wakes,
+        test_comments_deferred_wake_retries_next_tick,
+        test_comments_share_the_daily_budget,
         test_session_list_asks_for_no_server_side_filter,
         test_an_unreadable_session_list_logs_its_own_tag,
         test_rereview_candidate_is_the_finder_after_a_real_resolve,

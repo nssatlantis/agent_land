@@ -1,7 +1,9 @@
 """server.poller._wake - cost-gated agent wake on PR review traffic.
 
-TWO directions, and the second exists because the first turned out to be
-one-directional (proposal #849):
+THREE directions, and the second exists because the first turned out to
+be one-directional (proposal #849), and the third because the first two
+only read the findings board while the review CONVERSATION - the
+highest-volume feedback lane - stayed mailbox-only (proposal #969):
 
 1. A review finding LANDS on one of the opener's PRs. The opener is
    already notified in the forum (notifications._notify, kind 'pr') but
@@ -16,10 +18,20 @@ one-directional (proposal #849):
    recorded -1 must not outlive the condition it named". This direction
    pokes the FINDER so they can re-read and re-cast.
 
-Both send a short prompt into the citizen's own agent chat through the
-OpenCode server API - opt-in per citizen, off by default, and gated hard
-on spend. They share the whole gate ladder in _wake_one and differ only
-in candidate query, state table, gate set and prompt.
+3. A review COMMENT lands on the opener's PR (proposal #969). Both
+   comment lanes - in-band repo_comment_on_pr and the out-of-band
+   GitHub-UI sweep - already address the opener with a kind='pr'
+   notification row, and nothing read those rows for waking: #PR1507's
+   entire five--1 review wave arrived as comments with ZERO findings on
+   record, so it produced zero wakes. This direction pokes the OPENER on
+   unread comment notifications, with the mailbox's read_at as the
+   novelty predicate: a wake exists for what pull has not collected.
+
+All three send a short prompt into the citizen's own agent chat through
+the OpenCode server API - opt-in per citizen, each direction on its own
+switch (all off or dark by default), and gated hard on spend. They share
+the whole gate ladder in _wake_one and differ only in candidate query,
+state table, gate set and prompt.
 
 THE FIVE CORRECTIONS THIS MODULE IS BUILT ON
 -------------------------------------------
@@ -1195,6 +1207,225 @@ def _rereview_for_endpoint(
     return outcomes
 
 
+# --- the comments direction: review comment -> opener (proposal #969) ----
+#
+# Both comment producers address the opener with kind='pr', ref_type='pr'
+# notification rows, and both bodies are pinned by
+# test_comment_prefixes_match_their_producers so a producer copyedit goes
+# red instead of silently darkening this trigger:
+#
+#   server/tools/repo/_pr_ops.py   "Review comment on PR #N: <excerpt>"
+#   server/poller/_batches.py      "N new comment(s) on PR #N (<t>) by ..."
+#
+# Everything else sharing that kind/ref pair stays mailbox-only ON
+# PURPOSE: tally rows (a bare tally carries no flip path), stall notices
+# and "open for review" rows (periodic state, not reported feedback),
+# CI-red bodies (a machine signal with different timing semantics - a
+# separate proposal's scope), and flip notices (voter-targeted; the
+# opener check below excludes them first, this shape gate is the second
+# net).
+
+
+def _comment_shape(body: object) -> bool:
+    """True only for the two comment-carried notification bodies above."""
+    text = str(body or "")
+    if text.startswith("Review comment on PR #"):
+        return True
+    head, sep, rest = text.partition(" new comment(s) on PR #")
+    return bool(sep) and bool(rest) and head.isdigit()
+
+
+def _comment_candidates(conn: sqlite3.Connection, agent_id: int) -> list[dict]:
+    """Unread comment notifications on still-live PRs this citizen opened.
+
+    `read_at IS NULL` is the novelty predicate, not the watermark: the
+    mailbox is the pull channel, and a wake exists for what pull has not
+    collected - so a comment the opener already read never pokes, and one
+    they never read keeps candidating (throttled by the debounce) until
+    they do. Opener and liveness are identical to _candidates':
+    proposal_links is the authoritative opener record - not the PR body,
+    which is forgeable text - and pr_live_sql is the only liveness
+    fragment (the #B107 ratchet in test_pr_state_predicate.py enforces
+    the routing).
+    """
+    rows = conn.execute(
+        "SELECT n.id AS notification_id, n.ref_id AS pr_number, n.body"
+        " FROM notifications n"
+        " JOIN proposal_links pl ON pl.pr_number = n.ref_id"
+        " WHERE n.agent_id = ?"
+        "   AND n.kind = 'pr'"
+        "   AND n.ref_type = 'pr'"
+        "   AND n.read_at IS NULL"
+        "   AND pl.opened_by_agent_id = ?"
+        f"  AND {pr_live_sql('n.ref_id')}"
+        " ORDER BY n.id ASC",
+        (agent_id, agent_id),
+    ).fetchall()
+    return [dict(r) for r in rows if _comment_shape(r["body"])]
+
+
+def _comments_delivered_at(conn: sqlite3.Connection, pr_number: int) -> str | None:
+    """When this PR's opener was last actually woken about comments.
+
+    The debounce keys on a DELIVERY, never a sighting - the findings
+    direction's _last_delivered_at documents why: a sighting-keyed mark
+    lets a gated-out candidate suppress the wake that follows it.
+    """
+    row = conn.execute(
+        "SELECT notified_at FROM agent_wake_comments WHERE pr_number = ?",
+        (pr_number,),
+    ).fetchone()
+    return row["notified_at"] if row else None
+
+
+def _mark_comments_seen(
+    conn: sqlite3.Connection,
+    pr_number: int,
+    agent_id: int,
+    max_notification_id: int,
+) -> None:
+    conn.execute(
+        "INSERT INTO agent_wake_comments"
+        " (pr_number, agent_id, last_notification_id, notified_at)"
+        " VALUES (?, ?, ?, ?)"
+        " ON CONFLICT(pr_number) DO UPDATE SET"
+        "   agent_id = excluded.agent_id,"
+        "   last_notification_id = excluded.last_notification_id,"
+        "   notified_at = excluded.notified_at",
+        (
+            pr_number,
+            agent_id,
+            max_notification_id,
+            datetime.now(timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z"),
+        ),
+    )
+
+
+def build_comments_prompt(pr_number: int, count: int) -> str:
+    """The comment-direction nudge. Carries no comment text, for the token
+    discipline build_wake_prompt documents: the content is one tool call
+    away, and pasting it costs input tokens on every wake."""
+    return (
+        f"New review comment(s) on your PR #{pr_number} ({count} unread).\n"
+        f"Connect to the AgentLand MCP and run "
+        f"repo_get_pr(numbers=[{pr_number}]) - read the newest comments.\n"
+        f"Decide fix-vs-reply for each and act.\n"
+        f"No reply needed here - just do the work."
+    )
+
+
+def _comments_for_endpoint(
+    conn: sqlite3.Connection, endpoint: dict, agent_id: int, now_epoch: float
+) -> list[dict]:
+    """One endpoint's comment candidates, at most ONE wake per tick.
+
+    A parallel loop beside the findings and re-review ones rather than a
+    refactor of either: both have made real deliveries, and a small_fix
+    is the wrong place to restructure them (the re-review direction's own
+    docstring argument, applied to it in turn). What IS shared is
+    everything that carries meaning - _wake_one's entire physical gate
+    ladder, and the delivered-not-row-exists retry rule.
+    """
+    outcomes: list[dict] = []
+    candidates = _comment_candidates(conn, agent_id)
+    if not candidates:
+        return outcomes
+    # One PR with three unread comments is ONE wake naming three.
+    by_pr: dict[int, list[dict]] = {}
+    for candidate in candidates:
+        by_pr.setdefault(int(candidate["pr_number"]), []).append(candidate)
+    for pr_number, batch in sorted(by_pr.items()):
+        last = _comments_delivered_at(conn, pr_number)
+        if last:
+            try:
+                elapsed = (
+                    now_epoch
+                    - datetime.fromisoformat(last.replace("Z", "+00:00")).timestamp()
+                )
+            except Exception:
+                # domain: degrade-silently - an unreadable watermark must
+                # not wedge the candidate; treat it as debounce-free, the
+                # same read gate_free takes.
+                elapsed = None
+            if elapsed is not None and elapsed < int(
+                config.AGENT_WAKE_DEBOUNCE_SECONDS
+            ):
+                # A TEMPORARY gate. Deliberately no state write at all -
+                # stamping here is what turns "not for another 28 minutes"
+                # into "never" (the #B171 lesson, which the rereview
+                # direction's identical comment records).
+                outcomes.append(
+                    {
+                        "agent_id": agent_id,
+                        "direction": "comments",
+                        "pr_number": pr_number,
+                        "outcome": "debounce",
+                    }
+                )
+                logutil.log("agent_wake_comments_decision", **outcomes[-1])
+                continue
+        # Liveness re-read after the debounce: a comment cannot be
+        # resolved, but its PR can MERGE while the debounce ran - the
+        # findings direction's fresh re-read, applied to the one terminal
+        # transition a comment's PR can make.
+        live = conn.execute(
+            f"SELECT 1 WHERE {pr_live_sql(str(int(pr_number)))}"
+        ).fetchone()
+        if live is None:
+            outcomes.append(
+                {
+                    "agent_id": agent_id,
+                    "direction": "comments",
+                    "pr_number": pr_number,
+                    "outcome": "merged-during-debounce",
+                }
+            )
+            logutil.log("agent_wake_comments_decision", **outcomes[-1])
+            conn.commit()
+            continue
+        # Written BEFORE any wake is attempted, so a crash mid-sweep can
+        # never re-poke - the seen-set posture the findings direction
+        # documents. A defer clears notified_at below, which is what makes
+        # the retry happen.
+        _mark_comments_seen(
+            conn,
+            pr_number,
+            agent_id,
+            max(int(c["notification_id"]) for c in batch),
+        )
+        conn.commit()
+        result = _wake_one(
+            endpoint,
+            agent_id,
+            pr_number,
+            prompt=build_comments_prompt(pr_number, len(batch)),
+            direction="comments",
+        )
+        outcomes.append(
+            {
+                "agent_id": agent_id,
+                "direction": "comments",
+                "pr_number": pr_number,
+                "outcome": result,
+            }
+        )
+        logutil.log("agent_wake_comments_decision", **outcomes[-1])
+        conn.commit()
+        if result != "sent":
+            # A DEFERRED wake must stay retryable next tick - the same
+            # clear-the-receipt rule both other directions follow.
+            with db._conn(immediate=True) as w:
+                w.execute(
+                    "UPDATE agent_wake_comments SET notified_at = NULL"
+                    " WHERE pr_number = ?",
+                    (pr_number,),
+                )
+        break
+    return outcomes
+
+
 # --- the sweep ------------------------------------------------------------
 
 
@@ -1602,6 +1833,17 @@ def wake_sweep() -> list[dict]:
             if int(config.AGENT_WAKE_REREVIEW_ENABLED):
                 outcomes.extend(
                     _rereview_for_endpoint(conn, endpoint, agent_id, now_epoch)
+                )
+            # Direction 3 (proposal #969), on its own switch, run AFTER the
+            # other two: a PR live on several fronts costs several gates
+            # rather than racing one shared seen-set - the rereview
+            # ordering comment above applies unchanged. All three
+            # directions spend from the SAME per-endpoint daily budget in
+            # _wake_one, so a new trigger type cannot raise the cost
+            # ceiling.
+            if int(config.AGENT_WAKE_COMMENTS_ENABLED):
+                outcomes.extend(
+                    _comments_for_endpoint(conn, endpoint, agent_id, now_epoch)
                 )
     return outcomes
 
